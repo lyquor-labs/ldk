@@ -1,0 +1,42 @@
+services:
+  node:
+    image: ghcr.io/lyquor-labs/lyquor-node:main-latest
+    pull_policy: always
+    ports:
+      - "10087:10087"
+    volumes:
+      - node-data:/opt
+  tools:
+    image: ghcr.io/lyquor-labs/lyquor-tools:main-latest
+    pull_policy: always
+    environment:
+      - LYQUOR_ENDPOINT=ws://node:10087/ws
+    post_start:
+      - command: cargo install cargo-generate
+    volumes:
+      - .:/ldk
+      - cargo-cache:/usr/local/cargo
+    healthcheck:
+      test: [ "CMD", "curl", "--data", "", "-f", "http://node:10087/api" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 5s
+    tty: true
+  setup-devnet:
+    image: ghcr.io/lyquor-labs/lyquor-tools:main-latest
+    pull_policy: always
+    command: /usr/local/bin/setup-devnet -b /ldk/bartender/Cargo.toml
+    environment:
+      - LYQUOR_ENDPOINT=ws://node:10087/ws
+    volumes:
+      - .:/ldk
+      - cargo-cache:/usr/local/cargo
+    depends_on:
+      tools:
+        condition: service_healthy
+volumes:
+  node-data:
+    external: false
+  cargo-cache:
+    external: false

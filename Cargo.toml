@@ -1,0 +1,127 @@
+[workspace]
+members = [
+    "primitives",
+    "lyquid",
+    "lyquid/proc",
+]
+exclude = ["lyquid-template"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+version = "0.0.1"
+homepage = "https://lyquor.xyz/"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+actix = "0.13.5"
+actix-rt = "2.11"
+alloy-sol-types = { version = "1.5" }
+anyhow = "1.0"
+assert_cmd = "2.2"
+async-trait = "0.1"
+axum = { version = "0.8" }
+barstrainer-client = { path = "barstrainer/client" }
+barstrainer-proto = { path = "barstrainer/proto" }
+barstrainer-server = { path = "barstrainer/server" }
+base64 = "0.22"
+bytes = "1.11"
+clap = { version = "4.5.55" }
+config = { version = "0.15", default-features = false, features = ["toml", "json", "yaml"] }
+const-hex = "1.15"
+derive_more = { version = "2.1", features = ["debug"] }
+duct = "1.1"
+ed25519-dalek = { version = "2.2", default-features = false, features = ["fast", "pkcs8", "pem", "std"] }
+futures = "0.3"
+http = "1.4"
+http-body-util = "0.1"
+hyper = { version = "1.8", features = ["http2", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio", "http2", "client", "server"] }
+instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "aws-lc-rs"] }
+jsonrpsee = { version = "0.26" }
+jsonschema = { version = "0.45", default-features = false }
+k256 = { version = "0.13", default-features = false }
+lazy_static = "1.5"
+lru = "0.16.0"
+lyquid = { path = "lyquid" }
+lyquid-examples = { path = "lyquid-examples" }
+lyquid-fixtures = { path = "lyquid-fixtures" }
+lyquid-proc = { path = "lyquid/proc" }
+lyquor-api = { path = "api" }
+lyquor-cli = { path = "cli" }
+lyquor-crypto = { path = "crypto" }
+lyquor-db = { path = "db" }
+lyquor-eth = { path = "eth" }
+lyquor-image-store = { path = "image-store" }
+lyquor-jsonrpc = { path = "jsonrpc" }
+lyquor-net = { path = "net" }
+lyquor-net-rpc = { path = "net/rpc" }
+lyquor-oci = { path = "oci" }
+lyquor-primitives = { path = "primitives" }
+lyquor-proto = { path = "proto" }
+lyquor-router = { path = "router" }
+lyquor-seq = { path = "sequencer" }
+lyquor-state = { path = "state" }
+lyquor-test = { path = "test" }
+lyquor-test-harness = { path = "test-harness" }
+lyquor-tls = { path = "tls" }
+lyquor-tools = { path = "tools" }
+lyquor-upc = { path = "upc" }
+lyquor-vm = { path = "vm" }
+lyquor-wasm = { path = "wasm" }
+nix = { version = "0.31.1", default-features = false, features = ["signal"] }
+oci-client = { version = "0.16.0", default-features = false, features = ["rustls-tls"] }
+parking_lot = { version = "0.12" }
+paste = "1.0"
+pbjson = "0.9"
+pbjson-build = "0.9"
+proc-macro2 = "1.0.106"
+prost = "0.14"
+prost-build = "0.14"
+prost-types = "0.14"
+protoc-bin-vendored = "3.2"
+quote = "1.0"
+rand = "0.10"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+regex = "1.11.2"
+reqwest = { version = "0.13.1", default-features = false }
+rustls = { version = "0.23", features = ["aws_lc_rs"], default-features = false }
+rustls-pki-types = { version = "1.14" }
+rustls-webpki = { version = "0.103.9", features = ["aws-lc-rs"] }
+schemars = "1.1"
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = "1.0.147"
+sha2 = { version = "0.10", default-features = false }
+syn = "2.0"
+tempfile = { version = "3.27" }
+testcontainers = "0.27.1"
+thiserror = "2.0"
+tokio = { version = "1.47", features = ["full"] }
+tokio-rustls = { version = "0.26" }
+tokio-stream = "0.1.17"
+tokio-util = { version = "0.7", features = ["rt", "time"] }
+tonic = { version = "0.14", features = ["transport", "tls-native-roots"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tower = { version = "0.5" }
+tracing = { version = "0.1" }
+tracing-futures = "0.2.5"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+typed-builder = "0.23"
+wasmparser = "0.245.1"
+x509-parser = "0.18.0"
+
+# These crates run hot during Wasmtime JIT compilation (module lowering, instruction selection,
+# and codegen) at *runtime*, so raising opt-level here gives most of the speedup without
+# sacrificing debuggability of our own application code.
+[profile.dev.package.cranelift-codegen]
+opt-level = 2
+
+[profile.dev.package.wasmtime-environ]
+opt-level = 1
+
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 1
+
+[profile.dev.package.cranelift-isle]
+opt-level = 1

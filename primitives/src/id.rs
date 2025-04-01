@@ -1,0 +1,408 @@
+use std::fmt;
+
+use crate::hex::{self, FromHex};
+use serde::{Deserialize, Serialize};
+use sha2::Digest;
+
+use super::{Address, HashBytes};
+
+/// The ID of a node in the network.
+/// The ID is 35 bytes long, the first 32 bytes are the node's ed25519 public key,
+/// and the following 2 bytes are checksums, the last byte is the version number (0)
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeID(pub [u8; 32], pub [u8; 3]);
+
+impl NodeID {
+    pub fn new(id: [u8; 32]) -> Self {
+        let mut checksum = [0; 3];
+        // Calculate SHA-256 hash of the ID
+        let mut hash = sha2::Sha256::default();
+        hash.update(id);
+        let hash = hash.finalize();
+        // Take the first two bytes of the hash as the checksum
+        checksum[0] = hash[0];
+        checksum[1] = hash[1];
+        checksum[2] = 0; // v0
+        Self(id, checksum)
+    }
+}
+
+impl NodeID {
+    const ALPHABET: base32::Alphabet = base32::Alphabet::Rfc4648Lower { padding: false };
+
+    pub fn as_u64(&self) -> u64 {
+        u64::from_be_bytes(self.0[32 - 8..].try_into().unwrap())
+    }
+
+    pub fn as_dns_label(&self) -> String {
+        // Combine the ID and checksum into a single array
+        let mut id: [u8; 35] = [0; 35];
+        id[..32].copy_from_slice(&self.0);
+        id[32..].copy_from_slice(&self.1);
+        base32::encode(Self::ALPHABET, &id)
+    }
+}
+
+impl From<u64> for NodeID {
+    fn from(x: u64) -> NodeID {
+        let mut id = [0; 32];
+        id[32 - 8..].copy_from_slice(&x.to_be_bytes());
+        NodeID::new(id)
+    }
+}
+
+impl fmt::Display for NodeID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(f, "Node-{}", self.as_dns_label())
+    }
+}
+
+impl fmt::Debug for NodeID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl From<NodeID> for [u8; 32] {
+    fn from(val: NodeID) -> Self {
+        val.0
+    }
+}
+
+impl From<[u8; 32]> for NodeID {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self::new(bytes)
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for NodeID {
+    type Error = IDError;
+
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        if bytes.len() != 32 {
+            return Err(IDError::Length);
+        }
+
+        let mut id = [0; 32];
+        id.copy_from_slice(bytes);
+        Ok(Self::new(id))
+    }
+}
+
+impl FromHex for NodeID {
+    type Error = hex::FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let bytes = <[u8; 32]>::from_hex(hex)?;
+        Ok(Self::new(bytes))
+    }
+}
+
+impl std::str::FromStr for NodeID {
+    type Err = IDError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        const PREFIX: &str = "Node-";
+        if s.len() < PREFIX.len() || &s[..PREFIX.len()] != PREFIX {
+            return Err(IDError::Prefix);
+        }
+        let label = &s[PREFIX.len()..];
+        let bytes = base32::decode(NodeID::ALPHABET, label).ok_or(IDError::Base32)?;
+        if bytes.len() != 35 {
+            return Err(IDError::Length);
+        }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes[..32]);
+        let mut checksum = [0u8; 3];
+        checksum.copy_from_slice(&bytes[32..]);
+        let provided = NodeID(id, checksum);
+        let computed = NodeID::new(id);
+        if provided != computed {
+            return Err(IDError::Checksum);
+        }
+        Ok(computed)
+    }
+}
+
+impl AsRef<[u8]> for NodeID {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Serialize for NodeID {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&self.to_string())
+        } else {
+            (self.0, self.1).serialize(serializer)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeID {
+    fn deserialize<D>(deserializer: D) -> Result<NodeID, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            let s: std::borrow::Cow<'de, str> = Deserialize::deserialize(deserializer)?;
+            s.parse().map_err(|e| serde::de::Error::custom(format!("{e:?}")))
+        } else {
+            let (id, checksum) = <([u8; 32], [u8; 3]) as Deserialize>::deserialize(deserializer)?;
+            Ok(NodeID(id, checksum))
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+pub struct RequiredLyquid(pub LyquidID);
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct LyquidID(pub [u8; 20]);
+
+impl Serialize for LyquidID {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&self.to_string())
+        } else {
+            self.0.serialize(serializer)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LyquidID {
+    fn deserialize<D>(deserializer: D) -> Result<LyquidID, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            let s: std::borrow::Cow<'de, str> = Deserialize::deserialize(deserializer)?;
+            s.parse().map_err(|e| serde::de::Error::custom(format!("{e:?}")))
+        } else {
+            let arr = <[u8; 20] as Deserialize>::deserialize(deserializer)?;
+            Ok(LyquidID(arr))
+        }
+    }
+}
+
+impl From<LyquidID> for [u8; 20] {
+    fn from(id: LyquidID) -> Self {
+        id.0
+    }
+}
+
+impl From<LyquidID> for Address {
+    fn from(id: LyquidID) -> Address {
+        Address(id.0.into())
+    }
+}
+
+impl From<[u8; 20]> for LyquidID {
+    fn from(bytes: [u8; 20]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<&[u8; 20]> for LyquidID {
+    fn from(bytes: &[u8; 20]) -> Self {
+        Self(*bytes)
+    }
+}
+
+impl From<Address> for LyquidID {
+    fn from(addr: Address) -> Self {
+        Self(addr.into())
+    }
+}
+
+impl TryFrom<&[u8]> for LyquidID {
+    type Error = std::array::TryFromSliceError;
+    fn try_from(s: &[u8]) -> Result<LyquidID, Self::Error> {
+        Ok(Self(s.try_into()?))
+    }
+}
+
+impl From<u64> for LyquidID {
+    fn from(x: u64) -> Self {
+        let mut id = [0; 20];
+        id[20 - 8..].copy_from_slice(&x.to_be_bytes());
+        Self(id)
+    }
+}
+
+impl fmt::Display for LyquidID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(f, "Lyquid-{}", cb58::cb58_encode(self.0))
+    }
+}
+
+impl fmt::Debug for LyquidID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl LyquidID {
+    pub fn from_owner_nonce(owner: &Address, nonce: u64) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(owner.as_slice());
+        hasher.update(&nonce.to_be_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+        hash[12..].try_into().unwrap()
+    }
+
+    pub fn readable_short(&self) -> String {
+        let s = self.to_string();
+        format!("{}..{}", &s[..15], &s[s.len() - 8..])
+    }
+}
+
+impl FromHex for LyquidID {
+    type Error = hex::FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        let bytes = <[u8; 20]>::from_hex(hex)?;
+        Ok(Self(bytes))
+    }
+}
+
+#[derive(Debug)]
+pub enum IDError {
+    Prefix,
+    CB58,
+    Base32,
+    Checksum,
+    Length,
+}
+
+impl std::str::FromStr for LyquidID {
+    type Err = IDError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        const PREFIX: &str = "Lyquid-";
+        if s.len() < PREFIX.len() || &s[..PREFIX.len()] != PREFIX {
+            return Err(IDError::Prefix);
+        }
+        let bytes = cb58::cb58_decode(&s[PREFIX.len()..]).ok_or(IDError::CB58)?;
+        Ok(LyquidID(bytes.try_into().map_err(|_| IDError::Length)?))
+    }
+}
+
+impl AsRef<[u8]> for LyquidID {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
+/// The verison number that uniquely identifies (and determines) the state of network variables.
+pub struct LyquidNumber {
+    /// The version number for the Lyquid code image.
+    pub image: u32,
+    /// The version number for the Lyquid network variables.
+    pub var: u32,
+}
+
+impl fmt::Display for LyquidNumber {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "LyquidNumber(image={}, var={})", self.image, self.var)
+    }
+}
+
+impl LyquidNumber {
+    pub const ZERO: Self = LyquidNumber { image: 0, var: 0 };
+}
+
+impl From<u64> for LyquidNumber {
+    fn from(x: u64) -> Self {
+        Self {
+            image: (x >> 32) as u32,
+            var: x as u32,
+        }
+    }
+}
+
+impl From<&LyquidNumber> for u64 {
+    fn from(n: &LyquidNumber) -> u64 {
+        ((n.image as u64) << 32) | n.var as u64
+    }
+}
+
+impl From<LyquidNumber> for u64 {
+    fn from(n: LyquidNumber) -> u64 {
+        (&n).into()
+    }
+}
+
+impl std::str::FromStr for LyquidNumber {
+    type Err = std::num::ParseIntError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let x: u64 = s.parse()?;
+        Ok(x.into())
+    }
+}
+
+pub type SequenceBackendID = HashBytes;
+
+/// Sequence backend ID used in oracle headers.
+/// Equivalent Solidity expression:
+/// `keccak256(abi.encodePacked("lyquor_sequence_backend", uint64(block.chainid), bartender))`
+pub fn sequence_backend_id(chain_id: u64, bartender: Address) -> SequenceBackendID {
+    const PREFIX: &[u8] = b"lyquor_sequence_backend";
+    let mut preimage = Vec::with_capacity(PREFIX.len() + core::mem::size_of::<u64>() + 20);
+    preimage.extend_from_slice(PREFIX);
+    preimage.extend_from_slice(&chain_id.to_be_bytes());
+    preimage.extend_from_slice(bartender.as_ref());
+    crate::alloy_primitives::keccak256(&preimage).0.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hex::FromHex;
+    use ed25519_dalek::SigningKey;
+    use lyquor_test::test;
+
+    #[test]
+    fn test_hex() {
+        let kp = SigningKey::from_bytes(&[42u8; 32]);
+        let pubkey = kp.verifying_key().to_bytes();
+        let id = NodeID::from(pubkey);
+        let hex = hex::encode(pubkey);
+        let decoded_id = NodeID::from_hex(&hex).unwrap();
+        assert_eq!(id, decoded_id);
+        assert_eq!(hex, "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61");
+        assert_eq!(
+            id.to_string(),
+            "Node-df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvq3maaa"
+        );
+        assert_eq!(id.to_string().parse::<NodeID>().unwrap(), id);
+        assert_eq!(
+            id.as_dns_label(),
+            "df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvq3maaa"
+        );
+    }
+
+    #[test]
+    fn test_u64() {
+        for &x in &[0u64, 1u64, 42u64, u64::MAX] {
+            let id = NodeID::from(x);
+            assert_eq!(id.as_u64(), x, "NodeID <-> u64 roundtrip failed for {x}");
+        }
+    }
+
+    #[test]
+    fn test_sequence_backend_id_matches_solidity_encode_packed() {
+        let chain_id = 31337u64;
+        let bartender = "0x1234567890123456789012345678901234567890".parse::<Address>().unwrap();
+        let got: [u8; 32] = sequence_backend_id(chain_id, bartender).into();
+        let expected =
+            <[u8; 32]>::from_hex("b417e31282dce8c6ab0de8213d3260c0b360c3d8df31043689e1b32a1a92be46").unwrap();
+        assert_eq!(got, expected);
+    }
+}
