@@ -1,0 +1,49 @@
+[workspace]
+members = [
+    "primitives",
+    "lyquid",
+    "lyquid/proc",
+]
+exclude = ["lyquid-template"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+version = "0.0.1"
+homepage = "https://lyquor.xyz/"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+bytes = "1.10"
+derive_builder = "0.20"
+futures = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1.6", features = ["http2", "server", "client"] }
+hyper-util = { version = "0.1", features = [
+    "tokio",
+    "http2",
+    "client",
+    "server",
+] }
+lazy_static = "1.5"
+lyquid = { path = "lyquid" }
+lyquid-examples = { path = "lyquid/examples" }
+lyquid-proc = { path = "lyquid/proc" }
+lyquor-db = { path = "db" }
+lyquor-net = { path = "net" }
+lyquor-primitives = { path = "primitives" }
+lyquor-seq = { path = "sequencer" }
+lyquor-state = { path = "state" }
+lyquor-upc = { path = "upc" }
+lyquor-vm = { path = "vm" }
+parking_lot = { version = "0.12", features = ["send_guard"] }
+rand = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+test-log = { version = "0.2", features = ["trace"] }
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["full"] }
+tracing = { version = "0.1", features = ["attributes"] }
+tracing-subscriber = "0.3"
+trait-variant = "0.1"
+serde_json = "1.0.138"

@@ -1,0 +1,9 @@
+[template]
+name = "Lyquid Project"
+description = "Template for a Lyquid smart contract crate"
+version = "0.1.0"
+authors = ["Lyquor Labs, Inc. <founder@lyquor.xyz>"]
+
+[placeholders.description]
+prompt = "Description of your Lyquid"
+default = "\"Hello, World\" example."

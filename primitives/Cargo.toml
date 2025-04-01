@@ -1,0 +1,28 @@
+[package]
+name = "lyquor-primitives"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+homepage = "https://lyquor.xyz/"
+description = "The primitive types for Lyquor platform."
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+alkahest = { version = "0.3.0", features = ["bincoded"] }
+alloy-primitives = { version = "0.8.24", features = [
+    "serde",
+    "map",
+], default-features = false }
+anyhow.workspace = true
+blake3 = "1.8.0"
+bytes = { workspace = true }
+cb58 = "0.0.2"
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[features]
+api = ["serde_json"]
+serde_json = ["dep:serde_json"]

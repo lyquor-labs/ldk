@@ -1,0 +1,36 @@
+[package]
+name = "lyquid"
+version.workspace = true
+edition = "2024"
+license = "Apache-2.0"
+homepage = "https://lyquor.xyz/"
+description = "Lyquid Development Kit (runtime for next-generation chain-guided computation platform)."
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lyquor-primitives = { version = "0.0.1", path = "../primitives" }
+lyquid-proc = { version = "0.0.1", optional = true, path = "./proc" }
+serde = { version = "1.0.203", features = ["derive"], default-features = false }
+talc = { optional = true, version = "4.4.2", features = [
+    "lock_api",
+    "allocator",
+], default-features = false }
+#allocator-api2 = { optional = true, version = "0.2", features = ["serde"] }
+alloy-dyn-abi = { version = "0.8.24" }
+hashbrown = { optional = true, version = "0.15", features = [
+    "nightly",
+], default-features = false }
+ahash = { optional = true, version = "0.8.11", features = [
+    "no-rng",
+], default-features = false }
+string-alloc = { optional = true, version = "0.0.3", features = [
+    "std",
+    "serde",
+] }
+thiserror.workspace = true
+
+[features]
+default = []
+ldk = ["lyquid-proc", "talc", "hashbrown", "ahash", "string-alloc"]
+string-alloc = ["dep:string-alloc"]

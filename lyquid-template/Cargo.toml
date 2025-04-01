@@ -1,0 +1,22 @@
+[package]
+name = "{{project-name}}"
+version = "0.1.0"
+edition = "2024"
+authors = ["{{authors}}"]
+description = "{{description}}"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lyquid = { version = "0.0.1", features = [
+    "ldk",
+], git = "ssh://git@github.com/lyquor-labs/lyquor.git" }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+strip = "debuginfo"
+debug = false
+
+[workspace]

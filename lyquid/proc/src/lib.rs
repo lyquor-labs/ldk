@@ -1,0 +1,188 @@
+#![doc(html_no_source)] // remove it upon open-source
+#![allow(dead_code)]
+
+use proc_macro;
+use proc_macro2::*;
+
+use std::collections::HashMap;
+
+fn token_is_group(tt: TokenTree) -> Option<Group> {
+    match tt {
+        TokenTree::Group(grp) => Some(grp),
+        _ => None,
+    }
+}
+
+fn token_is_literal(tt: TokenTree) -> Option<Literal> {
+    match tt {
+        TokenTree::Literal(l) => Some(l),
+        _ => None,
+    }
+}
+
+fn token_is_ident(tt: TokenTree) -> Option<Ident> {
+    match tt {
+        TokenTree::Ident(id) => Some(id),
+        _ => None,
+    }
+}
+
+fn next_token_is_group(iter: &mut token_stream::IntoIter) -> Option<Group> {
+    iter.next().and_then(token_is_group)
+}
+
+fn next_token_is_ident(iter: &mut token_stream::IntoIter) -> Option<Ident> {
+    iter.next().and_then(token_is_ident)
+}
+
+fn next_token_is_literal(iter: &mut token_stream::IntoIter) -> Option<Literal> {
+    iter.next().and_then(token_is_literal)
+}
+
+#[proc_macro_attribute]
+pub fn prefix_name(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    use quote::ToTokens;
+    let mut tokens = Vec::new();
+    for t in TokenStream::from(attr).into_iter() {
+        let l = match t {
+            TokenTree::Ident(id) => id.to_string(),
+            TokenTree::Literal(l) => {
+                let s: syn::LitStr =
+                    syn::parse(TokenStream::from(TokenTree::from(l)).into()).expect("invalid prefix literal");
+                s.value()
+            }
+            TokenTree::Punct(_) => continue,
+            _ => panic!("invalid prefix token"),
+        };
+        tokens.push(l);
+    }
+    let add_prefix = |ident| -> Ident {
+        syn::Ident::new(
+            &lyquor_primitives::encode_method_name(
+                &tokens[0..tokens.len() - 1].join("_"),
+                &tokens[tokens.len() - 1],
+                ident,
+            ),
+            Span::call_site(),
+        )
+    };
+    match syn::parse_macro_input!(item as syn::Item) {
+        syn::Item::Fn(mut func) => {
+            func.sig.ident = add_prefix(func.sig.ident);
+            func.to_token_stream()
+        }
+        syn::Item::Mod(mut mo) => {
+            mo.ident = add_prefix(mo.ident);
+            mo.to_token_stream()
+        }
+        _ => panic!("unsupported item"),
+    }
+    .into()
+}
+
+#[proc_macro]
+pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let mut toplevel_tokens = TokenStream::from(item).into_iter(); // use proc_macro2 instead of proc_macro as it is more convenient
+    let struct_suffix = next_token_is_ident(&mut toplevel_tokens).expect("expect struct suffix name");
+    let init_func = next_token_is_ident(&mut toplevel_tokens).expect("expect init func name");
+    let categories = next_token_is_group(&mut toplevel_tokens).expect("expect a list of categories");
+    let mut cats = HashMap::new();
+    for token in categories.stream().into_iter() {
+        let grp = token_is_group(token).expect("expect category info");
+        let mut iter = grp.stream().into_iter();
+        let cat_id = next_token_is_ident(&mut iter).expect("expect category identifer");
+        let cat_alloc = next_token_is_ident(&mut iter).expect("expect category allocator");
+        let cat_prefix = next_token_is_ident(&mut iter).expect("expect category prefix");
+        cats.insert(
+            cat_id.to_string(),
+            (cat_alloc, TokenStream::from_iter(iter), cat_prefix),
+        );
+    }
+    let mut struct_fields = HashMap::new(); // maps from categories to a token stream of struct fields
+    let mut struct_inits = HashMap::new(); // maps from categories to a token stream of field initializers
+    let mut var_setup = TokenStream::new();
+    for def in toplevel_tokens {
+        let mut def_iter = token_is_group(def)
+            .expect("expect state variable definition")
+            .stream()
+            .into_iter();
+        let cat = next_token_is_ident(&mut def_iter).expect("expect storage category");
+        let cat_str = cat.to_string();
+        let name = next_token_is_ident(&mut def_iter).expect("expect variable identifer");
+        let name_str = name.to_string();
+        let type_ = def_iter.next().expect("expect variable type");
+        let init = next_token_is_group(&mut def_iter).expect("expect an initializer");
+        let (cat_alloc, cat_value, _) = match cats.get(&cat_str) {
+            Some(v) => v,
+            None => panic!("invalid category {}", cat.to_string()),
+        };
+        var_setup.extend(
+            [quote::quote! {
+                // the pointer (only need to do it once, upon initialization of the instance's
+                // LiteMemory)
+                let ptr: *mut (#type_) = Box::leak(Box::new_in(#init, #cat_alloc));
+                let bytes = (ptr as usize).to_be_bytes();
+                pa.extend(#name_str.as_bytes()).set(#cat_value, &[], &bytes)
+                  .expect("cannot write to low-level state store during LiteMemory initialization");
+            }]
+            .into_iter(),
+        );
+
+        let field_ts = struct_fields
+            .entry(cat_str.clone())
+            .or_insert_with(|| TokenStream::new());
+        field_ts.extend(
+            [quote::quote! {
+                pub #name: &'static mut (#type_),
+            }]
+            .into_iter(),
+        );
+        let init_ts = struct_inits
+            .entry(cat_str.clone())
+            .or_insert_with(|| TokenStream::new());
+        init_ts.extend(
+            [quote::quote! {
+                #name: {
+                    // retrieve the pointer for Box<T>
+                    let bytes = pa.extend(#name_str.as_bytes()).get(#cat_value, &[])?.ok_or(lyquid::LyquidError::Init)?;
+                    let addr = usize::from_be_bytes(bytes.try_into().map_err(|_| lyquid::LyquidError::Init)?);
+                    unsafe { &mut *(addr as *mut (#type_)) }
+                },
+            }]
+            .into_iter(),
+        );
+    }
+    // now we summary up each category and generate output
+    let mut structs = TokenStream::new();
+    for (cat, (_, _, cat_prefix)) in cats.iter() {
+        let field_ts = struct_fields.entry(cat.clone()).or_insert_with(|| TokenStream::new());
+        let init_ts = struct_inits.entry(cat.clone()).or_insert_with(|| TokenStream::new());
+        let sname = quote::format_ident!("{}{}", cat_prefix, struct_suffix);
+        structs.extend(
+            [quote::quote! {
+                pub struct #sname {
+                    #field_ts
+                }
+
+                impl #sname {
+                    pub fn new(pa: &lyquid::runtime::internal::PrefixedAccess<Vec<u8>>) -> Result<Self, lyquid::LyquidError> {
+                        Ok(Self {
+                            #init_ts
+                        })
+                    }
+                }
+            }]
+            .into_iter(),
+        );
+    }
+    quote::quote! {
+        #structs
+
+        #[unsafe(no_mangle)]
+        unsafe fn #init_func() {
+            let pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::VAR_CATALOG_PREFIX));
+            #var_setup
+        }
+    }
+    .into()
+}
