@@ -10,7 +10,7 @@ description = "{{description}}"
 [dependencies]
 lyquid = { version = "0.0.1", features = [
     "ldk",
-], git = "ssh://git@github.com/lyquor-labs/lyquor.git" }
+], git = "ssh://git@github.com/lyquor-labs/ldk.git" }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
