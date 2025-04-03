@@ -1,0 +1,12 @@
+services:
+  node:
+    image: ghcr.io/lyquor-labs/lyquor-node:main-latest
+    ports:
+      - "10087:10087"
+    volumes:
+      - ./lyquor-node:/opt
+  tools:
+    image: ghcr.io/lyquor-labs/lyquor-tools:main-latest
+    volumes:
+      - .:/ldk
+    tty: true
