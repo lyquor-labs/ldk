@@ -7,6 +7,26 @@ services:
       - ./lyquor-node:/opt
   tools:
     image: ghcr.io/lyquor-labs/lyquor-tools:main-latest
+    environment:
+      - LYQUOR_ENDPOINT=ws://node:10087/ws
+    post_start:
+      - command: cargo install cargo-generate
     volumes:
       - .:/ldk
+    healthcheck:
+      test: [ "CMD", "curl", "--data", "", "-f", "http://node:10087/api" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 5s
     tty: true
+  setup-devnet:
+    image: ghcr.io/lyquor-labs/lyquor-tools:main-latest
+    command: /usr/local/bin/setup-devnet -b /ldk/bartender/Cargo.toml
+    environment:
+      - LYQUOR_ENDPOINT=ws://node:10087/ws
+    volumes:
+      - .:/ldk
+    depends_on:
+      tools:
+        condition: service_healthy
