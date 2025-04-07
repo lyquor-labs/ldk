@@ -15,7 +15,7 @@ alloy-primitives = { version = "0.8.24", features = [
     "map",
 ], default-features = false }
 anyhow.workspace = true
-blake3 = "1.8.0"
+blake3 = "1.8.1"
 bytes = { workspace = true }
 cb58 = "0.0.2"
 parking_lot = { workspace = true }
