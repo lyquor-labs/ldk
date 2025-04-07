@@ -23,7 +23,7 @@ gh auth login --scopes read:packages
 3. Configure Git and Docker to use GitHub CLI for authentication:
 ```bash
 gh auth setup-git
-gh auth token | docker login ghcr.io -u USERNAME --password-stdin 
+gh auth token | docker login ghcr.io -u git --password-stdin 
 ```
 
 ## Getting Started
@@ -34,9 +34,9 @@ docker-compose up -d
 ```
 
 This will start:
-- A Lyquid node
+- A Lyquor node (with Anvil)
 - Development tools container
-- Devnet setup service
+- Devnet setup container
 
 ## Development
 
@@ -50,4 +50,9 @@ Development tools are also available in `tools` container, so you can run shaker
 docker compose exec -it tools shaker deploy ./hello/Cargo.toml --input 0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000d48656c6c6f2c20576f726c642100000000000000000000000000000000000000
 ```
 
+Enter the `tools` container shell by
+```bash
+docker exec -it tools bash
+```
 
+Note: use `node:10087` instead of `localhost:10087` inside the container to connect to the node.
