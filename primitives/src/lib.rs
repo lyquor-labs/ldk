@@ -143,9 +143,7 @@ impl fmt::Debug for LyteLog {
 }
 
 pub fn decode_object<T: for<'a> Deserialize<'a>>(raw: &[u8]) -> Option<T> {
-    alkahest::deserialize::<alkahest::Bincode, T>(raw)
-        .ok()
-        .map(|e| e.into())
+    alkahest::deserialize::<alkahest::Bincode, T>(raw).ok()
 }
 
 pub fn encode_object<T: Serialize + ?Sized>(obj: &T) -> Vec<u8> {
@@ -348,11 +346,11 @@ fn test_lazy_bytes_partial_consolidation() {
 
 pub fn encode_method_name<M: fmt::Display>(cat_prefix: &str, group: &str, method: M) -> String {
     let mut output = cat_prefix.to_string();
-    output.push_str("_");
+    output.push('_');
     cb58::bs58::encode(blake3::hash(group.as_bytes()).as_bytes())
         .onto(&mut output)
         .unwrap();
-    output.push_str("_");
+    output.push('_');
     output.push_str(&method.to_string());
     output
 }

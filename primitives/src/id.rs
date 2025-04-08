@@ -22,7 +22,7 @@ impl NodeID {
 
 impl fmt::Display for NodeID {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Node-{}", cb58::cb58_encode(&self.0))
+        write!(f, "Node-{}", cb58::cb58_encode(self.0))
     }
 }
 
@@ -32,9 +32,9 @@ impl fmt::Debug for NodeID {
     }
 }
 
-impl Into<[u8; 32]> for NodeID {
-    fn into(self) -> [u8; 32] {
-        self.0
+impl From<NodeID> for [u8; 32] {
+    fn from(val: NodeID) -> Self {
+        val.0
     }
 }
 
@@ -90,9 +90,9 @@ impl<'de> Deserialize<'de> for LyquidID {
     }
 }
 
-impl Into<[u8; 32]> for LyquidID {
-    fn into(self) -> [u8; 32] {
-        self.0
+impl From<LyquidID> for [u8; 32] {
+    fn from(val: LyquidID) -> Self {
+        val.0
     }
 }
 
@@ -112,7 +112,7 @@ impl From<u64> for LyquidID {
 
 impl fmt::Display for LyquidID {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Lyquid-{}", cb58::cb58_encode(&self.0))
+        write!(f, "Lyquid-{}", cb58::cb58_encode(self.0))
     }
 }
 
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn test_hex() {
         let id = NodeID::from(123456);
-        let hex = hex::encode(&id);
+        let hex = hex::encode(id);
         let decoded_id = NodeID::from_hex(&hex).unwrap();
         assert_eq!(id, decoded_id);
         assert_eq!(hex, "000000000000000000000000000000000000000000000000000000000001e240");
