@@ -17,7 +17,7 @@ talc = { optional = true, version = "4.4.2", features = [
     "allocator",
 ], default-features = false }
 #allocator-api2 = { optional = true, version = "0.2", features = ["serde"] }
-alloy-dyn-abi = { version = "0.8.24" }
+alloy-dyn-abi = { version = "1.0.0" }
 hashbrown = { optional = true, version = "0.15", features = [
     "nightly",
 ], default-features = false }

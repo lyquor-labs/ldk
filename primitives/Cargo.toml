@@ -10,7 +10,7 @@ description = "The primitive types for Lyquor platform."
 
 [dependencies]
 alkahest = { version = "0.3.0", features = ["bincoded"] }
-alloy-primitives = { version = "0.8.24", features = [
+alloy-primitives = { version = "1.0.0", features = [
     "serde",
     "map",
 ], default-features = false }
