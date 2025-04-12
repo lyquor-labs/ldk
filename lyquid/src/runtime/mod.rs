@@ -1,12 +1,15 @@
 pub use std::alloc;
 pub use std::boxed::Box;
+pub use std::sync::Mutex;
 pub use std::vec::Vec;
 pub use string_alloc::format_in;
 
+use allocator::Talck;
 use alloy_dyn_abi::DynSolValue;
-use talc::{ErrOnOom, Span, Talc, Talck};
+use talc::{ErrOnOom, Span, Talc};
 
 pub use super::*;
+mod allocator;
 #[doc(hidden)] pub mod syntax;
 
 const VOLATILE_SEGMENT_SIZE: usize = VOLATILE_MEMSIZE_IN_MB << 20;
@@ -26,19 +29,19 @@ const INSTANCE_HEAP_BASE: usize = INSTANCE_HEADER_BASE + INSTANCE_HEADER_SIZE;
 
 #[repr(C)]
 struct VolatileSegmentHeader {
-    allocator: Talck<parking_lot::RawMutex, ErrOnOom>,
+    allocator: Talck<ErrOnOom>,
 }
 
 #[repr(C)]
 struct ServiceSegmentHeader {
-    allocator: Talck<parking_lot::RawMutex, ErrOnOom>,
+    allocator: Talck<ErrOnOom>,
     /// an empty LyteMemory will mark it as "false".
     initialized: bool,
 }
 
 #[repr(C)]
 struct InstanceSegmentHeader {
-    allocator: Talck<parking_lot::RawMutex, ErrOnOom>,
+    allocator: Talck<ErrOnOom>,
 }
 
 #[inline(always)]
@@ -75,7 +78,8 @@ unsafe impl alloc::GlobalAlloc for VolatileAlloc {
 /// code.
 #[unsafe(no_mangle)]
 fn __lyquid_initialize() -> u32 {
-    match __lyquid_initialize_heap() {
+    initialize_volatile_heap();
+    match initialize_persistent_heap() {
         Some(init) => 0x10 | init,
         None => 0,
     }
@@ -106,13 +110,16 @@ fn __lyquid_volatile_dealloc(base: u32, size: u32, align: u32) {
     }
 }
 
-/// Prepare the heap environment for the execution. Returns `None` upon error. `Some(1)` indicates
-/// the non-volatile heap parts were previously initialized.
+/// Used to force the use of shared memory.
+#[unsafe(no_mangle)]
+pub static FORCE_SHARED_MEMORY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Prepare the volatile heap for the execution.
 #[inline(always)]
-fn __lyquid_initialize_heap() -> Option<u32> {
+fn initialize_volatile_heap() {
     // always initialize the allocator for volatile memory
     let volatile_header = volatile_segment_header();
-    volatile_header.allocator = Talc::new(ErrOnOom).lock();
+    volatile_header.allocator = Talck::new(Talc::new(ErrOnOom));
     unsafe {
         volatile_header
             .allocator
@@ -121,9 +128,14 @@ fn __lyquid_initialize_heap() -> Option<u32> {
                 VOLATILE_HEAP_BASE as *mut u8,
                 VOLATILE_SEGMENT_SIZE - VOLATILE_HEADER_SIZE,
             ))
-            .ok()?;
+            .ok();
     }
+}
 
+/// Prepare the service/instance heap for the execution. Returns `None` upon error. `Some(1)`
+/// indicates they were previously initialized.
+#[inline(always)]
+fn initialize_persistent_heap() -> Option<u32> {
     let service_header = service_segment_header();
     let instance_header = instance_segment_header();
 
@@ -138,8 +150,8 @@ fn __lyquid_initialize_heap() -> Option<u32> {
             INSTANCE_SEGMENT_SIZE - INSTANCE_HEADER_SIZE - 1,
         ); // minus 1 to avoid 32-bit overflow when Span calculcates the higher end of the span
 
-        service_header.allocator = Talc::new(ErrOnOom).lock();
-        instance_header.allocator = Talc::new(ErrOnOom).lock();
+        service_header.allocator = Talck::new(Talc::new(ErrOnOom));
+        instance_header.allocator = Talck::new(Talc::new(ErrOnOom));
         unsafe {
             // otherwise initialize the allocators only once
             service_header.allocator.lock().claim(service_span).ok()?;

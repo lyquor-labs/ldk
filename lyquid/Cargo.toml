@@ -13,7 +13,6 @@ lyquor-primitives = { version = "0.0.1", path = "../primitives" }
 lyquid-proc = { version = "0.0.1", optional = true, path = "./proc" }
 serde = { version = "1.0.203", features = ["derive"], default-features = false }
 talc = { optional = true, version = "4.4.2", features = [
-    "lock_api",
     "allocator",
 ], default-features = false }
 #allocator-api2 = { optional = true, version = "0.2", features = ["serde"] }

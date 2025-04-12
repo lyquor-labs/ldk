@@ -28,7 +28,7 @@ hyper-util = { version = "0.1", features = [
 ] }
 lazy_static = "1.5"
 lyquid = { path = "lyquid" }
-lyquid-examples = { path = "lyquid/examples" }
+lyquid-examples = { path = "lyquid-examples" }
 lyquid-proc = { path = "lyquid/proc" }
 lyquor-db = { path = "db" }
 lyquor-net = { path = "net" }
@@ -37,6 +37,7 @@ lyquor-seq = { path = "sequencer" }
 lyquor-state = { path = "state" }
 lyquor-upc = { path = "upc" }
 lyquor-vm = { path = "vm" }
+lyquor-tools = { path = "tools" }
 parking_lot = { version = "0.12", features = ["send_guard"] }
 rand = "0.9"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
