@@ -111,7 +111,7 @@ fn __lyquid_volatile_dealloc(base: u32, size: u32, align: u32) {
 
 /// Used to force the use of shared memory.
 #[unsafe(no_mangle)]
-pub static FORCE_SHARED_MEMORY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static FORCE_SHARED_MEMORY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Prepare the volatile heap for the execution.
 #[inline(always)]
