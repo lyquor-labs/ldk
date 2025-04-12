@@ -110,12 +110,27 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         let cat_str = cat.to_string();
         let name = next_token_is_ident(&mut def_iter).expect("expect variable identifer");
         let name_str = name.to_string();
-        let type_ = def_iter.next().expect("expect variable type");
-        let init = next_token_is_group(&mut def_iter).expect("expect an initializer");
+        let mut type_ = def_iter.next().expect("expect variable type").into();
+        let mut init = next_token_is_group(&mut def_iter)
+            .expect("expect an initializer")
+            .stream();
         let (cat_alloc, cat_value, _) = match cats.get(&cat_str) {
             Some(v) => v,
             None => panic!("invalid category {}", cat.to_string()),
         };
+
+        let field_ts = struct_fields
+            .entry(cat_str.clone())
+            .or_insert_with(|| TokenStream::new());
+        let init_ts = struct_inits
+            .entry(cat_str.clone())
+            .or_insert_with(|| TokenStream::new());
+
+        if cat == "instance" {
+            init = quote::quote! {lyquid::runtime::RwLock::new(#init)};
+            type_ = quote::quote! {lyquid::runtime::RwLock<#type_>};
+        }
+
         var_setup.extend(
             [quote::quote! {
                 // the pointer (only need to do it once, upon initialization of the instance's
@@ -128,18 +143,13 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
             .into_iter(),
         );
 
-        let field_ts = struct_fields
-            .entry(cat_str.clone())
-            .or_insert_with(|| TokenStream::new());
         field_ts.extend(
             [quote::quote! {
                 pub #name: &'static mut (#type_),
             }]
             .into_iter(),
         );
-        let init_ts = struct_inits
-            .entry(cat_str.clone())
-            .or_insert_with(|| TokenStream::new());
+
         init_ts.extend(
             [quote::quote! {
                 #name: {
