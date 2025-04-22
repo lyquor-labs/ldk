@@ -1,16 +1,35 @@
 use crate::hex::{self, FromHex};
 use serde::{Deserialize, Serialize};
+use sha3::Digest;
 use std::fmt;
 use std::hash;
 
+/// The ID of a node in the network.
+/// The ID is 35 bytes long, the first 32 bytes are the node's ed25519 public key,
+/// and the following 2 bytes are checksums, the last byte is the version number (1)
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct NodeID(pub [u8; 32]);
+pub struct NodeID(pub [u8; 32], pub [u8; 3]);
+
+impl NodeID {
+    pub fn new(id: [u8; 32]) -> Self {
+        let mut checksum = [0; 3];
+        // Calculate SHA3-256 hash of the ID
+        let mut hash = sha3::Sha3_256::default();
+        hash.update(&id);
+        let hash = hash.finalize();
+        // Take the first two bytes of the hash as the checksum
+        checksum[0] = hash[0];
+        checksum[1] = hash[1];
+        checksum[2] = 1;
+        Self(id, checksum)
+    }
+}
 
 impl From<u64> for NodeID {
     fn from(x: u64) -> NodeID {
         let mut id = [0; 32];
         id[32 - 8..].copy_from_slice(&x.to_be_bytes());
-        NodeID(id)
+        NodeID::new(id)
     }
 }
 
@@ -22,7 +41,12 @@ impl NodeID {
 
 impl fmt::Display for NodeID {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Node-{}", cb58::cb58_encode(self.0))
+        static ALPHABET: base32::Alphabet = base32::Alphabet::Rfc4648Lower { padding: false };
+        // Combine the ID and checksum into a single array
+        let mut id = Vec::with_capacity(35);
+        id.extend_from_slice(&self.0);
+        id.extend_from_slice(&self.1);
+        write!(f, "Node-{}", base32::encode(ALPHABET, &id))
     }
 }
 
@@ -40,7 +64,7 @@ impl From<NodeID> for [u8; 32] {
 
 impl From<[u8; 32]> for NodeID {
     fn from(bytes: [u8; 32]) -> Self {
-        Self(bytes)
+        Self::new(bytes)
     }
 }
 
@@ -49,7 +73,7 @@ impl FromHex for NodeID {
 
     fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
         let bytes = <[u8; 32]>::from_hex(hex)?;
-        Ok(Self(bytes))
+        Ok(Self::new(bytes))
     }
 }
 

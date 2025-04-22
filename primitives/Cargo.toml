@@ -15,12 +15,14 @@ alloy-primitives = { version = "1.0.0", features = [
     "map",
 ], default-features = false }
 anyhow.workspace = true
+base32 = "0.5.1"
 blake3 = "1.8.2"
 bytes = { workspace = true }
 cb58 = "0.0.2"
 parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
+sha3 = "0.10.8"
 thiserror = { workspace = true }
 
 [features]
