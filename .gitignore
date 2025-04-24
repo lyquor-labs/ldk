@@ -4,3 +4,5 @@ node_modules
 /docker/dist
 /lyquid_tools_target/
 /lyquid_image_db/
+
+.DS_Store
