@@ -20,7 +20,7 @@ impl NodeID {
         // Take the first two bytes of the hash as the checksum
         checksum[0] = hash[0];
         checksum[1] = hash[1];
-        checksum[2] = 1;
+        checksum[2] = 0; // v0
         Self(id, checksum)
     }
 }
@@ -33,20 +33,35 @@ impl From<u64> for NodeID {
     }
 }
 
+impl From<ed25519_compact::PublicKey> for NodeID {
+    fn from(pk: ed25519_compact::PublicKey) -> Self {
+        NodeID::new(*pk)
+    }
+}
+
 impl NodeID {
+    const ALPHABET: base32::Alphabet = base32::Alphabet::Rfc4648Lower { padding: false };
+
     pub fn as_u64(&self) -> u64 {
         u64::from_be_bytes(self.0[..8].try_into().unwrap())
+    }
+
+    pub fn as_ed25519_public_key(&self) -> ed25519_compact::PublicKey {
+        ed25519_compact::PublicKey::from_slice(&self.0).unwrap()
+    }
+
+    pub fn as_dns_label(&self) -> String {
+        // Combine the ID and checksum into a single array
+        let mut id: [u8; 35] = [0; 35];
+        id[..32].copy_from_slice(&self.0);
+        id[32..].copy_from_slice(&self.1);
+        base32::encode(Self::ALPHABET, &id)
     }
 }
 
 impl fmt::Display for NodeID {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        static ALPHABET: base32::Alphabet = base32::Alphabet::Rfc4648Lower { padding: false };
-        // Combine the ID and checksum into a single array
-        let mut id = Vec::with_capacity(35);
-        id.extend_from_slice(&self.0);
-        id.extend_from_slice(&self.1);
-        write!(f, "Node-{}", base32::encode(ALPHABET, &id))
+        write!(f, "Node-{}", self.as_dns_label())
     }
 }
 
@@ -65,6 +80,20 @@ impl From<NodeID> for [u8; 32] {
 impl From<[u8; 32]> for NodeID {
     fn from(bytes: [u8; 32]) -> Self {
         Self::new(bytes)
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for NodeID {
+    type Error = IDError;
+
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        if bytes.len() != 32 {
+            return Err(IDError::Length);
+        }
+
+        let mut id = [0; 32];
+        id.copy_from_slice(bytes);
+        Ok(Self::new(id))
     }
 }
 
@@ -234,6 +263,7 @@ impl<T: hash::Hash + Eq + Into<[u8; 32]> + From<[u8; 32]> + Clone + Send + Sync>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_compact::KeyPair;
 
     fn check_id32<T: ID32>() {}
 
@@ -245,10 +275,19 @@ mod tests {
 
     #[test]
     fn test_hex() {
-        let id = NodeID::from(123456);
-        let hex = hex::encode(id);
+        let kp = KeyPair::from_seed([42u8; 32].into());
+        let id = NodeID::from(kp.pk);
+        let hex = hex::encode(*kp.pk);
         let decoded_id = NodeID::from_hex(&hex).unwrap();
         assert_eq!(id, decoded_id);
-        assert_eq!(hex, "000000000000000000000000000000000000000000000000000000000001e240");
+        assert_eq!(hex, "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61");
+        assert_eq!(
+            id.to_string(),
+            "Node-df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvqvfyya"
+        );
+        assert_eq!(
+            id.as_dns_label(),
+            "df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvqvfyya"
+        );
     }
 }
