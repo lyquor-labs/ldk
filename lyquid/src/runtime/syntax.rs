@@ -70,17 +70,17 @@
 /// - `origin: Address` – origin of the call  (like `tx.origin` in Solidity)
 /// - `caller: Address` – direct caller (like `msg.sender` in Solidity)
 /// - `input: Bytes` – raw input buffer (decoded values already available via parameters)  
-/// - `service: __lyquid::Mutable<ServiceState>` – access to your `service` state variables
+/// - `service: lyquid::runtime::Mutable<ServiceState>` – access to your `service` state variables
 ///
 /// #### `__lyquid::InstanceContext` (used in `instance` functions):
 ///
 /// - `origin: Address` - this will always be the same as `caller`
 /// - `caller: Address` - external caller
 /// - `input: Bytes`  
-/// - `service: __lyquid::Immutable<ServiceState>` – **read-only view of service state**  
-/// - `instance: __lyquid::Mutable<InstanceState>` – access to `instance` state variables
+/// - `service: lyquid::runtime::Immutable<ServiceState>` – **read-only view of service state**  
+/// - `instance: lyquid::runtime::Mutable<InstanceState>` – access to `instance` state variables
 ///
-/// #### `__lyquid::Mutable` and `__lyquid::Immutable`
+/// #### `lyquid::runtime::Mutable` and `lyquid::runtime::Immutable`
 ///
 /// Internal wrappers that enforce correct mutability constraints in a given execution context.  
 /// Invalid writes (e.g., writing `service` state from an `instance` function) are silently discarded and do not persist.
@@ -126,55 +126,8 @@ macro_rules! state {
                 [(service ServiceAlloc Service StateCategory::Service)
                 (instance InstanceAlloc Instance StateCategory::Instance)] $(($cat $var $type $init))*);
 
-            pub struct Immutable<T>(T);
-
-            impl<T> Immutable<T> {
-                pub fn new(inner: T) -> Self { Self(inner) }
-            }
-
-            impl<T> std::ops::Deref for Immutable<T> {
-                type Target = T;
-                fn deref(&self) -> &T {
-                    &self.0
-                }
-            }
-
-            pub struct Mutable<T>(T);
-
-            impl<T> Mutable<T> {
-                pub fn new(inner: T) -> Self { Self(inner) }
-            }
-
-            impl<T> std::ops::Deref for Mutable<T> {
-                type Target = T;
-                fn deref(&self) -> &T {
-                    &self.0
-                }
-            }
-
-            impl<T> std::ops::DerefMut for Mutable<T> {
-                fn deref_mut(&mut self) -> &mut T {
-                    &mut self.0
-                }
-            }
-
-            /// Read/write the service state variables, which is allowed for service funcs.
-            pub struct ServiceContext {
-                pub origin: Address,
-                pub caller: Address,
-                pub input: Bytes,
-                pub service: Mutable<ServiceState>,
-            }
-
-            /// Read the service state variables, which does not change the service state, and thus
-            /// allowed for instance funcs.
-            pub struct InstanceContext {
-                pub origin: Address,
-                pub caller: Address,
-                pub input: Bytes,
-                pub service: Immutable<ServiceState>,
-                pub instance: Mutable<InstanceState>,
-            }
+            pub type ServiceContext = $crate::runtime::ServiceContextImpl<ServiceState>;
+            pub type InstanceContext = $crate::runtime::InstanceContextImpl<ServiceState, InstanceState>;
         }
     }
 }
@@ -352,13 +305,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($service_funcs)* // append this func to the end of service_funcs
                 $event fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::ServiceContext {
-                        origin: ctx.origin,
-                        caller: ctx.caller,
-                        input: ctx.input,
-                        service: __lyquid::Mutable::new(__lyquid::ServiceState::new(
-                                &PrefixedAccess::new(Vec::from($crate::VAR_CATALOG_PREFIX)))?)
-                    };
+                    let mut $handle = __lyquid::ServiceContext::new(ctx)?;
                     let result = $body; // execute the body of the function
                     drop($handle); // drop the state handle here to ensure the correct lifetime
                                    // for the handle when accessed in $body so the handle is not
@@ -389,15 +336,7 @@ macro_rules! __lyquid_categorize_methods {
                 // see CalleeInput
                 upc_callee fn $fn(id: u64) -> LyquidResult<Vec<NodeID>> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::InstanceContext {
-                        origin: ctx.origin,
-                        caller: ctx.caller,
-                        input: ctx.input,
-                        service: __lyquid::Immutable::new(__lyquid::ServiceState::new(
-                                &PrefixedAccess::new(Vec::from($crate::VAR_CATALOG_PREFIX)))?),
-                        instance: __lyquid::Mutable::new(__lyquid::InstanceState::new(
-                                &PrefixedAccess::new(Vec::from($crate::VAR_CATALOG_PREFIX)))?)
-                    };
+                    let mut $handle = __lyquid::InstanceContext::new(ctx)?;
                     let $id = id;
                     let result = $body;
                     drop($handle);
@@ -416,15 +355,7 @@ macro_rules! __lyquid_categorize_methods {
                 // see RequestInput
                 upc_request fn $fn(from: $crate::NodeID, id: u64, input: Vec<u8>) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::InstanceContext {
-                        origin: ctx.origin,
-                        caller: ctx.caller,
-                        input: ctx.input,
-                        service: __lyquid::Immutable::new(__lyquid::ServiceState::new(
-                                &PrefixedAccess::new(Vec::from($crate::VAR_CATALOG_PREFIX)))?),
-                        instance: __lyquid::Mutable::new(__lyquid::InstanceState::new(
-                                &PrefixedAccess::new(Vec::from($crate::VAR_CATALOG_PREFIX)))?)
-                    };
+                    let mut $handle = __lyquid::InstanceContext::new(ctx)?;
                     let $id = id;
                     let $from = from;
                     let input = $crate::lyquor_primitives::decode_by_fields!(&input, $($name: $type),*).ok_or($crate::LyquidError::LyquorInput)?;
@@ -446,21 +377,13 @@ macro_rules! __lyquid_categorize_methods {
                 // see ResponseInput
                 upc_response fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>) -> LyquidResult<Option<Vec<u8>>> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::InstanceContext {
-                        origin: ctx.origin,
-                        caller: ctx.caller,
-                        input: ctx.input,
-                        service: __lyquid::Immutable::new(__lyquid::ServiceState::new(
-                                &PrefixedAccess::new(Vec::from($crate::VAR_CATALOG_PREFIX)))?),
-                        instance: __lyquid::Mutable::new(__lyquid::InstanceState::new(
-                                &PrefixedAccess::new(Vec::from($crate::VAR_CATALOG_PREFIX)))?)
-                    };
+                    let mut $handle = __lyquid::InstanceContext::new(ctx)?;
                     let $id = id;
                     let $from = from;
                     let $returned = $crate::lyquor_primitives::decode_object::<LyquidResult<$rt>>(&returned).ok_or($crate::LyquidError::LyquorInput)?;
                     let result = $body;
                     drop($handle);
-                    // turn the inner returned user-supplied objec into serialized form so the
+                    // turn the inner returned user-supplied object into serialized form so the
                     // caller can pass it on without knowing the type
                     result.map(|r| r.map(|r| Vec::from(&$crate::lyquor_primitives::encode_object(&r)[..])))
                 }}
@@ -476,15 +399,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($instance_funcs)*
                 $event fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::InstanceContext {
-                        origin: ctx.origin,
-                        caller: ctx.caller,
-                        input: ctx.input,
-                        service: __lyquid::Immutable::new(__lyquid::ServiceState::new(
-                                &PrefixedAccess::new(Vec::from($crate::VAR_CATALOG_PREFIX)))?),
-                        instance: __lyquid::Mutable::new(__lyquid::InstanceState::new(
-                                &PrefixedAccess::new(Vec::from($crate::VAR_CATALOG_PREFIX)))?)
-                    };
+                    let mut $handle = __lyquid::InstanceContext::new(ctx)?;
                     let result = $body;
                     drop($handle);
                     result

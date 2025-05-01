@@ -203,6 +203,12 @@ pub mod internal {
         ((output_len as u64) << 32) | output_base as u64
     }
 
+    pub trait PrefixedAccessible<P: AsRef<[u8]>> {
+        fn new(pa: &PrefixedAccess<P>) -> Result<Self, LyquidError>
+        where
+            Self: Sized;
+    }
+
     /// A low-cost wrapper that applies the same prefix to low-level state access through `lyquor_api`.
     /// Lyquid developer do not need to use this, as it is used by the macro-generated code when a
     /// developer accesses variables. Directly using this low-level interface can interfere with the
@@ -848,5 +854,102 @@ impl<T> std::ops::Deref for Mutex<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+pub struct Immutable<T>(T);
+
+impl<T> Immutable<T> {
+    pub fn new(inner: T) -> Self {
+        Self(inner)
+    }
+}
+
+impl<T> std::ops::Deref for Immutable<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+pub struct Mutable<T>(T);
+
+impl<T> Mutable<T> {
+    pub fn new(inner: T) -> Self {
+        Self(inner)
+    }
+}
+
+impl<T> std::ops::Deref for Mutable<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for Mutable<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+/// Read/write the service state variables, which is allowed for service funcs.
+pub struct ServiceContextImpl<S>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub origin: Address,
+    pub caller: Address,
+    pub input: Bytes,
+    pub service: Mutable<S>,
+}
+
+impl<S> ServiceContextImpl<S>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub fn new(ctx: CallContext) -> LyquidResult<Self> {
+        Ok(Self {
+            origin: ctx.origin,
+            caller: ctx.caller,
+            input: ctx.input,
+            service: Mutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+        })
+    }
+}
+
+/// Read the service state variables, which does not change the service state, and thus
+/// allowed for instance funcs.
+pub struct InstanceContextImpl<S, I>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+    I: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub origin: Address,
+    pub caller: Address,
+    pub input: Bytes,
+    pub service: Immutable<S>,
+    pub instance: Mutable<I>,
+}
+
+impl<S, I> InstanceContextImpl<S, I>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+    I: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub fn new(ctx: CallContext) -> LyquidResult<Self> {
+        Ok(Self {
+            origin: ctx.origin,
+            caller: ctx.caller,
+            input: ctx.input,
+            service: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+            instance: Mutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+        })
     }
 }

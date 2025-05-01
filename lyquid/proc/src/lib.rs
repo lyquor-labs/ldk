@@ -174,8 +174,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
                     #field_ts
                 }
 
-                impl #sname {
-                    pub fn new(pa: &lyquid::runtime::internal::PrefixedAccess<Vec<u8>>) -> Result<Self, lyquid::LyquidError> {
+                impl lyquid::runtime::internal::PrefixedAccessible<Vec<u8>> for #sname {
+                    fn new(pa: &lyquid::runtime::internal::PrefixedAccess<Vec<u8>>) -> Result<Self, lyquid::LyquidError> {
                         Ok(Self {
                             #init_ts
                         })
