@@ -31,7 +31,8 @@ lyquid::method! {
 
     // The off-chain computation below CANNOT be done by Solidity/EVM.
     instance fn greet_me(ctx;) -> LyquidResult<String> {
-        let user = ctx.instance.per_user_count.entry(ctx.caller).or_default();
+        let mut per_user_count = ctx.instance.per_user_count.write();
+        let user = per_user_count.entry(ctx.caller).or_default();
         *user += 1;
         Ok(format!("{} I've greeted {} times to on-chain users, and {} times to you",
             ctx.service.greeting, ctx.service.greet_count, *user))
