@@ -2,18 +2,20 @@
 
 pub extern crate serde;
 
+use std::fmt;
+use std::hash;
+use std::sync::Arc;
+
 pub use alloy_primitives::hex;
 pub use alloy_primitives::{self, Address, B256, U32, U64, U128, U256, address, uint};
 pub use anyhow;
 pub use blake3;
 pub use bytes::{self, Bytes};
 pub use cb58;
+use futures::channel::oneshot;
 pub use parking_lot;
 use parking_lot::Mutex;
 pub use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::hash;
-use std::sync::Arc;
 use thiserror::Error;
 
 #[cfg(feature = "api")] pub mod api;
@@ -22,6 +24,12 @@ pub use id::{ID32, LyquidID, LyquidNumber, NodeID};
 
 pub type Hash = blake3::Hash;
 
+/// Position of a slot in the sequencer's backend.
+///
+/// Typically, a sequencing backend may be a chain that carries Lyquid slots in some of its blocks.
+/// This means the [SlotNumber]s do not necessarily correspond to continuous [ChainPosition] in the sequencing backend.
+pub type ChainPosition = u64;
+
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum LyteCallABI {
     Lyquor,
@@ -29,13 +37,16 @@ pub enum LyteCallABI {
 }
 
 /// Lyquid's call signature.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct LyteCall {
     pub caller: Address,
     pub origin: Address,
     pub method: String,
     pub input: Bytes,
     pub abi: LyteCallABI,
+
+    #[serde(skip)]
+    pub inter_call: InterLyteCall,
 }
 
 impl fmt::Debug for LyteCall {
@@ -49,6 +60,47 @@ impl fmt::Debug for LyteCall {
             hex::encode(&self.input),
             self.abi
         )
+    }
+}
+
+impl PartialEq for LyteCall {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare everything except `call_return`, which can't be trivially compared
+        self.caller == other.caller &&
+            self.origin == other.origin &&
+            self.method == other.method &&
+            self.input == other.input &&
+            self.abi == other.abi
+    }
+}
+impl Eq for LyteCall {}
+
+/// Used by the callee to end the call with a result.
+pub struct InterLyteCall(Option<oneshot::Sender<Vec<u8>>>);
+
+impl Default for InterLyteCall {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl Clone for InterLyteCall {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl InterLyteCall {
+    pub fn new() -> (Self, oneshot::Receiver<Vec<u8>>) {
+        let (tx, rx) = oneshot::channel();
+        let me = Self(Some(tx));
+        (me, rx)
+    }
+
+    pub fn set_result(&mut self, data: Vec<u8>) {
+        if let Some(tx) = self.0.take() {
+            tx.send(data).ok();
+        }
     }
 }
 
@@ -80,6 +132,7 @@ impl LyteEvent {
                 method: "join".into(),
                 input: encode_by_fields_!("crate::serde", node: NodeID).into(),
                 abi: LyteCallABI::Lyquor,
+                inter_call: Default::default(),
             },
         )
     }
@@ -94,6 +147,7 @@ impl LyteEvent {
                 method: "leave".to_string(),
                 input: encode_by_fields_!("crate::serde", node: NodeID).into(),
                 abi: LyteCallABI::Lyquor,
+                inter_call: Default::default(),
             },
         )
     }

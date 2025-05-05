@@ -337,6 +337,7 @@ pub mod lyquor_api {
         whoami() -> (NodeID, LyquidID);
         console_output(output: ConsoleSink, s: String);
         universal_procedural_call(target: LyquidID, method: String, input: Vec<u8>, targets: Option<Vec<NodeID>>) -> Vec<u8>;
+        cross_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Option<Vec<u8>>;
     );
 }
 
@@ -377,6 +378,18 @@ macro_rules! eprintln {
 #[macro_export]
 macro_rules! log {
     ($tag: ident, $v: expr) => {{ lyquor_api::log($crate::LyteLog::new_from_tagged_value(stringify!($tag), $v))? }};
+}
+
+/// Initiate a cross-lyquid call. **Only usable by service functions.**
+#[macro_export]
+macro_rules! cross_lyquid_call {
+    (($service: expr).$method :ident($($var:ident: $type:ty = $val: expr),*)) => {
+        lyquor_api::cross_lyquid_call(
+            $service,
+            stringify!($method).to_string().into(),
+            Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
+        )
+    };
 }
 
 /// Initiate a Universal Procedure Call (UPC). **Only usable by instance functions.**
