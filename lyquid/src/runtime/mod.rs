@@ -654,18 +654,18 @@ impl EthABI for Address {
 
 impl EthABI for LyquidID {
     fn type_string() -> Option<String> {
-        Some("bytes32".into())
+        Some("address".into())
     }
 
     fn decode(val: DynSolValue) -> Option<Self> {
         match val {
-            DynSolValue::FixedBytes(word, 32) => Some(Self(word.0)),
+            DynSolValue::Address(a) => Some(Self(a.0.into())),
             _ => None,
         }
     }
 
     fn encode(self) -> DynSolValue {
-        DynSolValue::FixedBytes(lyquor_primitives::alloy_primitives::FixedBytes::<32>(self.0), 32)
+        DynSolValue::Address(self.0.into())
     }
 }
 

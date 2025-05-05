@@ -20,7 +20,7 @@ use thiserror::Error;
 
 #[cfg(feature = "api")] pub mod api;
 mod id;
-pub use id::{ID32, LyquidID, LyquidNumber, NodeID};
+pub use id::{LyquidID, LyquidNumber, NodeID};
 
 pub type Hash = blake3::Hash;
 

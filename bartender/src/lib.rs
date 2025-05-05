@@ -26,13 +26,10 @@ lyquid::state! {
 
 fn next_lyquid_id(ctx: &mut __lyquid::ServiceContext, owner: Address, contract: Address) -> LyquidID {
     let id = {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(owner.as_slice());
         let nonce = ctx.service.owner_nonce.entry(owner).or_insert(0);
-        hasher.update(&nonce.to_be_bytes());
+        let id = LyquidID::from_owner_nonce(&owner, *nonce);
         *nonce += 1;
-        let hash: [u8; 32] = hasher.finalize().into();
-        hash.into()
+        id
     };
     ctx.service
         .lyquid_registry

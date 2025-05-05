@@ -1,8 +1,10 @@
+use std::fmt;
+
 use crate::hex::{self, FromHex};
 use serde::{Deserialize, Serialize};
 use sha3::Digest;
-use std::fmt;
-use std::hash;
+
+use super::Address;
 
 /// The ID of a node in the network.
 /// The ID is 35 bytes long, the first 32 bytes are the node's ed25519 public key,
@@ -113,7 +115,7 @@ impl AsRef<[u8]> for NodeID {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct LyquidID(pub [u8; 32]);
+pub struct LyquidID(pub [u8; 20]);
 
 impl Serialize for LyquidID {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -137,28 +139,53 @@ impl<'de> Deserialize<'de> for LyquidID {
             let s = <&str as Deserialize>::deserialize(deserializer)?;
             s.parse().map_err(|e| serde::de::Error::custom(format!("{e:?}")))
         } else {
-            let arr = <[u8; 32] as Deserialize>::deserialize(deserializer)?;
+            let arr = <[u8; 20] as Deserialize>::deserialize(deserializer)?;
             Ok(LyquidID(arr))
         }
     }
 }
 
-impl From<LyquidID> for [u8; 32] {
-    fn from(val: LyquidID) -> Self {
-        val.0
+impl From<LyquidID> for [u8; 20] {
+    fn from(id: LyquidID) -> Self {
+        id.0
     }
 }
 
-impl From<[u8; 32]> for LyquidID {
-    fn from(bytes: [u8; 32]) -> Self {
+impl From<LyquidID> for Address {
+    fn from(id: LyquidID) -> Address {
+        Address(id.0.into())
+    }
+}
+
+impl From<[u8; 20]> for LyquidID {
+    fn from(bytes: [u8; 20]) -> Self {
         Self(bytes)
+    }
+}
+
+impl From<&[u8; 20]> for LyquidID {
+    fn from(bytes: &[u8; 20]) -> Self {
+        Self(*bytes)
+    }
+}
+
+impl From<Address> for LyquidID {
+    fn from(addr: Address) -> Self {
+        Self(addr.into())
+    }
+}
+
+impl TryFrom<&[u8]> for LyquidID {
+    type Error = std::array::TryFromSliceError;
+    fn try_from(s: &[u8]) -> Result<LyquidID, Self::Error> {
+        Ok(Self(s.try_into()?))
     }
 }
 
 impl From<u64> for LyquidID {
     fn from(x: u64) -> Self {
-        let mut id = [0; 32];
-        id[32 - 8..].copy_from_slice(&x.to_be_bytes());
+        let mut id = [0; 20];
+        id[20 - 8..].copy_from_slice(&x.to_be_bytes());
         Self(id)
     }
 }
@@ -176,6 +203,14 @@ impl fmt::Debug for LyquidID {
 }
 
 impl LyquidID {
+    pub fn from_owner_nonce(owner: &Address, nonce: u64) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(owner.as_slice());
+        hasher.update(&nonce.to_be_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+        hash[12..].try_into().unwrap()
+    }
+
     pub fn readable_short(&self) -> String {
         let s = self.to_string();
         format!("{}..{}", &s[..15], &s[s.len() - 8..])
@@ -186,7 +221,7 @@ impl FromHex for LyquidID {
     type Error = hex::FromHexError;
 
     fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
-        let bytes = <[u8; 32]>::from_hex(hex)?;
+        let bytes = <[u8; 20]>::from_hex(hex)?;
         Ok(Self(bytes))
     }
 }
@@ -256,22 +291,10 @@ impl From<LyquidNumber> for u64 {
     }
 }
 
-pub trait ID32: hash::Hash + Eq + Into<[u8; 32]> + From<[u8; 32]> + Clone + Send + Sync {}
-
-impl<T: hash::Hash + Eq + Into<[u8; 32]> + From<[u8; 32]> + Clone + Send + Sync> ID32 for T {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_compact::KeyPair;
-
-    fn check_id32<T: ID32>() {}
-
-    #[test]
-    fn test_id32() {
-        check_id32::<NodeID>();
-        check_id32::<LyquidID>();
-    }
 
     #[test]
     fn test_hex() {
