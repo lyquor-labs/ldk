@@ -837,7 +837,7 @@ impl<T> RwLock<T> {
         self.0.read().unwrap()
     }
 
-    pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, T> {
+    pub fn write(&mut self) -> std::sync::RwLockWriteGuard<'_, T> {
         self.0.write().unwrap()
     }
 }
@@ -933,8 +933,35 @@ where
     }
 }
 
-/// Read the service state variables, which does not change the service state, and thus
-/// allowed for instance funcs.
+/// Read-only wrapper for service state variables.
+pub struct ImmutableServiceContextImpl<S>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub origin: Address,
+    pub caller: Address,
+    pub input: Bytes,
+    pub service: Immutable<S>,
+}
+
+impl<S> ImmutableServiceContextImpl<S>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub fn new(ctx: CallContext) -> LyquidResult<Self> {
+        Ok(Self {
+            origin: ctx.origin,
+            caller: ctx.caller,
+            input: ctx.input,
+            service: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+        })
+    }
+}
+
+/// Read/write the instance state variables, which is allowed for instance funcs.
+/// Also allowed to read the service state variables.
 pub struct InstanceContextImpl<S, I>
 where
     S: internal::PrefixedAccessible<Vec<u8>>,
@@ -961,6 +988,39 @@ where
                 crate::VAR_CATALOG_PREFIX,
             )))?),
             instance: Mutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+        })
+    }
+}
+
+/// Read-only wrapper for state variables.
+pub struct ImmutableInstanceContextImpl<S, I>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+    I: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub origin: Address,
+    pub caller: Address,
+    pub input: Bytes,
+    pub service: Immutable<S>,
+    pub instance: Immutable<I>,
+}
+
+impl<S, I> ImmutableInstanceContextImpl<S, I>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+    I: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub fn new(ctx: CallContext) -> LyquidResult<Self> {
+        Ok(Self {
+            origin: ctx.origin,
+            caller: ctx.caller,
+            input: ctx.input,
+            service: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+            instance: Immutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(
                 crate::VAR_CATALOG_PREFIX,
             )))?),
         })

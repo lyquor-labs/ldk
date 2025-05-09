@@ -9,28 +9,28 @@ lyquid::state! {
 }
 
 lyquid::method! {
-    constructor(ctx; greeting: String) {
+    constructor(&mut ctx, greeting: String) {
         *ctx.service.greeting = greeting.into();
     }
 
-    service fn set_greeting(ctx; greeting: String) -> LyquidResult<bool> {
+    service fn set_greeting(&mut ctx, greeting: String) -> LyquidResult<bool> {
         *ctx.service.greeting = greeting.into();
         Ok(true)
     }
 
-    service fn greet(ctx;) -> LyquidResult<bool> {
+    service fn greet(&mut ctx) -> LyquidResult<bool> {
         *ctx.service.greet_count += 1;
         Ok(true)
     }
 
     // This instance function only reads service state, so it's more like a "view" function in Solidity.
-    instance fn get_greeting_message(ctx;) -> LyquidResult<String> {
+    instance fn get_greeting_message(&ctx) -> LyquidResult<String> {
         Ok(format!("{} I've greeted {} times to on-chain users",
             ctx.service.greeting, ctx.service.greet_count))
     }
 
     // The off-chain computation below CANNOT be done by Solidity/EVM.
-    instance fn greet_me(ctx;) -> LyquidResult<String> {
+    instance fn greet_me(&mut ctx) -> LyquidResult<String> {
         let mut per_user_count = ctx.instance.per_user_count.write();
         let user = per_user_count.entry(ctx.caller).or_default();
         *user += 1;
