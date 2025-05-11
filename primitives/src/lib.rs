@@ -2,6 +2,7 @@
 
 pub extern crate serde;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::hash;
 use std::sync::Arc;
@@ -521,14 +522,14 @@ impl<S: KVStore> KVStore for PrefixedKVStore<S> {
 /// `commit`. This creates a tranasprent layer to defer/aggregate the writes into a coarser atomic commit.
 pub struct ShadowKVStore<S: KVStore> {
     inner: S,
-    writes: parking_lot::RwLock<std::collections::HashMap<Key, Option<Value>>>,
+    writes: parking_lot::RwLock<HashMap<Key, Option<Value>>>,
 }
 
 impl<S: KVStore> ShadowKVStore<S> {
     pub fn new(inner: S) -> Self {
         Self {
             inner,
-            writes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            writes: parking_lot::RwLock::new(HashMap::new()),
         }
     }
 }
