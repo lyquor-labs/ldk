@@ -20,7 +20,7 @@ alloy-dyn-abi = { version = "1.0.0" }
 hashbrown = { optional = true, version = "0.15", features = [
     "nightly",
 ], default-features = false }
-ahash = { optional = true, version = "0.8.11", features = [
+ahash = { optional = true, version = "0.8.12", features = [
     "no-rng",
 ], default-features = false }
 string-alloc = { optional = true, version = "0.0.3", features = [
