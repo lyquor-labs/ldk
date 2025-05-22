@@ -23,7 +23,9 @@ lyquid::method! {
         Ok(true)
     }
 
-    // This instance function only reads service state, so it's more like a "view" function in Solidity.
+    // This service function only reads service state (`&ctx`), so it's like a "view" function in
+    // Solidity. You can also write `instance fn` instead, but since we don't use any instance
+    // state here it's good to be conservative, so you can't touch upon instance state accidentally.
     instance fn get_greeting_message(&ctx) -> LyquidResult<String> {
         Ok(format!("{} I've greeted {} times to on-chain users",
             ctx.service.greeting, ctx.service.greet_count))

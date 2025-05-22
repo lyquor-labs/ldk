@@ -39,9 +39,7 @@ fn next_token_is_literal(iter: &mut token_stream::IntoIter) -> Option<Literal> {
     iter.next().and_then(token_is_literal)
 }
 
-#[proc_macro_attribute]
-pub fn prefix_name(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    use quote::ToTokens;
+fn add_prefix(attr: TokenStream, ident: Ident) -> Ident {
     let mut tokens = Vec::new();
     for t in TokenStream::from(attr).into_iter() {
         let l = match t {
@@ -56,28 +54,64 @@ pub fn prefix_name(attr: proc_macro::TokenStream, item: proc_macro::TokenStream)
         };
         tokens.push(l);
     }
-    let add_prefix = |ident| -> Ident {
-        syn::Ident::new(
-            &lyquor_primitives::encode_method_name(
-                &tokens[0..tokens.len() - 1].join("_"),
-                &tokens[tokens.len() - 1],
-                ident,
-            ),
-            Span::call_site(),
-        )
-    };
+    syn::Ident::new(
+        &lyquor_primitives::encode_method_name(
+            &tokens[0..tokens.len() - 1].join("_"),
+            &tokens[tokens.len() - 1],
+            ident,
+        ),
+        Span::call_site(),
+    )
+}
+
+#[proc_macro_attribute]
+pub fn prefix_item(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    use quote::ToTokens;
     match syn::parse_macro_input!(item as syn::Item) {
         syn::Item::Fn(mut func) => {
-            func.sig.ident = add_prefix(func.sig.ident);
+            func.sig.ident = add_prefix(attr.into(), func.sig.ident);
             func.to_token_stream()
         }
         syn::Item::Mod(mut mo) => {
-            mo.ident = add_prefix(mo.ident);
+            mo.ident = add_prefix(attr.into(), mo.ident);
             mo.to_token_stream()
         }
         _ => panic!("unsupported item"),
     }
     .into()
+}
+
+#[proc_macro]
+pub fn prefix_call(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    struct Input {
+        attr: TokenStream,
+        _comma: syn::Token![,],
+        call: syn::Expr,
+    }
+
+    impl syn::parse::Parse for Input {
+        fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+            let content;
+            syn::parenthesized!(content in input);
+            Ok(Self {
+                attr: content.parse()?,
+                _comma: input.parse()?,
+                call: input.parse()?,
+            })
+        }
+    }
+
+    let Input { attr, call, .. } = syn::parse_macro_input!(input as Input);
+
+    if let syn::Expr::Call(mut call) = call {
+        if let syn::Expr::Path(ref mut func_path) = *call.func {
+            if let Some(ident) = func_path.path.get_ident() {
+                func_path.path.segments[0].ident = add_prefix(attr, ident.clone());
+            }
+            return quote::quote!(#call).into();
+        }
+    }
+    panic!("expected a function call");
 }
 
 #[proc_macro]

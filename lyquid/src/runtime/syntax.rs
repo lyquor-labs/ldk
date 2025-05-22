@@ -520,12 +520,33 @@ macro_rules! __lyquid_categorize_methods {
     }
 }
 
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __lyquid_method_alias {
+    ("__lyquid_method_service" $group:ident (false) $fn:ident) => {
+        #[prefix_item("__lyquid_method_instance", "info", $group)]
+        #[unsafe(no_mangle)]
+        fn $fn(base: u32, len: u32, abi: u32) -> u64 {
+            prefix_call!(("__lyquid_method_service", "info", $group), $fn(base, len, abi))
+        }
+
+        #[prefix_item("__lyquid_method_instance", $group)]
+        #[unsafe(no_mangle)]
+        fn $fn(base: u32, len: u32, abi: u32) -> u64 {
+            prefix_call!(("__lyquid_method_service", $group), $fn(base, len, abi))
+        }
+    };
+    ("__lyquid_method_service" $group:ident (true) $fn:ident) => {};
+    ("__lyquid_method_instance" $group:ident (false) $fn:ident) => {};
+    ("__lyquid_method_instance" $group:ident (true) $fn:ident) => {};
+}
+
 /// Transform a user-defined WASM function into a Lyquid function that can be invoked by the host.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_wrap_methods {
-    ($prefix:tt, $group:ident ($mutable:expr) fn $fn:ident($($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*) => {
-        #[$crate::runtime::internal::prefix_name($prefix, $group)]
+    ($prefix:tt, $group:ident ($mutable:ident) fn $fn:ident($($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*) => {
+        #[$crate::runtime::internal::prefix_item($prefix, $group)]
         mod $fn {
             use super::*;
             use $crate::alloy_dyn_abi::{DynSolType, DynSolValue};
@@ -540,7 +561,7 @@ macro_rules! __lyquid_wrap_methods {
                     [$((<$type as EthABI>::type_string(), <$type as EthABI>::is_scalar())),*].into_iter())
             }
 
-            #[prefix_name($prefix, "info", $group)]
+            #[prefix_item($prefix, "info", $group)]
             #[unsafe(no_mangle)]
             fn $fn(base: u32, len: u32, _: u32) -> u64 {
                 let raw = unsafe { HostInput::new(base, len) };
@@ -559,7 +580,7 @@ macro_rules! __lyquid_wrap_methods {
                 })))
             }
 
-            #[prefix_name($prefix, $group)]
+            #[prefix_item($prefix, $group)]
             #[unsafe(no_mangle)]
             fn $fn(base: u32, len: u32, abi: u32) -> u64 {
                 let raw = unsafe { HostInput::new(base, len) };
@@ -613,6 +634,8 @@ macro_rules! __lyquid_wrap_methods {
                 // need to make sure it can be properly deallocated.
                 output_to_host(&output)
             }
+
+            $crate::__lyquid_method_alias!($prefix $group ($mutable) $fn);
         }
 
         $crate::__lyquid_wrap_methods!($prefix, $($rest)*);
