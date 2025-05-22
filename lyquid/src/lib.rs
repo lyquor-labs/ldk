@@ -90,9 +90,14 @@ pub const WASM_CALLSTACK_LIMIT: u32 = 0x100000; // 1M
 pub const WASM_DEFAULT_STACK_BASE: u32 = 0x100000;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FuncEthInfo {
+    pub decl: String,
+    pub canonical: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FuncInfo {
-    pub eth_decl: String,
-    pub eth_canonical: String,
+    pub eth: Option<FuncEthInfo>,
     pub mutable: bool, // &mut ctx or &ctx
 }
 

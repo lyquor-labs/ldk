@@ -569,12 +569,12 @@ macro_rules! __lyquid_wrap_methods {
                 drop(raw);
                 output_to_host(&encode_object(&flag.and_then(|f| {
                     // declaration form (with "memory", "calldata", etc)
-                    let eth_decl = gen_type_string(0x1 + f)?;
+                    let eth_decl = gen_type_string(0x1 + f);
                     // canonical form (good for selector calculation after stripping off whitespaces)
-                    let eth_canonical = gen_type_string(0x0)?;
+                    let eth_canonical = gen_type_string(0x0);
                     Some(FuncInfo {
-                        eth_decl,
-                        eth_canonical,
+                        eth: eth_decl.and_then(|decl|
+                                               eth_canonical.map(|canonical| FuncEthInfo {decl, canonical})),
                         mutable: $mutable,
                     })
                 })))
