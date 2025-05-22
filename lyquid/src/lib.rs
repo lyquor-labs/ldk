@@ -89,9 +89,14 @@ pub const WASM_INSTANCE_METHOD_PREFIX: &str = "__lyquid_method_instance";
 pub const WASM_CALLSTACK_LIMIT: u32 = 0x100000; // 1M
 pub const WASM_DEFAULT_STACK_BASE: u32 = 0x100000;
 
-pub mod upc {
-    //#[cfg(feature = "ldk")] use allocator_api2::vec::Vec;
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FuncInfo {
+    pub eth_decl: String,
+    pub eth_canonical: String,
+    pub mutable: bool, // &mut ctx or &ctx
+}
 
+pub mod upc {
     use super::*;
     use lyquor_primitives::NodeID;
     #[derive(Serialize, Deserialize)]

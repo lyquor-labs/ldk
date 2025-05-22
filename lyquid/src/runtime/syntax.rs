@@ -305,7 +305,7 @@ macro_rules! __lyquid_categorize_methods {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($service_funcs)* // append this func to the end of service_funcs
-                $group fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
+                $group (true) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::ServiceContext::new(ctx)?;
                     let result = $body; // execute the body of the function
@@ -325,7 +325,7 @@ macro_rules! __lyquid_categorize_methods {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($service_funcs)* // append this func to the end of service_funcs
-                $group fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
+                $group (false) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let $handle = __lyquid::ImmutableServiceContext::new(ctx)?;
                     let result = $body; // execute the body of the function
@@ -365,7 +365,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($service_funcs)*},
             {$($instance_funcs)*
                 // see CalleeInput
-                upc_callee fn $fn(id: u64) -> LyquidResult<Vec<NodeID>> {|ctx: CallContext| {
+                upc_callee (true) fn $fn(id: u64) -> LyquidResult<Vec<NodeID>> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::InstanceContext::new(ctx)?;
                     let $id = id;
@@ -384,7 +384,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($service_funcs)*},
             {$($instance_funcs)*
                 // see RequestInput
-                upc_request fn $fn(from: $crate::NodeID, id: u64, input: Vec<u8>) -> LyquidResult<$rt> {|ctx: CallContext| {
+                upc_request (true) fn $fn(from: $crate::NodeID, id: u64, input: Vec<u8>) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::InstanceContext::new(ctx)?;
                     let $id = id;
@@ -406,7 +406,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($service_funcs)*},
             {$($instance_funcs)*
                 // see ResponseInput
-                upc_response fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>) -> LyquidResult<Option<Vec<u8>>> {|ctx: CallContext| {
+                upc_response (true) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>) -> LyquidResult<Option<Vec<u8>>> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::InstanceContext::new(ctx)?;
                     let $id = id;
@@ -429,7 +429,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($rest)*},
             {$($service_funcs)*},
             {$($instance_funcs)*
-                $group fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
+                $group (true) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::InstanceContext::new(ctx)?;
                     let result = $body;
@@ -446,7 +446,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($rest)*},
             {$($service_funcs)*},
             {$($instance_funcs)*
-                $group fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
+                $group (false) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let $handle = __lyquid::ImmutableInstanceContext::new(ctx)?;
                     let result = $body;
@@ -524,7 +524,7 @@ macro_rules! __lyquid_categorize_methods {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_wrap_methods {
-    ($prefix:tt, $group:ident fn $fn:ident($($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*) => {
+    ($prefix:tt, $group:ident ($mutable:expr) fn $fn:ident($($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*) => {
         #[$crate::runtime::internal::prefix_name($prefix, $group)]
         mod $fn {
             use super::*;
@@ -540,13 +540,23 @@ macro_rules! __lyquid_wrap_methods {
                     [$((<$type as EthABI>::type_string(), <$type as EthABI>::is_scalar())),*].into_iter())
             }
 
-            #[prefix_name($prefix, "ethabi", $group)]
+            #[prefix_name($prefix, "info", $group)]
             #[unsafe(no_mangle)]
             fn $fn(base: u32, len: u32, _: u32) -> u64 {
                 let raw = unsafe { HostInput::new(base, len) };
-                let decl: Option<u8> = decode_object(&raw);
+                let flag: Option<u8> = decode_object(&raw);
                 drop(raw);
-                output_to_host(&encode_object(&decl.and_then(gen_type_string)))
+                output_to_host(&encode_object(&flag.and_then(|f| {
+                    // declaration form (with "memory", "calldata", etc)
+                    let eth_decl = gen_type_string(0x1 + f)?;
+                    // canonical form (good for selector calculation after stripping off whitespaces)
+                    let eth_canonical = gen_type_string(0x0)?;
+                    Some(FuncInfo {
+                        eth_decl,
+                        eth_canonical,
+                        mutable: $mutable,
+                    })
+                })))
             }
 
             #[prefix_name($prefix, $group)]
