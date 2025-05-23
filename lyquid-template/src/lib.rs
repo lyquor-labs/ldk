@@ -2,33 +2,33 @@
 use lyquid::runtime::*;
 
 lyquid::state! {
-    service greeting: service::String = service::new_string();
-    service greet_count: u64 = 0;
+    network greeting: network::String = network::new_string();
+    network greet_count: u64 = 0;
     // Off-chain state
     instance per_user_count: instance::HashMap<Address, u64> = instance::new_hashmap();
 }
 
 lyquid::method! {
     constructor(&mut ctx, greeting: String) {
-        *ctx.service.greeting = greeting.into();
+        *ctx.network.greeting = greeting.into();
     }
 
-    service fn set_greeting(&mut ctx, greeting: String) -> LyquidResult<bool> {
-        *ctx.service.greeting = greeting.into();
+    network fn set_greeting(&mut ctx, greeting: String) -> LyquidResult<bool> {
+        *ctx.network.greeting = greeting.into();
         Ok(true)
     }
 
-    service fn greet(&mut ctx) -> LyquidResult<bool> {
-        *ctx.service.greet_count += 1;
+    network fn greet(&mut ctx) -> LyquidResult<bool> {
+        *ctx.network.greet_count += 1;
         Ok(true)
     }
 
-    // This service function only reads service state (`&ctx`), so it's like a "view" function in
+    // This network function only reads network state (`&ctx`), so it's like a "view" function in
     // Solidity. You can also write `instance fn` instead, but since we don't use any instance
     // state here it's good to be conservative, so you can't touch upon instance state accidentally.
     instance fn get_greeting_message(&ctx) -> LyquidResult<String> {
         Ok(format!("{} I've greeted {} times to on-chain users",
-            ctx.service.greeting, ctx.service.greet_count))
+            ctx.network.greeting, ctx.network.greet_count))
     }
 
     // The off-chain computation below CANNOT be done by Solidity/EVM.
@@ -37,6 +37,6 @@ lyquid::method! {
         let user = per_user_count.entry(ctx.caller).or_default();
         *user += 1;
         Ok(format!("{} I've greeted {} times to on-chain users, and {} times to you",
-            ctx.service.greeting, ctx.service.greet_count, *user))
+            ctx.network.greeting, ctx.network.greet_count, *user))
     }
 }

@@ -209,7 +209,7 @@ pub fn encode_object<T: Serialize + ?Sized>(obj: &T) -> Vec<u8> {
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum StateCategory {
-    Service,
+    Network,
     Instance,
 }
 

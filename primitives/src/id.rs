@@ -252,11 +252,11 @@ impl AsRef<[u8]> for LyquidID {
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
-/// The verison number that uniquely identifies (and determines) the state of service variables.
+/// The verison number that uniquely identifies (and determines) the state of network variables.
 pub struct LyquidNumber {
-    /// The version number for the Lyquid service code image.
+    /// The version number for the Lyquid code image.
     pub image: u32,
-    /// The version number for the Lyquid service variables.
+    /// The version number for the Lyquid network variables.
     pub var: u32,
 }
 

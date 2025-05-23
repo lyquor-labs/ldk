@@ -12,18 +12,18 @@ mod allocator;
 #[doc(hidden)] pub mod syntax;
 
 const VOLATILE_SEGMENT_SIZE: usize = VOLATILE_MEMSIZE_IN_MB << 20;
-const SERVICE_SEGMENT_SIZE: usize = SERVICE_MEMSIZE_IN_MB << 20;
+const NETWORK_SEGMENT_SIZE: usize = NETWORK_MEMSIZE_IN_MB << 20;
 const INSTANCE_SEGMENT_SIZE: usize = INSTANCE_MEMSIZE_IN_MB << 20;
 
 const VOLATILE_HEADER_SIZE: usize = core::mem::size_of::<VolatileSegmentHeader>();
-const SERVICE_HEADER_SIZE: usize = core::mem::size_of::<ServiceSegmentHeader>();
+const NETWORK_HEADER_SIZE: usize = core::mem::size_of::<NetworkSegmentHeader>();
 const INSTANCE_HEADER_SIZE: usize = core::mem::size_of::<InstanceSegmentHeader>();
 
 const VOLATILE_HEAP_BASE: usize = LYTEMEM_BASE - VOLATILE_SEGMENT_SIZE;
 const VOLATILE_HEADER_BASE: usize = LYTEMEM_BASE - VOLATILE_HEADER_SIZE;
-const SERVICE_HEADER_BASE: usize = LYTEMEM_BASE;
-const SERVICE_HEAP_BASE: usize = SERVICE_HEADER_BASE + SERVICE_HEADER_SIZE;
-const INSTANCE_HEADER_BASE: usize = LYTEMEM_BASE + SERVICE_SEGMENT_SIZE;
+const NETWORK_HEADER_BASE: usize = LYTEMEM_BASE;
+const NETWORK_HEAP_BASE: usize = NETWORK_HEADER_BASE + NETWORK_HEADER_SIZE;
+const INSTANCE_HEADER_BASE: usize = LYTEMEM_BASE + NETWORK_SEGMENT_SIZE;
 const INSTANCE_HEAP_BASE: usize = INSTANCE_HEADER_BASE + INSTANCE_HEADER_SIZE;
 
 #[repr(C)]
@@ -32,7 +32,7 @@ struct VolatileSegmentHeader {
 }
 
 #[repr(C)]
-struct ServiceSegmentHeader {
+struct NetworkSegmentHeader {
     allocator: Talck<ErrOnOom>,
     /// an empty LyteMemory will mark it as "false".
     initialized: bool,
@@ -49,8 +49,8 @@ fn volatile_segment_header() -> &'static mut VolatileSegmentHeader {
 }
 
 #[inline(always)]
-fn service_segment_header() -> &'static mut ServiceSegmentHeader {
-    unsafe { &mut *(SERVICE_HEADER_BASE as *mut ServiceSegmentHeader) }
+fn network_segment_header() -> &'static mut NetworkSegmentHeader {
+    unsafe { &mut *(NETWORK_HEADER_BASE as *mut NetworkSegmentHeader) }
 }
 
 #[inline(always)]
@@ -86,8 +86,8 @@ fn __lyquid_initialize() -> u32 {
 
 #[unsafe(no_mangle)]
 fn __lyquid_nuke_state() {
-    let service_header = service_segment_header();
-    service_header.initialized = false;
+    let network_header = network_segment_header();
+    network_header.initialized = false;
 }
 
 /// Allocate volatile memory.
@@ -131,32 +131,32 @@ fn initialize_volatile_heap() {
     }
 }
 
-/// Prepare the service/instance heap for the execution. Returns `None` upon error. `Some(1)`
+/// Prepare the network/instance heap for the execution. Returns `None` upon error. `Some(1)`
 /// indicates they were previously initialized.
 #[inline(always)]
 fn initialize_persistent_heap() -> Option<u32> {
-    let service_header = service_segment_header();
+    let network_header = network_segment_header();
     let instance_header = instance_segment_header();
 
-    let ret = if service_header.initialized {
+    let ret = if network_header.initialized {
         // already previously initialized
         0
     } else {
-        let service_span =
-            Span::from_base_size(SERVICE_HEAP_BASE as *mut u8, SERVICE_SEGMENT_SIZE - SERVICE_HEADER_SIZE);
+        let network_span =
+            Span::from_base_size(NETWORK_HEAP_BASE as *mut u8, NETWORK_SEGMENT_SIZE - NETWORK_HEADER_SIZE);
         let instance_span = Span::from_base_size(
             INSTANCE_HEAP_BASE as *mut u8,
             INSTANCE_SEGMENT_SIZE - INSTANCE_HEADER_SIZE - 1,
         ); // minus 1 to avoid 32-bit overflow when Span calculcates the higher end of the span
 
-        service_header.allocator = Talck::new(Talc::new(ErrOnOom));
+        network_header.allocator = Talck::new(Talc::new(ErrOnOom));
         instance_header.allocator = Talck::new(Talc::new(ErrOnOom));
         unsafe {
             // otherwise initialize the allocators only once
-            service_header.allocator.lock().claim(service_span).ok()?;
+            network_header.allocator.lock().claim(network_span).ok()?;
             instance_header.allocator.lock().claim(instance_span).ok()?;
         }
-        service_header.initialized = true;
+        network_header.initialized = true;
         1
     };
     Some(ret)
@@ -374,18 +374,18 @@ macro_rules! eprintln {
 }
 
 /// Log a custom event that has happened. (Similar to Solidity's `emit` event, or `log*`
-/// instruction in EVM.) **Only usable by service functions.**
+/// instruction in EVM.) **Only usable by network functions.**
 #[macro_export]
 macro_rules! log {
     ($tag: ident, $v: expr) => {{ lyquor_api::log($crate::LyteLog::new_from_tagged_value(stringify!($tag), $v))? }};
 }
 
-/// Initiate a cross-lyquid call. **Only usable by service functions.**
+/// Initiate a cross-lyquid call. **Only usable by network functions.**
 #[macro_export]
 macro_rules! cross_lyquid_call {
-    (($service: expr).$method :ident($($var:ident: $type:ty = $val: expr),*)) => {
+    (($network: expr).$method :ident($($var:ident: $type:ty = $val: expr),*)) => {
         lyquor_api::cross_lyquid_call(
-            $service,
+            $network,
             stringify!($method).to_string().into(),
             Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
         )
@@ -395,9 +395,9 @@ macro_rules! cross_lyquid_call {
 /// Initiate a Universal Procedure Call (UPC). **Only usable by instance functions.**
 #[macro_export]
 macro_rules! upc {
-    (($service: expr).$method: ident[$callee:expr]($($var:ident: $type:ty = $val: expr),*) -> ($($ovar:ident: $otype:ty),*)) => {
+    (($network: expr).$method: ident[$callee:expr]($($var:ident: $type:ty = $val: expr),*) -> ($($ovar:ident: $otype:ty),*)) => {
         lyquor_api::universal_procedural_call(
-            $service,
+            $network,
             stringify!($method).to_string().into(),
             Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
             $callee,
@@ -674,7 +674,7 @@ pub type HashMap<K, V, A> = hashbrown::HashMap<K, V, ahash::RandomState, A>;
 pub type HashSet<K, A> = hashbrown::HashSet<K, ahash::RandomState, A>;
 
 pub use instance::Alloc as InstanceAlloc;
-pub use service::Alloc as ServiceAlloc;
+pub use network::Alloc as NetworkAlloc;
 
 macro_rules! gen_container_types {
     ($alloc: tt) => {
@@ -730,11 +730,11 @@ macro_rules! gen_container_types {
     };
 }
 
-/// Format a [service::String] (similar to `format!` but the resulting String is allocated in service state).
+/// Format a [network::String] (similar to `format!` but the resulting String is allocated in network state).
 #[macro_export]
-macro_rules! service_format {
+macro_rules! network_format {
 	($($arg:tt)*) => {{
-		$crate::runtime::format_in!($crate::runtime::ServiceAlloc, $($arg)*)
+		$crate::runtime::format_in!($crate::runtime::NetworkAlloc, $($arg)*)
 	}}
 }
 
@@ -746,8 +746,8 @@ macro_rules! instance_format {
 	}}
 }
 
-/// Service persistent state memory allocator and standard containers.
-pub mod service {
+/// Network persistent state memory allocator and standard containers.
+pub mod network {
     use super::*;
 
     /// Allocator type that Lyquid developer should use when defining a type that needs to make
@@ -755,14 +755,14 @@ pub mod service {
     ///
     /// In most cases, you don't need to use this, because common containers are already
     /// re-exported to make sure they use the proper allocator. You can write somethng like:
-    /// `service::HashMap<Address, service::Vec<u8>>`, which maps from an address to a vector of
+    /// `network::HashMap<Address, network::Vec<u8>>`, which maps from an address to a vector of
     /// bytes (note that you still need to ensure all containers are from the same storage category,
-    /// `service::` in this case).
+    /// `network::` in this case).
     ///
-    /// One should always ensure any customized type for an *service variable*
+    /// One should always ensure any customized type for an *network variable*
     /// is entirely allocated with this allocator, otherwise there could be dangling poiners and
     /// corruption. In short, all data in a category should always directly or indirectly reference
-    /// to those in the *same* category, so it's invalid to write something like `service::Vec<instance::Vec<u8>>`.
+    /// to those in the *same* category, so it's invalid to write something like `network::Vec<instance::Vec<u8>>`.
     ///
     /// For example, `MyContainer<MyOtherContainer<T, Alloc>, Alloc>` describes a customized
     /// container implementation by the developer, where the same [Alloc] is used for all its
@@ -775,11 +775,11 @@ pub mod service {
 
     unsafe impl alloc::Allocator for Alloc {
         fn allocate(&self, layout: alloc::Layout) -> Result<core::ptr::NonNull<[u8]>, alloc::AllocError> {
-            service_segment_header().allocator.allocate(layout)
+            network_segment_header().allocator.allocate(layout)
         }
 
         unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: alloc::Layout) {
-            unsafe { service_segment_header().allocator.deallocate(ptr, layout) }
+            unsafe { network_segment_header().allocator.deallocate(ptr, layout) }
         }
     }
 
@@ -795,14 +795,14 @@ pub mod instance {
     ///
     /// In most cases, you don't need to use this, because common containers are already
     /// re-exported to make sure they use the proper allocator. You can write somethng like:
-    /// `service::HashMap<Address, service::Vec<u8>>`, which maps from an address to a vector of
+    /// `network::HashMap<Address, network::Vec<u8>>`, which maps from an address to a vector of
     /// bytes (note that you still need to ensure all containers are from the same storage category,
-    /// `service::` in this case).
+    /// `network::` in this case).
     ///
     /// One should always ensure any customized type for an *instance variable*
     /// is entirely allocated with this allocator, otherwise there could be dangling poiners and
     /// corruption. In short, all data in a category should always directly or indirectly reference
-    /// to those in the *same* category, so it's invalid to write something like `service::Vec<instance::Vec<u8>>`.
+    /// to those in the *same* category, so it's invalid to write something like `network::Vec<instance::Vec<u8>>`.
     ///
     /// For example, `MyContainer<MyOtherContainer<T, Alloc>, Alloc>` describes a customized
     /// container implementation by the developer, where the same [Alloc] is used for all its
@@ -906,18 +906,18 @@ impl<T> std::ops::DerefMut for Mutable<T> {
     }
 }
 
-/// Read/write the service state variables, which is allowed for service funcs.
-pub struct ServiceContextImpl<S>
+/// Read/write the network state variables, which is allowed for network funcs.
+pub struct NetworkContextImpl<S>
 where
     S: internal::PrefixedAccessible<Vec<u8>>,
 {
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
-    pub service: Mutable<S>,
+    pub network: Mutable<S>,
 }
 
-impl<S> ServiceContextImpl<S>
+impl<S> NetworkContextImpl<S>
 where
     S: internal::PrefixedAccessible<Vec<u8>>,
 {
@@ -926,25 +926,25 @@ where
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            service: Mutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+            network: Mutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
                 crate::VAR_CATALOG_PREFIX,
             )))?),
         })
     }
 }
 
-/// Read-only wrapper for service state variables.
-pub struct ImmutableServiceContextImpl<S>
+/// Read-only wrapper for network state variables.
+pub struct ImmutableNetworkContextImpl<S>
 where
     S: internal::PrefixedAccessible<Vec<u8>>,
 {
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
-    pub service: Immutable<S>,
+    pub network: Immutable<S>,
 }
 
-impl<S> ImmutableServiceContextImpl<S>
+impl<S> ImmutableNetworkContextImpl<S>
 where
     S: internal::PrefixedAccessible<Vec<u8>>,
 {
@@ -953,7 +953,7 @@ where
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            service: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
                 crate::VAR_CATALOG_PREFIX,
             )))?),
         })
@@ -961,7 +961,7 @@ where
 }
 
 /// Read/write the instance state variables, which is allowed for instance funcs.
-/// Also allowed to read the service state variables.
+/// Also allowed to read the network state variables.
 pub struct InstanceContextImpl<S, I>
 where
     S: internal::PrefixedAccessible<Vec<u8>>,
@@ -970,7 +970,7 @@ where
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
-    pub service: Immutable<S>,
+    pub network: Immutable<S>,
     pub instance: Mutable<I>,
 }
 
@@ -984,7 +984,7 @@ where
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            service: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
                 crate::VAR_CATALOG_PREFIX,
             )))?),
             instance: Mutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(
@@ -1003,7 +1003,7 @@ where
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
-    pub service: Immutable<S>,
+    pub network: Immutable<S>,
     pub instance: Immutable<I>,
 }
 
@@ -1017,7 +1017,7 @@ where
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            service: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
                 crate::VAR_CATALOG_PREFIX,
             )))?),
             instance: Immutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(

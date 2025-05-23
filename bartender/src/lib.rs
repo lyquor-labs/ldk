@@ -9,7 +9,7 @@ struct DeployInfo {
 
 struct LyquidMetadata {
     owner: Address,
-    deploy_history: service::Vec<DeployInfo>,
+    deploy_history: network::Vec<DeployInfo>,
 }
 
 #[derive(Serialize)]
@@ -19,34 +19,34 @@ struct LyquidMetadataOutput {
 }
 
 lyquid::state! {
-    service lyquid_registry: service::HashMap<LyquidID, LyquidMetadata> = service::new_hashmap();
-    service owner_nonce: service::HashMap<Address, u64> = service::new_hashmap();
-    service eth_addrs: service::HashMap<Address, LyquidID> = service::new_hashmap();
+    network lyquid_registry: network::HashMap<LyquidID, LyquidMetadata> = network::new_hashmap();
+    network owner_nonce: network::HashMap<Address, u64> = network::new_hashmap();
+    network eth_addrs: network::HashMap<Address, LyquidID> = network::new_hashmap();
 }
 
-fn next_lyquid_id(ctx: &mut __lyquid::ServiceContext, owner: Address, contract: Address) -> LyquidID {
+fn next_lyquid_id(ctx: &mut __lyquid::NetworkContext, owner: Address, contract: Address) -> LyquidID {
     let id = {
-        let nonce = ctx.service.owner_nonce.entry(owner).or_insert(0);
+        let nonce = ctx.network.owner_nonce.entry(owner).or_insert(0);
         let id = LyquidID::from_owner_nonce(&owner, *nonce);
         *nonce += 1;
         id
     };
-    ctx.service
+    ctx.network
         .lyquid_registry
         .entry(id)
         .or_insert_with(|| LyquidMetadata {
             owner,
-            deploy_history: service::new_vec(),
+            deploy_history: network::new_vec(),
         })
         .deploy_history
         .push(DeployInfo { contract });
     id
 }
 
-fn update_eth_addr(ctx: &mut __lyquid::ServiceContext, owner: Address, old: Address, new: Address) -> Option<LyquidID> {
+fn update_eth_addr(ctx: &mut __lyquid::NetworkContext, owner: Address, old: Address, new: Address) -> Option<LyquidID> {
     // otherwise we need to find the existing lyquid
-    let id = *ctx.service.eth_addrs.get(&old)?;
-    let metadata = ctx.service.lyquid_registry.get_mut(&id)?;
+    let id = *ctx.network.eth_addrs.get(&old)?;
+    let metadata = ctx.network.lyquid_registry.get_mut(&id)?;
     if metadata.owner == owner && metadata.deploy_history.last()?.contract == old {
         metadata.deploy_history.push(DeployInfo { contract: new });
         Some(id)
@@ -61,7 +61,7 @@ lyquid::method! {
         // contract is the contract address itself
     }
 
-    service fn register(&mut ctx, superseded: Address) -> LyquidResult<bool> {
+    network fn register(&mut ctx, superseded: Address) -> LyquidResult<bool> {
         let owner = ctx.origin;
         let contract = ctx.caller;
         let id = if superseded == Address::ZERO {
@@ -73,12 +73,12 @@ lyquid::method! {
 
         lyquid::println!("register {id} (owner={owner}, contract={contract})");
         lyquid::log!(Register, &id);
-        ctx.service.eth_addrs.insert(contract, id);
+        ctx.network.eth_addrs.insert(contract, id);
         Ok(true)
     }
 
     instance fn get_lyquid_info(&ctx, id: LyquidID) -> LyquidResult<Option<LyquidMetadataOutput>> {
-        Ok(ctx.service.lyquid_registry.get(&id).map(|d| {
+        Ok(ctx.network.lyquid_registry.get(&id).map(|d| {
             LyquidMetadataOutput {
                 owner: d.owner,
                 deploy_history: d.deploy_history.to_vec(),
@@ -88,7 +88,7 @@ lyquid::method! {
 
     instance fn get_lyquid_deployment_info(&ctx, id: LyquidID, nth: u32) -> LyquidResult<Option<DeployInfo>> {
         let nth = nth as usize;
-        Ok(ctx.service.lyquid_registry.get(&id).and_then(|d| {
+        Ok(ctx.network.lyquid_registry.get(&id).and_then(|d| {
             if nth < d.deploy_history.len() {
                 Some(d.deploy_history[nth].clone())
             } else {
@@ -98,15 +98,15 @@ lyquid::method! {
     }
 
     instance fn get_last_lyquid_deployment_info(&ctx, id: LyquidID) -> LyquidResult<Option<DeployInfo>> {
-        Ok(ctx.service.lyquid_registry.get(&id).and_then(|d| d.deploy_history.last()).cloned())
+        Ok(ctx.network.lyquid_registry.get(&id).and_then(|d| d.deploy_history.last()).cloned())
     }
 
     instance fn get_lyquid_id_by_eth_addr(&ctx, addr: Address) -> LyquidResult<Option<LyquidID>> {
-        Ok(ctx.service.eth_addrs.get(&addr).map(|v| v.clone()))
+        Ok(ctx.network.eth_addrs.get(&addr).map(|v| v.clone()))
     }
 
     instance fn get_eth_addr(&ctx, id: LyquidID, ln_image: u32) -> LyquidResult<Option<Address>> {
-        Ok(ctx.service.lyquid_registry.get(&id).and_then(|e| {
+        Ok(ctx.network.lyquid_registry.get(&id).and_then(|e| {
             if ln_image < 1 {
                 return None
             }
@@ -120,7 +120,7 @@ lyquid::method! {
     }
 
     instance fn get_lyquid_list(&ctx) -> LyquidResult<Vec<LyquidID>> {
-        Ok(ctx.service.lyquid_registry.keys().cloned().collect())
+        Ok(ctx.network.lyquid_registry.keys().cloned().collect())
     }
 
     instance fn eth_abi_test1(&ctx, x: U256, y: Vec<String>, z: [Vec<u64>; 4]) -> LyquidResult<U256> {

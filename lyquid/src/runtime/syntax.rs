@@ -1,4 +1,4 @@
-/// Defines service-level and instance-level persistent state variables for a Lyquid contract.
+/// Defines network-level and instance-level persistent state variables for a Lyquid contract.
 ///
 /// ## Syntax: `lyquid::state!` Macro
 ///
@@ -24,10 +24,10 @@
 ///
 /// ### `<category>`
 ///
-/// - `service`: **global, consensus-driven state variable**, mutated by chain-level transactions.  
-///   All nodes that host the same Lyquid observe the same `service` state version (tracked by [lyquor_primitives::LyquidNumber]).  
-///   Service state is accessible via:
-///   - **read/write** in `service` functions  
+/// - `network`: **global, consensus-driven state variable**, mutated by chain-level transactions.  
+///   All nodes that host the same Lyquid observe the same `network` state version (tracked by [lyquor_primitives::LyquidNumber]).  
+///   Network state is accessible via:
+///   - **read/write** in `network` functions  
 ///   *(Conceptually similar to Solidity's contract-level storage variables)*
 ///   - **read-only** in `instance` functions  
 ///
@@ -37,24 +37,24 @@
 ///
 /// ### `<type>`
 ///
-/// You may define service/instance variables using any primitive types or nested user-defined structs — **as long as they don't include heap references like `Box`, `Rc`, `Arc`, or raw pointers**.
+/// You may define network/instance variables using any primitive types or nested user-defined structs — **as long as they don't include heap references like `Box`, `Rc`, `Arc`, or raw pointers**.
 ///
 /// If your type **does require heap allocation**, you must explicitly use the correct allocator:
 ///
-/// - `service::Allocator` for service variables  
+/// - `network::Allocator` for network variables  
 /// - `instance::Allocator` for instance variables
 ///
 /// This also applies to **nested structures**. For example:
 ///
 /// ```ignore
-/// service::Vec<service::Vec<service::Vec<u64>>>
+/// network::Vec<network::Vec<network::Vec<u64>>>
 /// ```
 ///
 /// All inner allocations must also use the correct allocator category.
 ///
 /// ⚠ **Failure to do so may result in undefined memory access or state corruption.**
 ///
-/// Most of the time, you won't run into this issue — the SDK provides re-exported standard containers like [service::Vec](super::service::Vec), [service::HashMap](super::service::HashMap), [instance::Vec](super::instance::Vec), etc., which handle this automatically.
+/// Most of the time, you won't run into this issue — the SDK provides re-exported standard containers like [network::Vec](super::network::Vec), [network::HashMap](super::network::HashMap), [instance::Vec](super::instance::Vec), etc., which handle this automatically.
 ///
 /// If you're using **third-party data structures**, you must ensure they use the correct allocator throughout the object tree.  
 /// *(Unfortunately, due to limitations in the Rust type system, this cannot be fully automated.)*
@@ -65,25 +65,25 @@
 ///
 /// When using `lyquid::state!`, a module `__lyquid` is generated with the following types:
 ///
-/// #### `__lyquid::ServiceContext` (used in `service` functions):
+/// #### `__lyquid::NetworkContext` (used in `network` functions):
 ///
 /// - `origin: Address` – origin of the call  (like `tx.origin` in Solidity)
 /// - `caller: Address` – direct caller (like `msg.sender` in Solidity)
 /// - `input: Bytes` – raw input buffer (decoded values already available via parameters)  
-/// - `service: lyquid::runtime::Mutable<ServiceState>` – access to your `service` state variables
+/// - `network: lyquid::runtime::Mutable<NetworkState>` – access to your `network` state variables
 ///
 /// #### `__lyquid::InstanceContext` (used in `instance` functions):
 ///
 /// - `origin: Address` - this will always be the same as `caller`
 /// - `caller: Address` - external caller
 /// - `input: Bytes`  
-/// - `service: lyquid::runtime::Immutable<ServiceState>` – **read-only view of service state**  
+/// - `network: lyquid::runtime::Immutable<NetworkState>` – **read-only view of network state**  
 /// - `instance: lyquid::runtime::Mutable<InstanceState>` – access to `instance` state variables
 ///
 /// #### `lyquid::runtime::Mutable` and `lyquid::runtime::Immutable`
 ///
 /// Internal wrappers that enforce correct mutability constraints in a given execution context.  
-/// Invalid writes (e.g., writing `service` state from an `instance` function) are silently discarded and do not persist.
+/// Invalid writes (e.g., writing `network` state from an `instance` function) are silently discarded and do not persist.
 ///
 /// ---
 ///
@@ -91,23 +91,23 @@
 ///
 /// ```ignore
 /// struct MyData {
-///     // A byte vector for service state — must use service::Vec
-///     arr: service::Vec<u8>,
+///     // A byte vector for network state — must use network::Vec
+///     arr: network::Vec<u8>,
 ///     x: u64,
 ///     y: u64,
 /// }
 ///
 /// struct MyNestedData {
 ///     // Nested container must also use the correct allocator
-///     entries: service::Vec<MyData>,
+///     entries: network::Vec<MyData>,
 /// }
 ///
 /// lyquid::state! {
 ///     // A simple global counter
-///     service my_previous_int: u64 = 0;
+///     network my_previous_int: u64 = 0;
 ///
-///     // A complex service-level structure
-///     service complex_data: MyNestedData;
+///     // A complex network-level structure
+///     network complex_data: MyNestedData;
 ///
 ///     // A local instance-level variable (different per node)
 ///     instance local_counter: u64 = 0;
@@ -123,23 +123,23 @@ macro_rules! state {
             internal::setup_lyquid_state_variables!(
                 State
                 __lyquid_initialize_state_variables
-                [(service ServiceAlloc Service StateCategory::Service)
+                [(network NetworkAlloc Network StateCategory::Network)
                 (instance InstanceAlloc Instance StateCategory::Instance)] $(($cat $var $type $init))*);
 
-            pub type ServiceContext = $crate::runtime::ServiceContextImpl<ServiceState>;
-            pub type ImmutableServiceContext = $crate::runtime::ImmutableServiceContextImpl<ServiceState>;
-            pub type InstanceContext = $crate::runtime::InstanceContextImpl<ServiceState, InstanceState>;
-            pub type ImmutableInstanceContext = $crate::runtime::ImmutableInstanceContextImpl<ServiceState, InstanceState>;
+            pub type NetworkContext = $crate::runtime::NetworkContextImpl<NetworkState>;
+            pub type ImmutableNetworkContext = $crate::runtime::ImmutableNetworkContextImpl<NetworkState>;
+            pub type InstanceContext = $crate::runtime::InstanceContextImpl<NetworkState, InstanceState>;
+            pub type ImmutableInstanceContext = $crate::runtime::ImmutableInstanceContextImpl<NetworkState, InstanceState>;
         }
     }
 }
 
-/// Defines service, instance, and UPC methods (functions) for a Lyquid contract.
+/// Defines network, instance, and UPC methods (functions) for a Lyquid contract.
 ///
 /// ## Syntax: `lyquid::method!` Macro
 ///
 /// The `lyquid::method!` macro defines functions within a Lyquid contract.
-/// These methods may execute with service or instance context, and can also include UPC procedures.
+/// These methods may execute with network or instance context, and can also include UPC procedures.
 /// All Lyquid functions should be described with this macro. Unlike [state] macro, you can use it
 /// multiple times as convenient through out your Lyquid crate (in any file, so it's like
 /// "exporting" the public functions for the Lyquid that could be invoked through the platform).
@@ -239,7 +239,7 @@ macro_rules! state {
 ///     // Logic executed by the caller node to aggregate responses.
 ///
 ///     // Notes:
-///     // - This is “client-side” logic, so it **does not access service or instance state**.
+///     // - This is "client-side" logic, so it **does not access network or instance state**.
 ///     // - A temporary, volatile UPC-local context is available for aggregation purposes.
 ///     // - This context is discarded once the UPC call completes or errors.
 /// }
@@ -249,33 +249,33 @@ macro_rules! state {
 ///
 /// #### `<category>`:
 ///
-/// - `service`:
+/// - `network`:
 ///   A **consensus (sequencer) event-driven function** executed deterministically by all nodes hosting the same Lyquid.  
-///   It operates on **service state**, which is shared and versioned across all nodes.
+///   It operates on **network state**, which is shared and versioned across all nodes.
 ///
-///   Service functions can **read and write `service` state**, and their execution is included in the contract's consensus logic. UPC, and other builtins that involve interaction with nondeterminism are not available in service functions.
+///   network functions can **read and write `network` state**, and their execution is included in the contract's consensus logic. UPC, and other builtins that involve interaction with nondeterminism are not available in network functions.
 ///
 /// - `instance`:
 ///   An **external event-driven function**, typically triggered by nondeterministic events such as **UPC calls**, **network messages**, or **timers**.  
 ///   These functions operate on **instance-local state**, which is specific to each node instance.
 ///
-///   Instance functions can **read/write `instance` state**, and **read `service` state**, but they **can not mutate shared `service` state** — to avoid nondeterminism. They can also initiate a UPC call and invoke other bultins that involve nondeterminism.
+///   Instance functions can **read/write `instance` state**, and **read `network` state**, but they **can not mutate shared `network` state** — to avoid nondeterminism. They can also initiate a UPC call and invoke other bultins that involve nondeterminism.
 ///
 /// #### `<context>`:
 ///
 /// The `context` identifier (commonly `ctx`, but you can use your own choice such as `self`)
 /// provides access to runtime state within the function.
 ///
-/// - For `service` functions: the context is typed as `__lyquid::ServiceContext`  
+/// - For `network` functions: the context is typed as `__lyquid::NetworkContext`  
 /// - For `instance` functions: the context is typed as `__lyquid::InstanceContext`
 ///
 /// Typical access patterns:
 /// ```ignore
-/// ctx.service.my_service_state_var
+/// ctx.network.my_network_state_var
 /// ctx.instance.my_instance_state_var
 /// ```
 ///
-/// See [state] for more information on how service and instance states are defined and accessed.
+/// See [state] for more information on how network and instance states are defined and accessed.
 ///
 /// #### Special Notes on UPC Functions:
 ///
@@ -299,15 +299,15 @@ macro_rules! method {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_categorize_methods {
-    ({service($group:ident) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
-     {$($service_funcs:tt)*},
+    ({network($group:ident) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+     {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
-            {$($service_funcs)* // append this func to the end of service_funcs
+            {$($network_funcs)* // append this func to the end of network_funcs
                 $group (true) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::ServiceContext::new(ctx)?;
+                    let mut $handle = __lyquid::NetworkContext::new(ctx)?;
                     let result = $body; // execute the body of the function
                     drop($handle); // drop the state handle here to ensure the correct lifetime
                                    // for the handle when accessed in $body so the handle is not
@@ -319,15 +319,15 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
 
-    ({service($group:ident) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
-     {$($service_funcs:tt)*},
+    ({network($group:ident) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+     {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
-            {$($service_funcs)* // append this func to the end of service_funcs
+            {$($network_funcs)* // append this func to the end of network_funcs
                 $group (false) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let $handle = __lyquid::ImmutableServiceContext::new(ctx)?;
+                    let $handle = __lyquid::ImmutableNetworkContext::new(ctx)?;
                     let result = $body; // execute the body of the function
                     drop($handle); // drop the state handle here to ensure the correct lifetime
                                    // for the handle when accessed in $body so the handle is not
@@ -339,30 +339,30 @@ macro_rules! __lyquid_categorize_methods {
         );
    };
 
-    // Service function syntax sugar
-    ({service fn $($rest:tt)*},
-     {$($service_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({service(main) fn $($rest)*}, {$($service_funcs)*}, {$($instance_funcs)*}); };
+    // Network function syntax sugar
+    ({network fn $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({network(main) fn $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
-    ({service($group:ident) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
-     {$($service_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({service($group) fn $fn(&mut $handle,) $($rest)*}, {$($service_funcs)*}, {$($instance_funcs)*}); };
+    ({network($group:ident) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({network($group) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
-    ({service($group:ident) fn $fn:ident(&$handle:ident) $($rest:tt)*},
-     {$($service_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({service($group) fn $fn(&$handle,) $($rest)*}, {$($service_funcs)*}, {$($instance_funcs)*}); };
+    ({network($group:ident) fn $fn:ident(&$handle:ident) $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({network($group) fn $fn(&$handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
     ({constructor($($args:tt)*) $body:block $($rest:tt)*},
-     {$($service_funcs:tt)*},
+     {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({
-        service(main) fn __lyquid_constructor($($args)*) -> LyquidResult<bool> {$body; Ok(true)} $($rest)*}, {$($service_funcs)*}, {$($instance_funcs)*}); };
+        network(main) fn __lyquid_constructor($($args)*) -> LyquidResult<bool> {$body; Ok(true)} $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
     ({instance(upc_callee) fn $fn:ident($handle:ident, $id:ident) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
-     {$($service_funcs:tt)*},
+     {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*},
-            {$($service_funcs)*},
+            {$($network_funcs)*},
             {$($instance_funcs)*
                 // see CalleeInput
                 upc_callee (true) fn $fn(id: u64) -> LyquidResult<Vec<NodeID>> {|ctx: CallContext| {
@@ -377,11 +377,11 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
     ({instance(upc_request) fn $fn:ident($handle:ident, $id:ident, $from:ident; $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
-     {$($service_funcs:tt)*},
+     {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*},
-            {$($service_funcs)*},
+            {$($network_funcs)*},
             {$($instance_funcs)*
                 // see RequestInput
                 upc_request (true) fn $fn(from: $crate::NodeID, id: u64, input: Vec<u8>) -> LyquidResult<$rt> {|ctx: CallContext| {
@@ -399,11 +399,11 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
     ({instance(upc_response) fn $fn:ident($handle:ident, $id:ident, $from:ident; $returned:ident: LyquidResult<$rt:ty>) -> LyquidResult<Option<$rt_:ty>> $body:block $($rest:tt)*},
-     {$($service_funcs:tt)*},
+     {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*},
-            {$($service_funcs)*},
+            {$($network_funcs)*},
             {$($instance_funcs)*
                 // see ResponseInput
                 upc_response (true) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>) -> LyquidResult<Option<Vec<u8>>> {|ctx: CallContext| {
@@ -423,11 +423,11 @@ macro_rules! __lyquid_categorize_methods {
     };
 
     ({instance($group:ident) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
-     {$($service_funcs:tt)*},
+     {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*},
-            {$($service_funcs)*},
+            {$($network_funcs)*},
             {$($instance_funcs)*
                 $group (true) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
@@ -440,11 +440,11 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
     ({instance($group:ident) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
-     {$($service_funcs:tt)*},
+     {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*},
-            {$($service_funcs)*},
+            {$($network_funcs)*},
             {$($instance_funcs)*
                 $group (false) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
@@ -457,65 +457,65 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
     ({instance($group:ident) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
-     {$($service_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) fn $fn(&mut $handle,) $($rest)*}, {$($service_funcs)*}, {$($instance_funcs)*}); };
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
     ({instance($group:ident) fn $fn:ident(&$handle:ident) $($rest:tt)*},
-     {$($service_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) fn $fn(&$handle,) $($rest)*}, {$($service_funcs)*}, {$($instance_funcs)*}); };
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) fn $fn(&$handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
     // instance function syntax sugar
     ({instance $($rest:tt)*},
-     {$($service_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) $($rest)*}, {$($service_funcs)*}, {$($instance_funcs)*}); };
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
     // UPC implementation syntax sugar
     ({upc $fn:ident($handle:ident, $id:ident, $from:ident; $($name:ident: $type:ty),*) -> $result:ident: LyquidResult<$rt:ty> { callee $method_body:block $($upc_body_rest:tt)* } $($rest:tt)*},
-    {$($service_funcs:tt)*},
+    {$($network_funcs:tt)*},
     {$($instance_funcs:tt)*}) => {
        $crate::__lyquid_categorize_methods!(
            {$($rest)*
                 instance(upc_callee) fn $fn($handle, $id) -> LyquidResult<Vec<NodeID>> $method_body
                 upc $fn($handle, $id, $from; $($name: $type),*) -> $result: LyquidResult<$rt> { $($upc_body_rest)* }
            },
-           {$($service_funcs)*},
+           {$($network_funcs)*},
            {$($instance_funcs)*}
        );
     };
     ({upc $fn:ident($handle:ident, $id:ident, $from:ident; $($name:ident: $type:ty),*) -> $result:ident: LyquidResult<$rt:ty> { request $method_body:block $($upc_body_rest:tt)* } $($rest:tt)*},
-    {$($service_funcs:tt)*},
+    {$($network_funcs:tt)*},
     {$($instance_funcs:tt)*}) => {
        $crate::__lyquid_categorize_methods!(
            {$($rest)*
                 instance(upc_request) fn $fn($handle, $id, $from; $($name: $type),*) -> LyquidResult<$rt> $method_body
                 upc $fn($handle, $id, $from; $($name: $type),*) -> $result: LyquidResult<$rt> { $($upc_body_rest)* }
            },
-           {$($service_funcs)*},
+           {$($network_funcs)*},
            {$($instance_funcs)*}
        );
     };
     ({upc $fn:ident($handle:ident, $id:ident, $from:ident; $($name:ident: $type:ty),*) -> $result:ident: LyquidResult<$rt:ty> { response $method_body:block $($upc_body_rest:tt)* } $($rest:tt)*},
-    {$($service_funcs:tt)*},
+    {$($network_funcs:tt)*},
     {$($instance_funcs:tt)*}) => {
        $crate::__lyquid_categorize_methods!(
            {$($rest)*
                 instance(upc_response) fn $fn($handle, $id, $from; $result: LyquidResult<$rt>) -> LyquidResult<Option<$rt>> $method_body
                 upc $fn($handle, $id, $from; $($name: $type),*) -> $result: LyquidResult<$rt> { $($upc_body_rest)* }
            },
-           {$($service_funcs)*},
+           {$($network_funcs)*},
            {$($instance_funcs)*}
        );
     };
     ({upc $fn:ident($handle:ident, $id:ident, $from:ident; $($name:ident: $type:ty),*) -> $result:ident: LyquidResult<$rt:ty> {} $($rest:tt)*},
-    {$($service_funcs:tt)*},
+    {$($network_funcs:tt)*},
     {$($instance_funcs:tt)*}) => {
        $crate::__lyquid_categorize_methods!(
            {$($rest)*},
-           {$($service_funcs)*},
+           {$($network_funcs)*},
            {$($instance_funcs)*}
        );
     };
-    ({}, {$($service_funcs:tt)*}, {$($instance_funcs:tt)*}) => {
-        $crate::__lyquid_wrap_methods!("__lyquid_method_service", $($service_funcs)*);
+    ({}, {$($network_funcs:tt)*}, {$($instance_funcs:tt)*}) => {
+        $crate::__lyquid_wrap_methods!("__lyquid_method_network", $($network_funcs)*);
         $crate::__lyquid_wrap_methods!("__lyquid_method_instance", $($instance_funcs)*);
     }
 }
@@ -523,20 +523,20 @@ macro_rules! __lyquid_categorize_methods {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_method_alias {
-    ("__lyquid_method_service" $group:ident (false) $fn:ident) => {
+    ("__lyquid_method_network" $group:ident (false) $fn:ident) => {
         #[prefix_item("__lyquid_method_instance", "info", $group)]
         #[unsafe(no_mangle)]
         fn $fn(base: u32, len: u32, abi: u32) -> u64 {
-            prefix_call!(("__lyquid_method_service", "info", $group), $fn(base, len, abi))
+            prefix_call!(("__lyquid_method_network", "info", $group), $fn(base, len, abi))
         }
 
         #[prefix_item("__lyquid_method_instance", $group)]
         #[unsafe(no_mangle)]
         fn $fn(base: u32, len: u32, abi: u32) -> u64 {
-            prefix_call!(("__lyquid_method_service", $group), $fn(base, len, abi))
+            prefix_call!(("__lyquid_method_network", $group), $fn(base, len, abi))
         }
     };
-    ("__lyquid_method_service" $group:ident (true) $fn:ident) => {};
+    ("__lyquid_method_network" $group:ident (true) $fn:ident) => {};
     ("__lyquid_method_instance" $group:ident (false) $fn:ident) => {};
     ("__lyquid_method_instance" $group:ident (true) $fn:ident) => {};
 }

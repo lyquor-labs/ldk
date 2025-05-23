@@ -60,12 +60,12 @@ pub type LyquidResult<T> = Result<T, LyquidError>;
 pub const LYTESTACK_BASE: usize = 0x30000000;
 /// The base address for LyteMemory.
 /// Volatile's upper address is below next to this address. Everything from this base to
-/// [SERVICE_MEMSIZE_IN_MB] and [INSTANCE_MEMSIZE_IN_MB] are persistent.
+/// [NETWORK_MEMSIZE_IN_MB] and [INSTANCE_MEMSIZE_IN_MB] are persistent.
 pub const LYTEMEM_BASE: usize = 0x80000000;
 /// Total size of the memory in megabytes.
 pub const LYTEMEM_SIZE_IN_MB: usize = 4096; // 4GB (WASM limit)
 /// Size cap for the addressable LyteMemory that is globally viewed (and persisted) by all Lyquid instances.
-pub const SERVICE_MEMSIZE_IN_MB: usize = 1024; // 1GB
+pub const NETWORK_MEMSIZE_IN_MB: usize = 1024; // 1GB
 /// Size cap for the addressable LyteMemory that is locally viewed (and persisted) for one Lyquid instance.
 pub const INSTANCE_MEMSIZE_IN_MB: usize = 1024; // 1GB
 /// Size cap for the volatile memory that can be used by each function call.
@@ -83,7 +83,7 @@ pub const WASM_NUKE_STATE_FUNC: &str = "__lyquid_nuke_state";
 pub const WASM_VOLATILE_ALLOC_FUNC: &str = "__lyquid_volatile_alloc";
 pub const WASM_VOLATILE_DEALLOC_FUNC: &str = "__lyquid_volatile_dealloc";
 pub const WASM_STACK_POINTER: &str = "__stack_pointer";
-pub const WASM_SERVICE_METHOD_PREFIX: &str = "__lyquid_method_service";
+pub const WASM_NETWORK_METHOD_PREFIX: &str = "__lyquid_method_network";
 pub const WASM_INSTANCE_METHOD_PREFIX: &str = "__lyquid_method_instance";
 /// The maximum size of a stack per call.
 pub const WASM_CALLSTACK_LIMIT: u32 = 0x100000; // 1M
