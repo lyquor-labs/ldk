@@ -130,6 +130,9 @@ macro_rules! state {
             pub type ImmutableNetworkContext = $crate::runtime::ImmutableNetworkContextImpl<NetworkState>;
             pub type InstanceContext = $crate::runtime::InstanceContextImpl<NetworkState, InstanceState>;
             pub type ImmutableInstanceContext = $crate::runtime::ImmutableInstanceContextImpl<NetworkState, InstanceState>;
+            pub type UpcCalleeContext = $crate::runtime::UpcCalleeContextImpl<NetworkState>;
+            pub type UpcRequestContext = $crate::runtime::UpcRequestContextImpl<NetworkState, InstanceState>;
+            pub type UpcResponseContext = $crate::runtime::UpcResponseContextImpl<NetworkState, InstanceState>;
         }
     }
 }
@@ -153,7 +156,7 @@ macro_rules! state {
 ///
 /// ```ignore
 /// lyquid::method! {
-///     constructor(<context>; <parameter_list>) {
+///     constructor(&mut <context>, <parameter_list>) {
 ///         // Constructor body
 ///     }
 /// }
@@ -164,7 +167,7 @@ macro_rules! state {
 /// #### Abbreviated Form (defaults to `"main"` group):
 /// ```ignore
 /// lyquid::method! {
-///     <category> fn <method_name>(<context>; <parameter_list>) -> LyquidResult<ReturnType> {
+///     <category> fn <method_name>(&mut <context>, <parameter_list>) -> LyquidResult<ReturnType> {
 ///         // Function body
 ///     }
 /// }
@@ -174,7 +177,7 @@ macro_rules! state {
 ///
 /// ```ignore
 /// lyquid::method! {
-///     <category>(<group>) fn <method_name>(<context>; <parameter_list>) -> LyquidResult<ReturnType> {
+///     <category>(<group>) fn <method_name>(&mut <context>, <parameter_list>) -> LyquidResult<ReturnType> {
 ///         // Function body
 ///     }
 /// }
@@ -182,40 +185,13 @@ macro_rules! state {
 ///
 /// ### UPC Definitions
 ///
-/// #### Ergonomic UPC Form (syntactic sugar; expands to full forms below):
-///
-/// ```ignore
-/// lyquid::method! {
-///     upc <method_name>(<context>, <id>, <from>; <UPC_parameter_list>) -> ResultType: LyquidResult<ReturnType> {
-///
-///         callee {
-///             // Returns a list of callees: LyquidResult<Vec<NodeID>>
-///         }
-///
-///         request {
-///             // Logic executed by each callee node when handling the UPC call.
-///             // Returns: LyquidResult<ReturnType>
-///         }
-///
-///         response {
-///             // Aggregation logic executed by the calling node.
-///             // Returns: Option<ReturnType>
-///             //
-///             // - Return `None` to indicate waiting for more responses.
-///             // - Return `Some(value)` to finalize aggregation and terminate the UPC call.
-///         }
-///     }
-/// }
-/// ```
-///
-/// ### UPC (Full Form)
 ///
 /// These expand the UPC lifecycle into three separate instance functions using dedicated groups.
 ///
 /// #### 1. **UPC Callee Selection**
 ///
 /// ```ignore
-/// instance(upc_callee) fn <method_name>(<context>, <id>; <UPC_parameter_list>) -> LyquidResult<Vec<NodeID>> {
+/// upc(callee) fn <method_name>(&<context>) -> LyquidResult<Vec<NodeID>> {
 ///     // Returns a list of NodeIDs representing the nodes to be invoked in this UPC instance.
 /// }
 /// ```
@@ -223,23 +199,22 @@ macro_rules! state {
 /// #### 2. **UPC Request Handler**
 ///
 /// ```ignore
-/// instance(upc_request) fn <method_name>(<context>, <id>, <from>; <UPC_parameter_list>) -> LyquidResult<ReturnType> {
+/// upc(request) fn <method_name>(&mut <context>, <UPC_parameter_list>) -> LyquidResult<ReturnType> {
 ///     // Executed by each callee node to perform the UPC-requested computation.
 ///
 ///     // Parameters:
-///     // - `id`: Request ID (u64)
-///     // - `from`: Caller's NodeID
+///     // - `<context>.id`: Request ID (u64)
+///     // - `<context>.from`: Caller's NodeID
 /// }
 /// ```
 ///
 /// #### 3. **UPC Aggregator (Response Handler)**
 ///
 /// ```ignore
-/// instance(upc_response) fn <method_name>(<context>, <id>, <from>; response: LyquidResult<ReturnType>) -> LyquidResult<ReturnType> {
+/// upc(response) fn <method_name>(&<context>, response: LyquidResult<ReturnType>) -> LyquidResult<ReturnType> {
 ///     // Logic executed by the caller node to aggregate responses.
 ///
 ///     // Notes:
-///     // - This is "client-side" logic, so it **does not access network or instance state**.
 ///     // - A temporary, volatile UPC-local context is available for aggregation purposes.
 ///     // - This context is discarded once the UPC call completes or errors.
 /// }
@@ -357,7 +332,7 @@ macro_rules! __lyquid_categorize_methods {
      {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({
         network(main) fn __lyquid_constructor($($args)*) -> LyquidResult<bool> {$body; Ok(true)} $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
-    ({instance(upc_callee) fn $fn:ident($handle:ident, $id:ident) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
+    ({upc(callee) fn $fn:ident(&$handle:ident) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
@@ -367,8 +342,7 @@ macro_rules! __lyquid_categorize_methods {
                 // see CalleeInput
                 upc_callee (true) fn $fn(id: u64) -> LyquidResult<Vec<NodeID>> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::InstanceContext::new(ctx)?;
-                    let $id = id;
+                    let mut $handle = __lyquid::UpcCalleeContext::new(ctx, id)?;
                     let result = $body;
                     drop($handle);
                     result
@@ -376,7 +350,8 @@ macro_rules! __lyquid_categorize_methods {
             }
         );
     };
-    ({instance(upc_request) fn $fn:ident($handle:ident, $id:ident, $from:ident; $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+
+    ({upc(request) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
@@ -386,9 +361,7 @@ macro_rules! __lyquid_categorize_methods {
                 // see RequestInput
                 upc_request (true) fn $fn(from: $crate::NodeID, id: u64, input: Vec<u8>) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::InstanceContext::new(ctx)?;
-                    let $id = id;
-                    let $from = from;
+                    let mut $handle = __lyquid::UpcRequestContext::new(ctx, from, id)?;
                     let input = $crate::lyquor_primitives::decode_by_fields!(&input, $($name: $type),*).ok_or($crate::LyquidError::LyquorInput)?;
                     $(let $name = input.$name;)*
                     let result = $body;
@@ -398,7 +371,19 @@ macro_rules! __lyquid_categorize_methods {
             }
         );
     };
-    ({instance(upc_response) fn $fn:ident($handle:ident, $id:ident, $from:ident; $returned:ident: LyquidResult<$rt:ty>) -> LyquidResult<Option<$rt_:ty>> $body:block $($rest:tt)*},
+    ({upc(request) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+
+    // TODO: handle immutable UPC request correctly
+    ({upc(request) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request) fn $fn(&mut $handle, $($name: $type),*) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+    ({upc(request) fn $fn:ident(&$handle:ident) $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+
+    ({upc(response) fn $fn:ident(&$handle:ident, $returned:ident: LyquidResult<$rt:ty>) -> LyquidResult<Option<$rt_:ty>> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
@@ -408,9 +393,7 @@ macro_rules! __lyquid_categorize_methods {
                 // see ResponseInput
                 upc_response (true) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>) -> LyquidResult<Option<Vec<u8>>> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::InstanceContext::new(ctx)?;
-                    let $id = id;
-                    let $from = from;
+                    let mut $handle = __lyquid::UpcResponseContext::new(ctx, from, id)?;
                     let $returned = $crate::lyquor_primitives::decode_object::<LyquidResult<$rt>>(&returned).ok_or($crate::LyquidError::LyquorInput)?;
                     let result = $body;
                     drop($handle);
@@ -464,56 +447,10 @@ macro_rules! __lyquid_categorize_methods {
      {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) fn $fn(&$handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
     // instance function syntax sugar
-    ({instance $($rest:tt)*},
+    ({instance fn $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) fn $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
-    // UPC implementation syntax sugar
-    ({upc $fn:ident($handle:ident, $id:ident, $from:ident; $($name:ident: $type:ty),*) -> $result:ident: LyquidResult<$rt:ty> { callee $method_body:block $($upc_body_rest:tt)* } $($rest:tt)*},
-    {$($network_funcs:tt)*},
-    {$($instance_funcs:tt)*}) => {
-       $crate::__lyquid_categorize_methods!(
-           {$($rest)*
-                instance(upc_callee) fn $fn($handle, $id) -> LyquidResult<Vec<NodeID>> $method_body
-                upc $fn($handle, $id, $from; $($name: $type),*) -> $result: LyquidResult<$rt> { $($upc_body_rest)* }
-           },
-           {$($network_funcs)*},
-           {$($instance_funcs)*}
-       );
-    };
-    ({upc $fn:ident($handle:ident, $id:ident, $from:ident; $($name:ident: $type:ty),*) -> $result:ident: LyquidResult<$rt:ty> { request $method_body:block $($upc_body_rest:tt)* } $($rest:tt)*},
-    {$($network_funcs:tt)*},
-    {$($instance_funcs:tt)*}) => {
-       $crate::__lyquid_categorize_methods!(
-           {$($rest)*
-                instance(upc_request) fn $fn($handle, $id, $from; $($name: $type),*) -> LyquidResult<$rt> $method_body
-                upc $fn($handle, $id, $from; $($name: $type),*) -> $result: LyquidResult<$rt> { $($upc_body_rest)* }
-           },
-           {$($network_funcs)*},
-           {$($instance_funcs)*}
-       );
-    };
-    ({upc $fn:ident($handle:ident, $id:ident, $from:ident; $($name:ident: $type:ty),*) -> $result:ident: LyquidResult<$rt:ty> { response $method_body:block $($upc_body_rest:tt)* } $($rest:tt)*},
-    {$($network_funcs:tt)*},
-    {$($instance_funcs:tt)*}) => {
-       $crate::__lyquid_categorize_methods!(
-           {$($rest)*
-                instance(upc_response) fn $fn($handle, $id, $from; $result: LyquidResult<$rt>) -> LyquidResult<Option<$rt>> $method_body
-                upc $fn($handle, $id, $from; $($name: $type),*) -> $result: LyquidResult<$rt> { $($upc_body_rest)* }
-           },
-           {$($network_funcs)*},
-           {$($instance_funcs)*}
-       );
-    };
-    ({upc $fn:ident($handle:ident, $id:ident, $from:ident; $($name:ident: $type:ty),*) -> $result:ident: LyquidResult<$rt:ty> {} $($rest:tt)*},
-    {$($network_funcs:tt)*},
-    {$($instance_funcs:tt)*}) => {
-       $crate::__lyquid_categorize_methods!(
-           {$($rest)*},
-           {$($network_funcs)*},
-           {$($instance_funcs)*}
-       );
-    };
     ({}, {$($network_funcs:tt)*}, {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_wrap_methods!("__lyquid_method_network", $($network_funcs)*);
         $crate::__lyquid_wrap_methods!("__lyquid_method_instance", $($instance_funcs)*);

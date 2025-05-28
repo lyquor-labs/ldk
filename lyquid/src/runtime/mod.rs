@@ -1026,3 +1026,106 @@ where
         })
     }
 }
+
+/// UPC callee context, which is allowed to only read the network state variables.
+pub struct UpcCalleeContextImpl<S>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub origin: Address,
+    pub caller: Address,
+    pub input: Bytes,
+    pub network: Immutable<S>,
+    pub id: u64,
+}
+
+impl<S> UpcCalleeContextImpl<S>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub fn new(ctx: CallContext, id: u64) -> LyquidResult<Self> {
+        Ok(Self {
+            origin: ctx.origin,
+            caller: ctx.caller,
+            input: ctx.input,
+            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+            id,
+        })
+    }
+}
+
+/// UPC request context, which is allowed to only read the network state variables and read/write the instance state variables.
+pub struct UpcRequestContextImpl<S, I>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+    I: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub origin: Address,
+    pub caller: Address,
+    pub input: Bytes,
+    pub network: Immutable<S>,
+    pub instance: Mutable<I>,
+    pub from: NodeID,
+    pub id: u64,
+}
+
+impl<S, I> UpcRequestContextImpl<S, I>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+    I: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub fn new(ctx: CallContext, from: NodeID, id: u64) -> LyquidResult<Self> {
+        Ok(Self {
+            origin: ctx.origin,
+            caller: ctx.caller,
+            input: ctx.input,
+            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+            instance: Mutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+            from,
+            id,
+        })
+    }
+}
+
+/// UPC response context, which is allowed to only read the network state variables and read/write the instance state variables.
+pub struct UpcResponseContextImpl<S, I>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+    I: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub origin: Address,
+    pub caller: Address,
+    pub input: Bytes,
+    pub network: Immutable<S>,
+    pub instance: Mutable<I>,
+    pub from: NodeID,
+    pub id: u64,
+}
+
+impl<S, I> UpcResponseContextImpl<S, I>
+where
+    S: internal::PrefixedAccessible<Vec<u8>>,
+    I: internal::PrefixedAccessible<Vec<u8>>,
+{
+    pub fn new(ctx: CallContext, from: NodeID, id: u64) -> LyquidResult<Self> {
+        Ok(Self {
+            origin: ctx.origin,
+            caller: ctx.caller,
+            input: ctx.input,
+            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+            instance: Mutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(
+                crate::VAR_CATALOG_PREFIX,
+            )))?),
+            from,
+            id,
+        })
+    }
+}
