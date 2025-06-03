@@ -337,7 +337,7 @@ pub mod lyquor_api {
         whoami() -> (NodeID, LyquidID);
         console_output(output: ConsoleSink, s: String);
         universal_procedural_call(target: LyquidID, method: String, input: Vec<u8>, targets: Option<Vec<NodeID>>) -> Vec<u8>;
-        inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Option<Vec<u8>>;
+        cross_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Option<Vec<u8>>;
     );
 }
 
@@ -380,12 +380,12 @@ macro_rules! log {
     ($tag: ident, $v: expr) => {{ lyquor_api::log($crate::LyteLog::new_from_tagged_value(stringify!($tag), $v))? }};
 }
 
-/// Initiate a inter-lyquid call. **Only usable by network functions.**
+/// Initiate a cross-lyquid call. **Only usable by network functions.**
 #[macro_export]
-macro_rules! inter_lyquid_call {
-    (($service: expr).$method :ident($($var:ident: $type:ty = $val: expr),*)) => {
-        lyquor_api::inter_lyquid_call(
-            $service,
+macro_rules! cross_lyquid_call {
+    (($network: expr).$method :ident($($var:ident: $type:ty = $val: expr),*)) => {
+        lyquor_api::cross_lyquid_call(
+            $network,
             stringify!($method).to_string().into(),
             Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
         )
