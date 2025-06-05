@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use super::{Address, B256, Bytes, ConsoleSink, LyquidID, LyquidNumber, U64};
+use super::{Address, B256, Bytes, ConsoleSink, LyquidID, LyquidNumber, Range};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash, Debug, Clone)]
@@ -199,7 +199,7 @@ pub struct LyquorSubscribe {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct LyquorSubscribeResp(pub U64);
+pub struct LyquorSubscribeResp(pub Bytes);
 
 impl Sealable<'static> for LyquorSubscribe {
     fn seal(self, id: Option<Id>) -> Result<JsonRPCMsg<'static>, serde_json::Error> {
@@ -212,6 +212,7 @@ impl Sealable<'static> for LyquorSubscribe {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct LyquorSubscriptionUpdate {
     pub result: Box<serde_json::value::RawValue>,
     pub subscription: Bytes,
@@ -234,12 +235,16 @@ pub struct LyquorConsoleUpdate {
 pub struct LyquorReadConsole {
     pub id: LyquidID,
     pub sink: ConsoleSink,
-    pub from: Option<isize>,
-    pub to: Option<isize>,
+    pub row_limits: Option<Range<isize>>,
+    pub id_limits: Option<Range<usize>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct LyquorReadConsoleResp(pub Option<String>);
+pub struct LyquorReadConsoleResp {
+    pub line_id: usize,
+    pub line_num: usize,
+    pub text: String,
+}
 
 impl Sealable<'static> for LyquorReadConsole {
     fn seal(self, id: Option<Id>) -> Result<JsonRPCMsg<'static>, serde_json::Error> {

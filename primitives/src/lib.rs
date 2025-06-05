@@ -654,3 +654,9 @@ macro_rules! subkey_builder {
         $crate::subkey_builder_!($subkey, {$($rest)*}, {}, {}, {});
     };
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Range<T> {
+    pub start: Option<T>,
+    pub end: Option<T>,
+}
