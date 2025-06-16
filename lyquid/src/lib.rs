@@ -111,6 +111,7 @@ pub mod upc {
         pub input: Vec<u8>,
     }
 
+    // TODO: refactor request output to be a struct with more sophisticated error handling
     pub type RequestOutput = Vec<u8>;
 
     #[derive(Serialize, Deserialize)]
@@ -120,7 +121,10 @@ pub mod upc {
         pub returned: Vec<u8>,
     }
 
-    pub type ResponseOutput = Option<Vec<u8>>;
+    #[derive(Serialize, Deserialize)]
+    pub struct ResponseOutput {
+        pub result: Option<Vec<u8>>,
+    }
 
     #[derive(Serialize, Deserialize)]
     pub struct CalleeInput {
@@ -128,5 +132,8 @@ pub mod upc {
         pub id: u64,
     }
 
-    pub type CalleeOutput = Vec<NodeID>;
+    #[derive(Serialize, Deserialize)]
+    pub struct CalleeOutput {
+        pub result: Vec<NodeID>,
+    }
 }

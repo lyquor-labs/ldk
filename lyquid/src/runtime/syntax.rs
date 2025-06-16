@@ -340,12 +340,12 @@ macro_rules! __lyquid_categorize_methods {
             {$($network_funcs)*},
             {$($instance_funcs)*
                 // see CalleeInput
-                upc_callee (true) fn $fn(id: u64) -> LyquidResult<Vec<NodeID>> {|ctx: CallContext| {
+                upc_callee (true) fn $fn(id: u64) -> LyquidResult<$crate::upc::CalleeOutput> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcCalleeContext::new(ctx, id)?;
-                    let result = $body;
+                    let result: LyquidResult<Vec<NodeID>> = $body;
                     drop($handle);
-                    result
+                    result.map(|r| $crate::upc::CalleeOutput { result: r })
                 }}
             }
         );
@@ -391,15 +391,15 @@ macro_rules! __lyquid_categorize_methods {
             {$($network_funcs)*},
             {$($instance_funcs)*
                 // see ResponseInput
-                upc_response (true) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>) -> LyquidResult<Option<Vec<u8>>> {|ctx: CallContext| {
+                upc_response (true) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>) -> LyquidResult<$crate::upc::ResponseOutput> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcResponseContext::new(ctx, from, id)?;
                     let $returned = $crate::lyquor_primitives::decode_object::<LyquidResult<$rt>>(&returned).ok_or($crate::LyquidError::LyquorInput)?;
-                    let result = $body;
+                    let result: LyquidResult<Option<$rt_>> = $body;
                     drop($handle);
                     // turn the inner returned user-supplied object into serialized form so the
                     // caller can pass it on without knowing the type
-                    result.map(|r| r.map(|r| Vec::from(&$crate::lyquor_primitives::encode_object(&r)[..])))
+                    result.map(|r| $crate::upc::ResponseOutput { result: r.map(|r| Vec::from(&$crate::lyquor_primitives::encode_object(&r)[..])) })
                 }}
             }
         );
