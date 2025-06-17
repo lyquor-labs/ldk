@@ -104,6 +104,7 @@ pub struct FuncInfo {
 pub mod upc {
     use super::*;
     use lyquor_primitives::NodeID;
+
     #[derive(Serialize, Deserialize)]
     pub struct RequestInput {
         pub from: NodeID,
@@ -119,11 +120,15 @@ pub mod upc {
         pub from: NodeID,
         pub id: u64,
         pub returned: Vec<u8>,
+        pub cache: Option<Vec<u8>>,
     }
 
+    /// The ResponseOutput is similar to std::ops::ControlFlow, we don't depend on std::ops::ControlFlow because it is
+    /// not serializable.
     #[derive(Serialize, Deserialize)]
-    pub struct ResponseOutput {
-        pub result: Option<Vec<u8>>,
+    pub enum ResponseOutput {
+        Continue(Option<Vec<u8>>),
+        Return(Vec<u8>),
     }
 
     #[derive(Serialize, Deserialize)]

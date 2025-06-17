@@ -132,7 +132,7 @@ macro_rules! state {
             pub type ImmutableInstanceContext = $crate::runtime::ImmutableInstanceContextImpl<NetworkState, InstanceState>;
             pub type UpcCalleeContext = $crate::runtime::UpcCalleeContextImpl<NetworkState>;
             pub type UpcRequestContext = $crate::runtime::UpcRequestContextImpl<NetworkState, InstanceState>;
-            pub type UpcResponseContext = $crate::runtime::UpcResponseContextImpl<NetworkState, InstanceState>;
+            pub type UpcResponseContext = $crate::runtime::UpcResponseContextImpl<NetworkState>;
         }
     }
 }
@@ -391,15 +391,20 @@ macro_rules! __lyquid_categorize_methods {
             {$($network_funcs)*},
             {$($instance_funcs)*
                 // see ResponseInput
-                upc_response (true) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>) -> LyquidResult<$crate::upc::ResponseOutput> {|ctx: CallContext| {
+                upc_response (true) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>, cache: Option<Vec<u8>>) -> LyquidResult<$crate::upc::ResponseOutput> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::UpcResponseContext::new(ctx, from, id)?;
+                    let mut $handle = __lyquid::UpcResponseContext::new(ctx, from, id, cache)?;
                     let $returned = $crate::lyquor_primitives::decode_object::<LyquidResult<$rt>>(&returned).ok_or($crate::LyquidError::LyquorInput)?;
                     let result: LyquidResult<Option<$rt_>> = $body;
+                    let cache = $handle.cache.take_cache();
                     drop($handle);
-                    // turn the inner returned user-supplied object into serialized form so the
-                    // caller can pass it on without knowing the type
-                    result.map(|r| $crate::upc::ResponseOutput { result: r.map(|r| Vec::from(&$crate::lyquor_primitives::encode_object(&r)[..])) })
+                    result.map(|r|
+                        match r {
+                            // turn the inner returned user-supplied object into serialized form so the caller can pass it on without knowing the type
+                            Some(r) => $crate::upc::ResponseOutput::Return(Vec::from(&$crate::lyquor_primitives::encode_object(&r)[..])),
+                            // turn te cache into raw pointer so it won't be dropped
+                            None => $crate::upc::ResponseOutput::Continue(cache.map(|c| (Box::into_raw(c) as usize).to_be_bytes().to_vec())),
+                        })
                 }}
             }
         );

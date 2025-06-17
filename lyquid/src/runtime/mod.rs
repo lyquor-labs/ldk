@@ -1093,27 +1093,25 @@ where
     }
 }
 
-/// UPC response context, which is allowed to only read the network state variables and read/write the instance state variables.
-pub struct UpcResponseContextImpl<S, I>
+/// UPC response context, which is allowed to only read the network state variables.
+pub struct UpcResponseContextImpl<S>
 where
     S: internal::PrefixedAccessible<Vec<u8>>,
-    I: internal::PrefixedAccessible<Vec<u8>>,
 {
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
     pub network: Immutable<S>,
-    pub instance: Mutable<I>,
     pub from: NodeID,
     pub id: u64,
+    pub cache: UpcCache,
 }
 
-impl<S, I> UpcResponseContextImpl<S, I>
+impl<S> UpcResponseContextImpl<S>
 where
     S: internal::PrefixedAccessible<Vec<u8>>,
-    I: internal::PrefixedAccessible<Vec<u8>>,
 {
-    pub fn new(ctx: CallContext, from: NodeID, id: u64) -> LyquidResult<Self> {
+    pub fn new(ctx: CallContext, from: NodeID, id: u64, cache: Option<Vec<u8>>) -> LyquidResult<Self> {
         Ok(Self {
             origin: ctx.origin,
             caller: ctx.caller,
@@ -1121,11 +1119,50 @@ where
             network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
                 crate::VAR_CATALOG_PREFIX,
             )))?),
-            instance: Mutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
             from,
             id,
+            cache: UpcCache::new(cache)?,
         })
+    }
+}
+
+use std::any::Any;
+
+/// We use this struct to hold a Box<dyn Any>, so we just leak a pointer to Cache instead of a dyn Any,
+/// since a pointer of dyn Any needs a vtable to be constructed from a raw address.
+pub struct CachePointer(Box<dyn Any>);
+
+pub struct UpcCache {
+    inner: Option<Box<CachePointer>>,
+}
+
+impl UpcCache {
+    pub fn new(cache_ptr: Option<Vec<u8>>) -> LyquidResult<Self> {
+        let cache_ptr = match cache_ptr {
+            Some(bytes) => Some(usize::from_be_bytes(
+                bytes.try_into().map_err(|_| LyquidError::LyquorInput)?,
+            )),
+            None => None,
+        };
+        Ok(Self {
+            inner: cache_ptr.map(|addr| unsafe { Box::from_raw(addr as *mut CachePointer) }),
+        })
+    }
+
+    pub fn get_or_init<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
+        if self.inner.is_none() {
+            self.inner = Some(Box::new(CachePointer(Box::new(init()))));
+        }
+        self.inner
+            .as_mut()
+            .unwrap()
+            .0
+            .as_mut()
+            .downcast_mut()
+            .expect("cache error")
+    }
+
+    pub fn take_cache(&mut self) -> Option<Box<CachePointer>> {
+        self.inner.take()
     }
 }
