@@ -130,9 +130,9 @@ macro_rules! state {
             pub type ImmutableNetworkContext = $crate::runtime::ImmutableNetworkContextImpl<NetworkState>;
             pub type InstanceContext = $crate::runtime::InstanceContextImpl<NetworkState, InstanceState>;
             pub type ImmutableInstanceContext = $crate::runtime::ImmutableInstanceContextImpl<NetworkState, InstanceState>;
-            pub type UpcCalleeContext = $crate::runtime::UpcCalleeContextImpl<NetworkState>;
-            pub type UpcRequestContext = $crate::runtime::UpcRequestContextImpl<NetworkState, InstanceState>;
-            pub type UpcResponseContext = $crate::runtime::UpcResponseContextImpl<NetworkState>;
+            pub type UpcCalleeContext = $crate::runtime::upc::CalleeContextImpl<NetworkState>;
+            pub type UpcRequestContext = $crate::runtime::upc::RequestContextImpl<NetworkState, InstanceState>;
+            pub type UpcResponseContext = $crate::runtime::upc::ResponseContextImpl<NetworkState>;
         }
     }
 }
