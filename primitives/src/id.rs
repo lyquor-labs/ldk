@@ -291,6 +291,14 @@ impl From<LyquidNumber> for u64 {
     }
 }
 
+impl std::str::FromStr for LyquidNumber {
+    type Err = std::num::ParseIntError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let x: u64 = s.parse()?;
+        Ok(x.into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
