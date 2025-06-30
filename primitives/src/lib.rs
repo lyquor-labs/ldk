@@ -558,9 +558,15 @@ impl<S: KVStore> KVStore for ShadowKVStore<S> {
 }
 
 impl<S: KVStore> ShadowKVStore<S> {
+    pub fn changes(&self) -> parking_lot::RwLockWriteGuard<HashMap<Key, Option<Value>>> {
+        self.writes.write()
+    }
+
     pub fn commit(&self) -> Result<(), KVStoreError> {
-        let changes = std::mem::take(&mut *self.writes.write()).into_iter();
-        self.inner.atomic_write(Box::new(changes))
+        let mut changes = self.changes(); // DO NOT remove this line, see below
+        self.inner
+            .atomic_write(Box::new(std::mem::take(&mut *changes).into_iter()))
+        // changes unlocked after the atomic_write is done, so the original changes are visible again
     }
 }
 

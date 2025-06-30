@@ -382,8 +382,9 @@ macro_rules! log {
 }
 
 /// Initiate a inter-lyquid call. **Only usable by network functions.**
+/// FIXME: enforce this at compile time.
 #[macro_export]
-macro_rules! inter_lyquid_call {
+macro_rules! call {
     (($service: expr).$method :ident($($var:ident: $type:ty = $val: expr),*)) => {
         lyquor_api::inter_lyquid_call(
             $service,
