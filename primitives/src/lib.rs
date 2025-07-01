@@ -28,8 +28,38 @@ pub type Hash = blake3::Hash;
 /// Position of a slot in the sequencer's backend.
 ///
 /// Typically, a sequencing backend may be a chain that carries Lyquid slots in some of its blocks.
-/// This means the [SlotNumber]s do not necessarily correspond to continuous [ChainPosition] in the sequencing backend.
-pub type ChainPosition = u64;
+/// This means the [SlotNumber]s do not necessarily correspond to continuous [ChainPos] in the sequencing backend.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ChainPos(u128);
+
+impl ChainPos {
+    pub const ZERO: Self = Self(0);
+    pub fn new(block_position: u64, block_index: u32) -> Self {
+        Self((block_position as u128) << 32 | (block_index as u128))
+    }
+
+    #[inline(always)]
+    pub fn block(&self) -> u64 {
+        (self.0 >> 32) as u64
+    }
+
+    #[inline(always)]
+    pub fn next_block(&self) -> Self {
+        Self(((self.0 >> 32) + 1) << 32)
+    }
+}
+
+impl fmt::Display for ChainPos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(f, "(block={}, log={})", self.0 >> 32, self.0 as u32)
+    }
+}
+
+impl fmt::Debug for ChainPos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        fmt::Display::fmt(self, f)
+    }
+}
 
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum LyteCallABI {
