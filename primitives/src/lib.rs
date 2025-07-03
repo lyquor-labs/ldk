@@ -429,14 +429,12 @@ fn test_lazy_bytes_partial_consolidation() {
     );
 }
 
-pub fn encode_method_name<M: fmt::Display>(cat_prefix: &str, group: &str, method: M) -> String {
+pub fn encode_method_name(cat_prefix: &str, group: &str, method: &str) -> String {
     let mut output = cat_prefix.to_string();
     output.push('_');
-    cb58::bs58::encode(blake3::hash(group.as_bytes()).as_bytes())
-        .onto(&mut output)
-        .unwrap();
+    cb58::bs58::encode(group.as_bytes()).onto(&mut output).unwrap();
     output.push('_');
-    output.push_str(&method.to_string());
+    output.push_str(method);
     output
 }
 

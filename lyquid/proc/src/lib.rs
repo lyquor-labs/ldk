@@ -58,7 +58,7 @@ fn add_prefix(attr: TokenStream, ident: Ident) -> Ident {
         &lyquor_primitives::encode_method_name(
             &tokens[0..tokens.len() - 1].join("_"),
             &tokens[tokens.len() - 1],
-            ident,
+            &ident.to_string(),
         ),
         Span::call_site(),
     )
