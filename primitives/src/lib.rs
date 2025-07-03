@@ -519,6 +519,19 @@ impl<T: KVStore + ?Sized> KVStore for Arc<T> {
     }
 }
 
+impl<T: KVStore + ?Sized> KVStore for Box<T> {
+    #[inline(always)]
+    fn get(&self, key: Key) -> Result<Option<Value>, KVStoreError> {
+        self.as_ref().get(key)
+    }
+    #[inline(always)]
+    fn atomic_write<'a>(
+        &self, changes: Box<dyn Iterator<Item = (Key, Option<Value>)> + 'a>,
+    ) -> Result<(), KVStoreError> {
+        self.as_ref().atomic_write(changes)
+    }
+}
+
 /// Wrapper that logically behaves as a key-value store whose keys are always prefixed by `prefix`.
 pub struct PrefixedKVStore<S: KVStore> {
     inner: S,
@@ -592,7 +605,7 @@ impl<S: KVStore> ShadowKVStore<S> {
         self.writes.write()
     }
 
-    pub fn commit(&self) -> Result<(), KVStoreError> {
+    pub fn flush(&self) -> Result<(), KVStoreError> {
         let mut changes = self.changes(); // DO NOT remove this line, see below
         self.inner
             .atomic_write(Box::new(std::mem::take(&mut *changes).into_iter()))

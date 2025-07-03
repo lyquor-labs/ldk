@@ -59,5 +59,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 trait-variant = "0.1"
 serde_json = "1.0.138"
 actix = "0.13.5"
-actix-signal = { version = "0.3.0", features = ["derive"] }
 tokio-stream = "0.1.17"
