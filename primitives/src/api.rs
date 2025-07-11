@@ -11,6 +11,12 @@ pub enum Id {
     Str(Box<str>),
 }
 
+impl fmt::Display for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct JsonRPCErrorObject {
     pub code: i64,
