@@ -15,7 +15,7 @@ homepage = "https://lyquor.xyz/"
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-aws-lc-rs = "1.13.1"
+aws-lc-rs = "1.13.2"
 bytes = "1.10"
 derive_builder = "0.20"
 ed25519-compact = { version = "2", default-features = false }
@@ -47,7 +47,7 @@ rand = "0.9"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 rustls-pemfile = { version = "2.2" }
 rustls-pki-types = { version = "1.12" }
-rustls-webpki = { version = "0.103.3", features = ["aws-lc-rs"] }
+rustls-webpki = { version = "0.103.4", features = ["aws-lc-rs"] }
 serde = { version = "1.0.219", features = ["derive"] }
 test-log = { version = "0.2", features = ["trace"] }
 tempfile = { version = "3.20" }
