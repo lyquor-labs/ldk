@@ -2,8 +2,8 @@
 name = "lyquor-primitives"
 version.workspace = true
 edition.workspace = true
-license = "Apache-2.0"
-homepage = "https://lyquor.xyz/"
+license.workspace = true
+homepage.workspace = true
 description = "The primitive types for Lyquor platform."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -1,9 +1,9 @@
 [package]
 name = "lyquid"
 version.workspace = true
-edition = "2024"
-license = "Apache-2.0"
-homepage = "https://lyquor.xyz/"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
 description = "Lyquid Development Kit (runtime for next-generation chain-guided computation platform)."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
