@@ -707,3 +707,14 @@ pub struct Range<T> {
     pub start: Option<T>,
     pub end: Option<T>,
 }
+
+#[macro_export]
+macro_rules! debug_struct_name {
+    ($t:ty) => {
+        impl std::fmt::Debug for $t {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(stringify!($t))
+            }
+        }
+    };
+}
