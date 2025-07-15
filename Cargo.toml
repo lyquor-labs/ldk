@@ -33,6 +33,7 @@ lazy_static = "1.5"
 lyquid = { path = "lyquid" }
 lyquid-examples = { path = "lyquid-examples" }
 lyquid-proc = { path = "lyquid/proc" }
+lyquor-cli = { path = "cli" }
 lyquor-db = { path = "db" }
 lyquor-net = { path = "net" }
 lyquor-primitives = { path = "primitives" }
