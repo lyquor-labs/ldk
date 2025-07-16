@@ -19,7 +19,6 @@ use parking_lot::Mutex;
 pub use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[cfg(feature = "api")] pub mod api;
 mod id;
 pub use id::{LyquidID, LyquidNumber, NodeID};
 

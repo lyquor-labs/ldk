@@ -22,11 +22,6 @@ cb58 = "0.0.2"
 ed25519-compact = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true, optional = true }
 sha3 = "0.10.8"
 thiserror = { workspace = true }
 futures = { workspace = true }
-
-[features]
-api = ["serde_json"]
-serde_json = ["dep:serde_json"]
