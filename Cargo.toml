@@ -15,6 +15,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1.0"
+actix-rt = "2.10"
 async-trait = "0.1"
 aws-lc-rs = "1.13.2"
 bytes = "1.10"
