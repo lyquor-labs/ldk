@@ -584,28 +584,3 @@ macro_rules! __lyquid_wrap_methods {
     };
     ($prefix:tt,) => {}
 }
-
-#[macro_export]
-macro_rules! require {
-    ( $( $dep:expr ),+ $(,)? ) => {
-        const _: () = {
-
-            #[unsafe(no_mangle)]
-            fn __lyquid_deps(
-                base: u32,
-                len:  u32,
-                _:    u32
-            ) -> u64 {
-                use $crate::lyquor_primitives::{encode_object, decode_object};
-                use $crate::runtime::internal::*;
-
-                let raw = unsafe { HostInput::new(base, len) };
-                let _: Option<u8> = decode_object(&raw);
-                drop(raw);
-
-                let deps: Vec<String> = vec![$($dep.to_string()), *];
-                output_to_host(&encode_object(&deps))
-            }
-        };
-    };
-}
