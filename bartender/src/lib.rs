@@ -11,12 +11,14 @@ struct DeployInfo {
 struct LyquidMetadata {
     owner: Address,
     deploy_history: network::Vec<DeployInfo>,
+    dependencies: network::Vec<LyquidID>,
 }
 
 #[derive(Serialize)]
 struct LyquidMetadataOutput {
     owner: Address,
     deploy_history: Vec<DeployInfo>,
+    dependencies: Vec<LyquidID>,
 }
 
 lyquid::state! {
@@ -25,31 +27,40 @@ lyquid::state! {
     network eth_addrs: network::HashMap<Address, LyquidID> = network::new_hashmap();
 }
 
-fn next_lyquid_id(ctx: &mut __lyquid::NetworkContext, owner: Address, contract: Address) -> LyquidID {
+fn next_lyquid_id(ctx: &mut __lyquid::NetworkContext, owner: Address, contract: Address, deps: Vec<LyquidID>) -> LyquidID {
     let id = {
         let nonce = ctx.network.owner_nonce.entry(owner).or_insert(0);
         let id = LyquidID::from_owner_nonce(&owner, *nonce);
         *nonce += 1;
         id
     };
-    ctx.network
+    let metadata = ctx.network
         .lyquid_registry
         .entry(id)
         .or_insert_with(|| LyquidMetadata {
             owner,
             deploy_history: network::new_vec(),
-        })
-        .deploy_history
-        .push(DeployInfo { contract });
+            dependencies: network::new_vec(),
+        });
+    metadata.deploy_history.push(DeployInfo { contract });
+    // Store the dependencies for this lyquid
+    for dep in deps {
+        metadata.dependencies.push(dep);
+    }
     id
 }
 
-fn update_eth_addr(ctx: &mut __lyquid::NetworkContext, owner: Address, old: Address, new: Address) -> Option<LyquidID> {
+fn update_eth_addr(ctx: &mut __lyquid::NetworkContext, owner: Address, old: Address, new: Address, deps: Vec<LyquidID>) -> Option<LyquidID> {
     // otherwise we need to find the existing lyquid
     let id = *ctx.network.eth_addrs.get(&old)?;
     let metadata = ctx.network.lyquid_registry.get_mut(&id)?;
     if metadata.owner == owner && metadata.deploy_history.last()?.contract == old {
         metadata.deploy_history.push(DeployInfo { contract: new });
+        // Update dependencies for this deployment
+        metadata.dependencies.clear();
+        for dep in deps {
+            metadata.dependencies.push(dep);
+        }
         Some(id)
     } else {
         None
@@ -65,17 +76,18 @@ lyquid::method! {
     network fn register(&mut ctx, superseded: Address, deps: Vec<Address>) -> LyquidResult<bool> {
         let owner = ctx.origin;
         let contract = ctx.caller;
-        let id = if superseded == Address::ZERO {
-            // create a new lyquid
-            Some(next_lyquid_id(&mut ctx, owner, contract))
-        } else {
-            update_eth_addr(&mut ctx, owner, superseded, contract)
-        }.ok_or(LyquidError::LyquidRuntime("invalid register call".into()))?;
-
+        
         // Convert dependency addresses to LyquidIDs
         let deps: Vec<LyquidID> = deps.iter()
             .filter_map(|addr| ctx.network.eth_addrs.get(addr).copied())
             .collect();
+
+        let id = if superseded == Address::ZERO {
+            // create a new lyquid
+            Some(next_lyquid_id(&mut ctx, owner, contract, deps.clone()))
+        } else {
+            update_eth_addr(&mut ctx, owner, superseded, contract, deps.clone())
+        }.ok_or(LyquidError::LyquidRuntime("invalid register call".into()))?;
 
         lyquid::println!("register {id} (owner={owner}, contract={contract}, deps={:?})", deps);
         lyquid::log!(Register, &RegisterEvent { id, deps });
@@ -88,6 +100,7 @@ lyquid::method! {
             LyquidMetadataOutput {
                 owner: d.owner,
                 deploy_history: d.deploy_history.to_vec(),
+                dependencies: d.dependencies.to_vec(),
             }
         }))
     }
@@ -127,6 +140,12 @@ lyquid::method! {
 
     instance fn get_lyquid_list(&ctx) -> LyquidResult<Vec<LyquidID>> {
         Ok(ctx.network.lyquid_registry.keys().cloned().collect())
+    }
+
+    instance fn get_lyquid_list_with_deps(&ctx) -> LyquidResult<Vec<(LyquidID, Vec<LyquidID>)>> {
+        Ok(ctx.network.lyquid_registry.iter().map(|(id, metadata)| {
+            (*id, metadata.dependencies.to_vec())
+        }).collect())
     }
 
     instance fn eth_abi_test1(&ctx, x: U256, y: Vec<String>, z: [Vec<u64>; 4]) -> LyquidResult<U256> {
