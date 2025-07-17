@@ -671,6 +671,23 @@ impl EthABI for LyquidID {
     }
 }
 
+impl EthABI for RequiredLyquid {
+    fn type_string() -> Option<String> {
+        Some("address".into())
+    }
+
+    fn decode(val: DynSolValue) -> Option<Self> {
+        match val {
+            DynSolValue::Address(a) => Some(Self(a.0.0.into())),
+            _ => None,
+        }
+    }
+
+    fn encode(self) -> DynSolValue {
+        DynSolValue::Address(self.0.0.into())
+    }
+}
+
 pub use hashbrown;
 pub type HashMap<K, V, A> = hashbrown::HashMap<K, V, ahash::RandomState, A>;
 pub type HashSet<K, A> = hashbrown::HashSet<K, ahash::RandomState, A>;

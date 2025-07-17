@@ -13,7 +13,8 @@ use thiserror::Error;
 
 #[cfg(feature = "ldk")]
 pub use lyquor_primitives::{
-    self, LyquidID, LyquidNumber, LyteLog, NodeID, StateCategory, U64, U128, U256, address, blake3, uint,
+    self, LyquidID, LyquidNumber, LyteLog, NodeID, RequiredLyquid, StateCategory, U64, U128, U256, address, blake3,
+    uint,
 };
 pub use lyquor_primitives::{Address, Bytes, ConsoleSink, anyhow};
 

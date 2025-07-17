@@ -114,7 +114,10 @@ impl AsRef<[u8]> for NodeID {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+pub struct RequiredLyquid(pub LyquidID);
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct LyquidID(pub [u8; 20]);
 
 impl Serialize for LyquidID {

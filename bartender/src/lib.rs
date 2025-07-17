@@ -1,6 +1,7 @@
 #![feature(allocator_api)]
 use lyquid::runtime::*;
 use serde::*;
+use lyquor_primitives::RegisterEvent;
 
 #[derive(Serialize, Clone, Debug)]
 struct DeployInfo {
@@ -61,7 +62,7 @@ lyquid::method! {
         // contract is the contract address itself
     }
 
-    network fn register(&mut ctx, superseded: Address) -> LyquidResult<bool> {
+    network fn register(&mut ctx, superseded: Address, deps: Vec<Address>) -> LyquidResult<bool> {
         let owner = ctx.origin;
         let contract = ctx.caller;
         let id = if superseded == Address::ZERO {
@@ -71,8 +72,13 @@ lyquid::method! {
             update_eth_addr(&mut ctx, owner, superseded, contract)
         }.ok_or(LyquidError::LyquidRuntime("invalid register call".into()))?;
 
-        lyquid::println!("register {id} (owner={owner}, contract={contract})");
-        lyquid::log!(Register, &id);
+        // Convert dependency addresses to LyquidIDs
+        let deps: Vec<LyquidID> = deps.iter()
+            .filter_map(|addr| ctx.network.eth_addrs.get(addr).copied())
+            .collect();
+
+        lyquid::println!("register {id} (owner={owner}, contract={contract}, deps={:?})", deps);
+        lyquid::log!(Register, &RegisterEvent { id, deps });
         ctx.network.eth_addrs.insert(contract, id);
         Ok(true)
     }

@@ -20,7 +20,7 @@ pub use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod id;
-pub use id::{LyquidID, LyquidNumber, NodeID};
+pub use id::{LyquidID, LyquidNumber, NodeID, RequiredLyquid};
 
 pub type Hash = blake3::Hash;
 
@@ -206,6 +206,12 @@ impl LyteLog {
         let topic: [u8; 32] = hasher.finalize().into();
         topic.into()
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RegisterEvent {
+    pub id: LyquidID,
+    pub deps: Vec<LyquidID>,
 }
 
 impl fmt::Debug for LyteLog {
