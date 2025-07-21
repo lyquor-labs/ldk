@@ -45,7 +45,7 @@ lyquor-vm = { path = "vm" }
 lyquor-tools = { path = "tools" }
 lyquor-tls = { path = "tls" }
 lyquor-router = { path = "router" }
-lyquor-api = { path = "api"}
+lyquor-api = { path = "api" }
 parking_lot = { version = "0.12", features = ["send_guard"] }
 rand = "0.9"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
