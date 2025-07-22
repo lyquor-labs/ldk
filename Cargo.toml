@@ -46,6 +46,7 @@ lyquor-tools = { path = "tools" }
 lyquor-tls = { path = "tls" }
 lyquor-router = { path = "router" }
 lyquor-api = { path = "api" }
+lyquor-test = { path = "test" }
 parking_lot = { version = "0.12", features = ["send_guard"] }
 rand = "0.9"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
@@ -53,7 +54,6 @@ rustls-pemfile = { version = "2.2" }
 rustls-pki-types = { version = "1.12" }
 rustls-webpki = { version = "0.103.4", features = ["aws-lc-rs"] }
 serde = { version = "1.0.219", features = ["derive"] }
-test-log = { version = "0.2", features = ["trace"] }
 tempfile = { version = "3.20" }
 thiserror = "2.0"
 tokio = { version = "1.46", features = ["full"] }
