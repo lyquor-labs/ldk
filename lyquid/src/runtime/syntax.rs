@@ -70,6 +70,7 @@
 /// - `origin: Address` – origin of the call  (like `tx.origin` in Solidity)
 /// - `caller: Address` – direct caller (like `msg.sender` in Solidity)
 /// - `input: Bytes` – raw input buffer (decoded values already available via parameters)  
+/// - `self_address: Address` – the Ethereum contract address (not Lyquid ID) of this contract
 /// - `network: lyquid::runtime::Mutable<NetworkState>` – access to your `network` state variables
 ///
 /// #### `__lyquid::InstanceContext` (used in `instance` functions):
@@ -77,6 +78,7 @@
 /// - `origin: Address` - this will always be the same as `caller`
 /// - `caller: Address` - external caller
 /// - `input: Bytes`  
+/// - `self_address: Address` – the Ethereum contract address (not Lyquid ID) of this contract
 /// - `network: lyquid::runtime::Immutable<NetworkState>` – **read-only view of network state**  
 /// - `instance: lyquid::runtime::Mutable<InstanceState>` – access to `instance` state variables
 ///

@@ -26,6 +26,8 @@ pub struct CallContext {
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
+    /// The Ethereum contract address (not Lyquid ID) of this contract
+    pub self_address: Address,
 }
 
 #[derive(Serialize, Deserialize, Debug, Error)]

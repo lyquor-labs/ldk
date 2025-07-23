@@ -207,6 +207,8 @@ impl LyteLog {
 pub struct RegisterEvent {
     pub id: LyquidID,
     pub deps: Vec<LyquidID>,
+    // The Ethereum contract address for this Lyquid
+    pub contract: Address,
 }
 
 impl fmt::Debug for LyteLog {
