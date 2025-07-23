@@ -38,7 +38,7 @@ impl<O: OomHandler> Talck<O> {
     }
 
     /// Lock the mutex and access the inner `Talc`.
-    pub fn lock(&self) -> std::sync::MutexGuard<Talc<O>> {
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, Talc<O>> {
         self.mutex.lock().unwrap()
     }
 }
