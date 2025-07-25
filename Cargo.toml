@@ -46,6 +46,7 @@ lyquor-tools = { path = "tools" }
 lyquor-tls = { path = "tls" }
 lyquor-router = { path = "router" }
 lyquor-api = { path = "api" }
+lyquor-jsonrpc = { path = "jsonrpc" }
 lyquor-test = { path = "test" }
 parking_lot = { version = "0.12", features = ["send_guard"] }
 rand = "0.9"
