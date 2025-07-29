@@ -9,24 +9,15 @@ description = "Lyquid Development Kit (runtime for next-generation chain-guided 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-lyquor-primitives = { version = "0.0.1", path = "../primitives" }
 lyquid-proc = { version = "0.0.1", optional = true, path = "./proc" }
+lyquor-primitives = { version = "0.0.1", path = "../primitives" }
 serde = { version = "1.0.203", features = ["derive"], default-features = false }
-talc = { optional = true, version = "4.4.3", features = [
-    "allocator",
-], default-features = false }
+talc = { optional = true, version = "4.4.3", features = ["allocator"], default-features = false }
 #allocator-api2 = { optional = true, version = "0.2", features = ["serde"] }
+ahash = { optional = true, version = "0.8.12", features = ["no-rng"], default-features = false }
 alloy-dyn-abi = { version = "1.2.1" }
-hashbrown = { optional = true, version = "0.15", features = [
-    "nightly",
-], default-features = false }
-ahash = { optional = true, version = "0.8.12", features = [
-    "no-rng",
-], default-features = false }
-string-alloc = { optional = true, version = "0.0.3", features = [
-    "std",
-    "serde",
-] }
+hashbrown = { optional = true, version = "0.15", features = ["nightly"], default-features = false }
+string-alloc = { optional = true, version = "0.0.3", features = ["std", "serde"] }
 thiserror.workspace = true
 
 [features]

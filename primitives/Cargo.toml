@@ -10,18 +10,15 @@ description = "The primitive types for Lyquor platform."
 
 [dependencies]
 alkahest = { version = "0.3.0", features = ["bincoded"] }
-alloy-primitives = { version = "1.2.1", features = [
-    "serde",
-    "map",
-], default-features = false }
+alloy-primitives = { version = "1.2.1", features = ["serde", "map"], default-features = false }
 anyhow.workspace = true
 base32 = "0.5.1"
 blake3 = "1.8.2"
 bytes = { workspace = true }
 cb58 = "0.0.2"
 ed25519-compact = { workspace = true }
+futures = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
 sha3 = "0.10.8"
 thiserror = { workspace = true }
-futures = { workspace = true }
