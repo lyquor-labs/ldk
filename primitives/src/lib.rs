@@ -56,66 +56,27 @@ impl fmt::Debug for ChainPos {
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
-pub enum LyteCallABI {
+pub enum EventABI {
     Lyquor,
     Eth,
 }
 
-/// Lyquid's call signature.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct LyteCall {
-    pub caller: Address,
-    pub origin: Address,
-    pub method: String,
-    pub input: Bytes,
-    pub abi: LyteCallABI,
-
-    #[serde(skip)]
-    pub inter_call: InterLyteCall,
-}
-
-impl fmt::Debug for LyteCall {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(
-            f,
-            "LyteCall(caller={}, origin={}, method={}, input={}, abi={:?})",
-            self.caller,
-            self.origin,
-            self.method,
-            hex::encode(&self.input),
-            self.abi
-        )
-    }
-}
-
-impl PartialEq for LyteCall {
-    fn eq(&self, other: &Self) -> bool {
-        // Compare everything except `call_return`, which can't be trivially compared
-        self.caller == other.caller &&
-            self.origin == other.origin &&
-            self.method == other.method &&
-            self.input == other.input &&
-            self.abi == other.abi
-    }
-}
-impl Eq for LyteCall {}
-
 /// Used by the callee to end the call with a result.
-pub struct InterLyteCall(Option<oneshot::Sender<Vec<u8>>>);
+pub struct InterCall(Option<oneshot::Sender<Vec<u8>>>);
 
-impl Default for InterLyteCall {
+impl Default for InterCall {
     fn default() -> Self {
         Self(None)
     }
 }
 
-impl Clone for InterLyteCall {
+impl Clone for InterCall {
     fn clone(&self) -> Self {
         Self::default()
     }
 }
 
-impl InterLyteCall {
+impl InterCall {
     pub fn new() -> (Self, oneshot::Receiver<Vec<u8>>) {
         let (tx, rx) = oneshot::channel();
         let me = Self(Some(tx));
@@ -130,51 +91,72 @@ impl InterLyteCall {
 }
 
 /// All types of Lyquid's events.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub enum LyteEvent {
-    Call(String, LyteCall),
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SeqEvent {
+    pub caller: Address,
+    pub origin: Address,
+    pub group: String,
+    pub method: String,
+    pub input: Bytes,
+    pub abi: EventABI,
+
+    #[serde(skip)]
+    pub inter_call: InterCall,
 }
 
-impl fmt::Debug for LyteEvent {
+impl fmt::Debug for SeqEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        use LyteEvent::*;
-        match self {
-            Call(group, call) => {
-                write!(f, "Call(group={}, call={:?})", group, call)
-            }
-        }
+        write!(
+            f,
+            "LyteCall(caller={}, origin={}, group={}, method={}, input={}, abi={:?})",
+            self.caller,
+            self.origin,
+            self.group,
+            self.method,
+            hex::encode(&self.input),
+            self.abi
+        )
     }
 }
 
-impl LyteEvent {
+impl PartialEq for SeqEvent {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare everything except `call_return`, which can't be trivially compared
+        self.caller == other.caller &&
+            self.origin == other.origin &&
+            self.group == other.group &&
+            self.method == other.method &&
+            self.input == other.input &&
+            self.abi == other.abi
+    }
+}
+impl Eq for SeqEvent {}
+
+impl SeqEvent {
     // FIXME: fill in the caller
     pub fn new_node_join(node: NodeID) -> Self {
-        Self::Call(
-            "node".into(),
-            LyteCall {
-                caller: Address::ZERO,
-                origin: Address::ZERO,
-                method: "join".into(),
-                input: encode_by_fields_!("crate::serde", node: NodeID).into(),
-                abi: LyteCallABI::Lyquor,
-                inter_call: Default::default(),
-            },
-        )
+        Self {
+            caller: Address::ZERO,
+            origin: Address::ZERO,
+            method: "join".into(),
+            group: "node".into(),
+            input: encode_by_fields_!("crate::serde", node: NodeID).into(),
+            abi: EventABI::Lyquor,
+            inter_call: Default::default(),
+        }
     }
 
     // FIXME: fill in the caller
     pub fn new_node_leave(node: NodeID) -> Self {
-        Self::Call(
-            "node".into(),
-            LyteCall {
-                caller: Address::ZERO,
-                origin: Address::ZERO,
-                method: "leave".to_string(),
-                input: encode_by_fields_!("crate::serde", node: NodeID).into(),
-                abi: LyteCallABI::Lyquor,
-                inter_call: Default::default(),
-            },
-        )
+        Self {
+            caller: Address::ZERO,
+            origin: Address::ZERO,
+            method: "leave".to_string(),
+            group: "node".into(),
+            input: encode_by_fields_!("crate::serde", node: NodeID).into(),
+            abi: EventABI::Lyquor,
+            inter_call: Default::default(),
+        }
     }
 }
 
