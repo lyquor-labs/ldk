@@ -90,7 +90,7 @@ lyquid::method! {
         }.ok_or(LyquidError::LyquidRuntime("invalid register call".into()))?;
 
         lyquid::println!("register {id} (owner={owner}, contract={contract}, deps={:?})", deps);
-        lyquid::log!(Register, &RegisterEvent { id, deps, contract });
+        lyquid::log!(Register, &RegisterEvent { id, deps });
         ctx.network.eth_addrs.insert(contract, id);
         Ok(true)
     }
@@ -142,12 +142,9 @@ lyquid::method! {
         Ok(ctx.network.lyquid_registry.keys().cloned().collect())
     }
 
-    instance fn get_lyquid_list_with_deps(&ctx) -> LyquidResult<Vec<(LyquidID, Vec<LyquidID>, Address)>> {
+    instance fn get_lyquid_list_with_deps(&ctx) -> LyquidResult<Vec<(LyquidID, Vec<LyquidID>)>> {
         Ok(ctx.network.lyquid_registry.iter().map(|(id, metadata)| {
-            let latest_contract = metadata.deploy_history.last()
-                .map(|deploy| deploy.contract)
-                .unwrap_or(Address::ZERO);
-            (*id, metadata.dependencies.to_vec(), latest_contract)
+            (*id, metadata.dependencies.to_vec())
         }).collect())
     }
 

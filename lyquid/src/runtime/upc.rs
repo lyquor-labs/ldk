@@ -11,8 +11,6 @@ where
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
-    /// The Ethereum contract address (not Lyquid ID) of this contract
-    pub self_address: Address,
     pub network: Immutable<S>,
     pub id: u64,
 }
@@ -26,7 +24,6 @@ where
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            self_address: ctx.self_address,
             network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
                 crate::VAR_CATALOG_PREFIX,
             )))?),
@@ -44,8 +41,6 @@ where
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
-    /// The Ethereum contract address (not Lyquid ID) of this contract
-    pub self_address: Address,
     pub network: Immutable<S>,
     pub instance: Mutable<I>,
     pub from: NodeID,
@@ -62,7 +57,6 @@ where
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            self_address: ctx.self_address,
             network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
                 crate::VAR_CATALOG_PREFIX,
             )))?),
@@ -83,8 +77,6 @@ where
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
-    /// The Ethereum contract address (not Lyquid ID) of this contract
-    pub self_address: Address,
     pub network: Immutable<S>,
     pub from: NodeID,
     pub id: u64,
@@ -100,7 +92,6 @@ where
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            self_address: ctx.self_address,
             network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
                 crate::VAR_CATALOG_PREFIX,
             )))?),
