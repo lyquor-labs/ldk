@@ -1,0 +1,17 @@
+[package]
+name = "erc20"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lyquid = { path = "../../lyquid/", features = ["ldk"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+strip = "debuginfo"
+debug = false
+lto = true
+
+[workspace]
