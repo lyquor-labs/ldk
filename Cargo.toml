@@ -21,7 +21,6 @@ async-trait = "0.1"
 aws-lc-rs = "1.13.2"
 bytes = "1.10"
 derivative = "2.2.0"
-derive_builder = "0.20"
 ed25519-compact = { version = "2", default-features = false }
 futures = "0.3"
 http-body-util = "0.1"
@@ -62,3 +61,4 @@ tokio-stream = "0.1.17"
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 trait-variant = "0.1"
+typed-builder = "0.21"

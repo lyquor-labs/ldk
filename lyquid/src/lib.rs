@@ -16,7 +16,9 @@ pub use lyquor_primitives::{
     self, LyquidID, LyquidNumber, LyteLog, NodeID, RequiredLyquid, StateCategory, U64, U128, U256, address, blake3,
     uint,
 };
-pub use lyquor_primitives::{Address, Bytes, ConsoleSink, anyhow};
+pub use lyquor_primitives::{
+    Address, Bytes, ConsoleSink, GROUP_DEFAULT, GROUP_NODE, GROUP_UPC_CALLEE, GROUP_UPC_REQ, GROUP_UPC_RESP, anyhow,
+};
 
 #[cfg(feature = "ldk")] pub mod runtime;
 
@@ -45,12 +47,6 @@ pub enum LyquidError {
     #[error("Lyquid runtime: {0}")]
     LyquidRuntime(String),
 }
-
-pub const GROUP_DEFAULT: &str = "main";
-pub const GROUP_NODE: &str = "node";
-pub const GROUP_UPC_CALLEE: &str = "upc_callee";
-pub const GROUP_UPC_REQ: &str = "upc_request";
-pub const GROUP_UPC_RESP: &str = "upc_response";
 
 pub const ABI_ETH: u32 = 0x1;
 pub const ABI_LYQUOR: u32 = 0x0;

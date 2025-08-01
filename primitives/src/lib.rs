@@ -16,6 +16,7 @@ pub use serde::{Deserialize, Serialize};
 
 mod id;
 pub use id::{LyquidID, LyquidNumber, NodeID, RequiredLyquid};
+pub use typed_builder::TypedBuilder;
 
 pub type Hash = blake3::Hash;
 
@@ -90,72 +91,66 @@ impl InterCall {
     }
 }
 
-/// All types of Lyquid's events.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct SeqEvent {
-    pub caller: Address,
+pub const GROUP_DEFAULT: &str = "main";
+pub const GROUP_NODE: &str = "node";
+pub const GROUP_UPC_CALLEE: &str = "upc_callee";
+pub const GROUP_UPC_REQ: &str = "upc_request";
+pub const GROUP_UPC_RESP: &str = "upc_response";
+
+#[derive(Serialize, Deserialize, PartialEq, Clone, TypedBuilder)]
+pub struct CallParams<I> {
+    /// The ultimate origin of the call (the transaction signer, for example if the call comes from
+    /// the chain. The default is zero address when unused.
+    #[builder(default = Address::ZERO)]
     pub origin: Address,
+    /// The direct caller.
+    pub caller: Address,
+    #[builder(default = GROUP_DEFAULT.into())]
     pub group: String,
     pub method: String,
-    pub input: Bytes,
+    pub input: I,
+    #[builder(default = EventABI::Lyquor)]
     pub abi: EventABI,
+}
 
+impl<I: Eq> Eq for CallParams<I> {}
+
+impl<I: fmt::Debug> fmt::Debug for CallParams<I> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            "CallParams(caller={}, origin={}, group={}, method={}, input={:?}, abi={:?})",
+            self.caller, self.origin, self.group, self.method, &self.input, self.abi
+        )
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SeqEvent {
+    pub params: CallParams<Bytes>,
     #[serde(skip)]
     pub inter_call: InterCall,
 }
 
 impl fmt::Debug for SeqEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(
-            f,
-            "LyteCall(caller={}, origin={}, group={}, method={}, input={}, abi={:?})",
-            self.caller,
-            self.origin,
-            self.group,
-            self.method,
-            hex::encode(&self.input),
-            self.abi
-        )
+        write!(f, "SeqEvent({:?})", self.params)
     }
 }
 
 impl PartialEq for SeqEvent {
     fn eq(&self, other: &Self) -> bool {
-        // Compare everything except `call_return`, which can't be trivially compared
-        self.caller == other.caller &&
-            self.origin == other.origin &&
-            self.group == other.group &&
-            self.method == other.method &&
-            self.input == other.input &&
-            self.abi == other.abi
+        self.params.eq(&other.params)
     }
 }
+
 impl Eq for SeqEvent {}
 
 impl SeqEvent {
-    // FIXME: fill in the caller
-    pub fn new_node_join(node: NodeID) -> Self {
+    pub fn new(params: CallParams<Bytes>) -> Self {
         Self {
-            caller: Address::ZERO,
-            origin: Address::ZERO,
-            method: "join".into(),
-            group: "node".into(),
-            input: encode_by_fields_!("crate::serde", node: NodeID).into(),
-            abi: EventABI::Lyquor,
-            inter_call: Default::default(),
-        }
-    }
-
-    // FIXME: fill in the caller
-    pub fn new_node_leave(node: NodeID) -> Self {
-        Self {
-            caller: Address::ZERO,
-            origin: Address::ZERO,
-            method: "leave".to_string(),
-            group: "node".into(),
-            input: encode_by_fields_!("crate::serde", node: NodeID).into(),
-            abi: EventABI::Lyquor,
-            inter_call: Default::default(),
+            params,
+            inter_call: InterCall::default(),
         }
     }
 }
@@ -246,7 +241,7 @@ pub fn encode_method_name(cat_prefix: &str, group: &str, method: &str) -> String
 macro_rules! object_by_fields_ {
     ($serde_crate: tt, $($var:ident: $type:ty = $val:expr),*) => {{
         #[allow(non_camel_case_types)]
-        #[derive($crate::Serialize)]
+        #[derive($crate::Serialize, Clone)]
         #[serde(crate = $serde_crate)]
         struct parameters { $($var:$type),* }
         parameters { $($var: $val),* }
