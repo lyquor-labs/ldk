@@ -1,5 +1,5 @@
 // =============================================================================
-// Lyquid BasicSwap Core Implementation
+// Lyquid Basic Swap Implementation
 // =============================================================================
 //
 // This module implements a Uniswap V2-style Automated Market Maker (AMM) in the Lyquid framework.
@@ -18,9 +18,11 @@
 #![feature(allocator_api)]
 use lyquid::runtime::*;
 
+mod utils;
+use utils::{sqrt, min};
+
 // Written by following Solidity code in
 // https://github.com/Uniswap/v2-core/blob/master/contracts/UniswapV2Pair.sol
-
 
 /// Minimum liquidity locked in the contract forever (sent to zero address)
 const MINIMUM_LIQUIDITY: U256 = uint!(1000_U256);
@@ -28,29 +30,6 @@ const MINIMUM_LIQUIDITY: U256 = uint!(1000_U256);
 /// Fee taken on swaps: 0.3% = 3/1000
 const FEE_RATE: U256 = uint!(3_U256);
 const FEE_DENOMINATOR: U256 = uint!(1000_U256);
-
-/// Calculates the square root of a number using binary search
-/// Used for calculating LP tokens during initial liquidity provision
-fn sqrt(y: U256) -> U256 {
-    if y > uint!(3_U256) {
-        let mut z = y;
-        let mut x = y / uint!(2_U256) + uint!(1_U256);
-        while x < z {
-            z = x;
-            x = (y / x + x) / uint!(2_U256);
-        }
-        z
-    } else if y != U256::ZERO {
-        uint!(1_U256)
-    } else {
-        U256::ZERO
-    }
-}
-
-/// Returns the minimum of two U256 values
-fn min(a: U256, b: U256) -> U256 {
-    if a < b { a } else { b }
-}
 
 fn _safe_transfer(
     token: LyquidID,
@@ -350,18 +329,18 @@ lyquid::method! {
     }
 
     // Calculate output amount for a given input
-    instance fn getAmountOut(&ctx, amount_in: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
+    network fn getAmountOut(&ctx, amount_in: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
         get_amount_out(amount_in, reserve_in, reserve_out)
     }
 
     // Calculate required input amount for a desired output
-    instance fn getAmountIn(&ctx, amount_out: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
+    network fn getAmountIn(&ctx, amount_out: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
         get_amount_in(amount_out, reserve_in, reserve_out)
     }
 
     // Get the current price of token0 in terms of token1,
     // returns reserve1/reserve0 * 10^18 for precision
-    instance fn getPrice0(&ctx) -> LyquidResult<U256> {
+    network fn getPrice0(&ctx) -> LyquidResult<U256> {
         if *ctx.network.reserve0 == U256::ZERO {
             return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
         }
@@ -370,7 +349,7 @@ lyquid::method! {
 
     // Get the current price of token1 in terms of token0,
     // returns reserve0/reserve1 * 10^18 for precision
-    instance fn getPrice1(&ctx) -> LyquidResult<U256> {
+    network fn getPrice1(&ctx) -> LyquidResult<U256> {
         if *ctx.network.reserve1 == U256::ZERO {
             return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
         }
