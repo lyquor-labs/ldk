@@ -70,43 +70,6 @@ fn _get_token_balance(token: LyquidID, account: Address) -> LyquidResult<U256> {
     Ok(result.balance?) 
 }
 
-/// Returns the output amount for a given input amount
-/// Formula: amountOut = (amountIn * 997 * reserveOut) / (reserveIn * 1000 + amountIn * 997)
-/// The 997/1000 factor accounts for the 0.3% fee
-fn get_amount_out(amount_in: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
-    if amount_in == U256::ZERO {
-        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_INPUT_AMOUNT".into()));
-    }
-    if reserve_in == U256::ZERO || reserve_out == U256::ZERO {
-        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
-    }
-    
-    let amount_in_with_fee = amount_in * (FEE_DENOMINATOR - FEE_RATE);
-    let numerator = amount_in_with_fee * reserve_out;
-    let denominator = reserve_in * FEE_DENOMINATOR + amount_in_with_fee;
-    
-    Ok(numerator / denominator)
-}
-
-/// Calculate the required input amount for a desired output amount
-/// Formula: amountIn = (reserveIn * amountOut * 1000) / ((reserveOut - amountOut) * 997) + 1
-fn get_amount_in(amount_out: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
-    if amount_out == U256::ZERO {
-        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_OUTPUT_AMOUNT".into()));
-    }
-    if reserve_in == U256::ZERO || reserve_out == U256::ZERO {
-        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
-    }
-    if amount_out >= reserve_out {
-        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
-    }
-    
-    let numerator = reserve_in * amount_out * FEE_DENOMINATOR;
-    let denominator = (reserve_out - amount_out) * (FEE_DENOMINATOR - FEE_RATE);
-    
-    Ok(numerator / denominator + uint!(1_U256))
-}
-
 /// Updates reserves and synchronizes with actual token balances
 /// This is called after every liquidity or swap operation
 fn _update(self_address: Address, state: &mut __lyquid::NetworkState) -> LyquidResult<()> {
@@ -326,16 +289,6 @@ lyquid::method! {
         
         lyquid::println!("Swapped: {} token0 and {} token1 to {}", amount0_out, amount1_out, to);
         Ok(true)
-    }
-
-    // Calculate output amount for a given input
-    network fn getAmountOut(&ctx, amount_in: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
-        get_amount_out(amount_in, reserve_in, reserve_out)
-    }
-
-    // Calculate required input amount for a desired output
-    network fn getAmountIn(&ctx, amount_out: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
-        get_amount_in(amount_out, reserve_in, reserve_out)
     }
 
     // Get the current price of token0 in terms of token1,
