@@ -338,7 +338,7 @@ pub mod lyquor_api {
         whoami() -> (NodeID, LyquidID);
         console_output(output: ConsoleSink, s: String);
         universal_procedural_call(target: LyquidID, method: String, input: Vec<u8>, targets: Option<Vec<NodeID>>) -> Vec<u8>;
-        inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Option<Vec<u8>>;
+        inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
     );
 }
 
@@ -385,12 +385,12 @@ macro_rules! log {
 /// FIXME: enforce this at compile time.
 #[macro_export]
 macro_rules! call {
-    (($service: expr).$method :ident($($var:ident: $type:ty = $val: expr),*)) => {
+    (($service: expr).$method :ident($($var:ident: $type:ty = $val: expr),*) -> ($($ovar:ident: $otype:ty),*)) => {
         lyquor_api::inter_lyquid_call(
             $service,
             stringify!($method).to_string().into(),
             Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
-        )
+        ).and_then(|r| lyquor_primitives::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
     };
 }
 
