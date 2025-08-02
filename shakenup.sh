@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Shakenup - Lyquor development environment setup
 FOUNDRY_VERSION="stable"
+SHAKENUP_DIR="${SHAKENUP_DIR:-$HOME/.shakenup}"
 
 # Colors and logging
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
@@ -85,7 +86,15 @@ setup_rustup() {
     ask_user "Install rustup now?" || { log_error "rustup required for Lyquor development"; exit 1; }
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable --profile minimal --no-modify-path -y
     export PATH="$HOME/.cargo/bin:$PATH"
+
+    # Create symlinks for rustup and cargo in shakenup bin directory
+    local bin_dir="$SHAKENUP_DIR/bin"
+    mkdir -p "$bin_dir"
+    [[ -f "$HOME/.cargo/bin/rustup" ]] && ln -sf "$HOME/.cargo/bin/rustup" "$bin_dir/rustup"
+    [[ -f "$HOME/.cargo/bin/cargo" ]] && ln -sf "$HOME/.cargo/bin/cargo" "$bin_dir/cargo"
+
     log_success "rustup installed"
+    log_info "Consider adding ~/.cargo/bin to your PATH for direct access to Rust tools"
 }
 
 setup_nightly_wasm() {
@@ -124,7 +133,7 @@ setup_nightly_wasm() {
 }
 
 setup_foundry() {
-    local foundry_home="$HOME/.shakenup/foundry" bin_dir="$HOME/.shakenup/bin"
+    local foundry_home="$SHAKENUP_DIR/foundry" bin_dir="$SHAKENUP_DIR/bin"
     [[ -f "$foundry_home/bin/forge" ]] && { log_success "Foundry already installed"; return; }
     
     log_step "Installing Foundry..."
@@ -148,7 +157,7 @@ setup_foundry() {
 }
 
 setup_lyquor() {
-    local bin_dir="$HOME/.shakenup/bin" ldk_dir="$HOME/.shakenup/ldk" tools=(lyquor ladle setup-devnet shaker)
+    local bin_dir="$SHAKENUP_DIR/bin" ldk_dir="$SHAKENUP_DIR/ldk" tools=(lyquor ladle setup-devnet shaker)
     local all_exist=true; for tool in "${tools[@]}"; do [[ -f "$bin_dir/$tool" ]] || { all_exist=false; break; }; done
     local ldk_exists=false; [[ -d "$ldk_dir" && -n "$(ls -A "$ldk_dir" 2>/dev/null)" ]] && ldk_exists=true
     $all_exist && $ldk_exists && { log_success "Lyquor tools and LDK already installed"; return; }
@@ -175,7 +184,7 @@ setup_lyquor() {
 }
 
 create_devnet_script() {
-    cat > "$HOME/.shakenup/bin/start-devnet" << 'EOF'
+    cat > "$SHAKENUP_DIR/bin/start-devnet" << 'EOF'
 #!/usr/bin/env bash
 set -eo pipefail
 
@@ -188,14 +197,12 @@ sleep 1
 wait "$pid"
 EOF
 
-    chmod +x "$HOME/.shakenup/bin/start-devnet"
+    chmod +x "$SHAKENUP_DIR/bin/start-devnet"
     log_success "Devnet script created"
 }
 
 create_status_script() {
-    mkdir -p "$HOME/.shakenup"
-    
-    cat > "$HOME/.shakenup/status" << 'EOF'
+    cat > "$SHAKENUP_DIR/status" << 'EOF'
 #!/usr/bin/env bash
 echo "Shakenup Development Environment Status"
 echo "======================================"
@@ -203,16 +210,16 @@ command -v rustc >/dev/null && {
     echo "✓ Rust: $(rustc +nightly --version 2>/dev/null || rustc --version)"
     rustup target list --toolchain nightly 2>/dev/null | grep -q "wasm32.*installed" && echo "✓ WASM: available" || echo "✗ WASM: missing"
 } || echo "✗ Rust: not installed"
-[[ -f "$HOME/.shakenup/bin/forge" ]] && echo "✓ Foundry: $($HOME/.shakenup/bin/forge --version)" || echo "✗ Foundry: not installed"
-[[ -f "$HOME/.shakenup/bin/lyquor" ]] && echo "✓ Lyquor: installed" || echo "✗ Lyquor: not installed"
+[[ -f "$SHAKENUP_DIR/bin/forge" ]] && echo "✓ Foundry: $($SHAKENUP_DIR/bin/forge --version)" || echo "✗ Foundry: not installed"
+[[ -f "$SHAKENUP_DIR/bin/lyquor" ]] && echo "✓ Lyquor: installed" || echo "✗ Lyquor: not installed"
 EOF
     
-    chmod +x "$HOME/.shakenup/status"
+    chmod +x "$SHAKENUP_DIR/status"
     log_success "Status script created"
 }
 
 setup_shell_config() {
-    local bin_dir="$HOME/.shakenup/bin" marker="# Added by shakenup"
+    local bin_dir="$SHAKENUP_DIR/bin" marker="# Added by shakenup"
     [[ ":$PATH:" == *":$bin_dir:"* ]] && { log_info "Already in PATH"; return; }
     
     local shell=$(basename "$SHELL") config_file
@@ -240,18 +247,21 @@ main() {
     echo "==============================================="
     echo
     
+    setup_shell_config
+    # Add shakenup bin to PATH for current session
+    export PATH="$SHAKENUP_DIR/bin:$PATH"
+
     setup_rustup
     setup_nightly_wasm
     setup_foundry
     setup_lyquor
     create_devnet_script
     create_status_script
-    setup_shell_config
     
-    log_success "Self-contained installation to ~/.shakenup/ succeeded!"
+    log_success "Self-contained installation to $SHAKENUP_DIR succeeded!"
     log_info "Restart your shell to use the tools"
     log_info "Start devnet: start-devnet"
-    log_info "Check status: ~/.shakenup/status"
+    log_info "Check status: $SHAKENUP_DIR/status"
 }
 
 main "$@"
