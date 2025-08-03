@@ -23,20 +23,20 @@ detect_platform() {
     local format="${1:-foundry}" os=$(uname -s) arch=$(uname -m)
     # Normalize FreeBSD amd64 to x86_64
     [[ "$arch" == "amd64" ]] && arch="x86_64"
-    
+
     # Detect WSL
     if [[ "$os" == "Linux" ]] && grep -qi "microsoft\|wsl" /proc/version 2>/dev/null; then
         log_info "WSL detected, using Linux binaries" >&2
     fi
-    
+
     local sep="_"; [[ "$format" != "foundry" ]] && sep="-"
-    
+
     case "$os-$arch" in
         Linux-x86_64) echo "linux${sep}amd64" ;;
         Linux-aarch64) echo "linux${sep}arm64" ;;
         Darwin-x86_64) echo "darwin${sep}amd64" ;;
         Darwin-arm64) echo "darwin${sep}arm64" ;;
-        *BSD-x86_64|FreeBSD-x86_64|NetBSD-x86_64|OpenBSD-x86_64) 
+        *BSD-x86_64|FreeBSD-x86_64|NetBSD-x86_64|OpenBSD-x86_64)
             log_warn "BSD detected, using Linux binaries (may not work)" >&2
             echo "linux${sep}amd64" ;;
         *BSD-aarch64|FreeBSD-aarch64|NetBSD-aarch64|OpenBSD-aarch64)
@@ -50,12 +50,12 @@ download_extract() {
     local url="$1" dest="$2" strip="${3:-0}" temp tar_file
     # Check for curl availability
     command -v curl >/dev/null 2>&1 || { log_error "curl is required but not installed"; return 1; }
-    
+
     temp=$(mktemp -d) || { log_error "Failed to create temporary directory"; return 1; }
     tar_file="$temp/archive.tar.gz"
-    
+
     # Download and extract with strip-components
-    if curl -L "$url" -o "$tar_file"; then
+    if curl -L --connect-timeout 30 --max-time 300 "$url" -o "$tar_file"; then
         # Both GNU tar and modern BSD tar support --strip-components
         # Use it directly instead of trying to detect support
         tar -xzf "$tar_file" -C "$dest" --strip-components="$strip" || {
@@ -63,12 +63,12 @@ download_extract() {
             local extract_temp="$temp/extract"
             mkdir -p "$extract_temp"
             tar -xzf "$tar_file" -C "$extract_temp"
-            
+
             local source_dir="$extract_temp"
             if [[ "$strip" -gt 0 ]]; then
                 # Strip one level (strip=1)
-                source_dir="$extract_temp"/*/ 
-                source_dir=$(echo $source_dir | head -n1)
+                source_dir="$extract_temp"/*/
+                source_dir=$(echo "$source_dir" | head -n1)
                 [[ -d "$source_dir" ]] || { log_error "Cannot strip directory level"; return 1; }
             fi
             mv "$source_dir"/* "$dest/" 2>/dev/null || cp -r "$source_dir"/* "$dest/"
@@ -77,6 +77,82 @@ download_extract() {
         rm -rf "$temp"; log_error "Failed to download from $url"; return 1
     fi
     rm -rf "$temp"
+}
+
+check_cc() {
+    command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1
+}
+
+install_build_tools() {
+    check_cc && { log_success "C compiler already available"; return; }
+
+    log_warn "C compiler not found - required for building Rust projects"
+    local os=$(uname -s) sudo_cmd=""
+    [[ $EUID -ne 0 ]] && sudo_cmd="sudo "
+
+    if [[ "$os" == "Darwin" ]]; then
+        log_info "Xcode Command Line Tools provide the C compiler needed for building Rust projects"
+        ask_user "Install Xcode Command Line Tools now?" || {
+            log_error "C compiler required for building Rust projects"; exit 1;
+        }
+        if ! xcode-select -p >/dev/null 2>&1; then
+            xcode-select --install
+            log_info "Complete the installation dialog and re-run this script"
+            exit 0
+        fi
+    elif [[ "$os" == "Linux" ]]; then
+        if [[ -f /etc/os-release ]]; then
+            . /etc/os-release
+            case $ID in
+                ubuntu|debian)
+                    log_info "build-essential package provides C compiler needed for building Rust projects"
+                    ask_user "Install build-essential now?$([[ -n "$sudo_cmd" ]] && echo " (requires sudo)")" || {
+                        log_error "C compiler required for building Rust projects"; exit 1;
+                    }
+                    ${sudo_cmd}apt update && ${sudo_cmd}apt install -y build-essential
+                    ;;
+                arch|manjaro)
+                    log_info "base-devel group provides C compiler needed for building Rust projects"
+                    ask_user "Install base-devel now?$([[ -n "$sudo_cmd" ]] && echo " (requires sudo)")" || {
+                        log_error "C compiler required for building Rust projects"; exit 1;
+                    }
+                    ${sudo_cmd}pacman -S --needed base-devel
+                    ;;
+                fedora|rhel|centos)
+                    log_info "Development Tools group provides C compiler needed for building Rust projects"
+                    ask_user "Install Development Tools now?$([[ -n "$sudo_cmd" ]] && echo " (requires sudo)")" || {
+                        log_error "C compiler required for building Rust projects"; exit 1;
+                    }
+                    ${sudo_cmd}dnf groupinstall -y "Development Tools"
+                    ;;
+                alpine)
+                    log_info "build-base package provides C compiler needed for building Rust projects"
+                    ask_user "Install build-base now?$([[ -n "$sudo_cmd" ]] && echo " (requires sudo)")" || {
+                        log_error "C compiler required for building Rust projects"; exit 1;
+                    }
+                    ${sudo_cmd}apk add build-base
+                    ;;
+                *)
+                    log_error "Unsupported Linux distribution: $PRETTY_NAME"
+                    log_info "Please install a C compiler manually and re-run this script"
+                    exit 1
+                    ;;
+            esac
+        else
+            log_error "Cannot detect Linux distribution"
+            log_info "Please install build-essential or equivalent C compiler package"
+            exit 1
+        fi
+    else
+        log_error "Unsupported operating system: $os"
+        log_info "Please install a C compiler and re-run this script"
+        exit 1
+    fi
+
+    check_cc && log_success "C compiler installed successfully" || {
+        log_error "C compiler installation failed"
+        exit 1
+    }
 }
 
 setup_rustup() {
@@ -99,9 +175,9 @@ setup_rustup() {
 
 setup_nightly_wasm() {
     command -v rustup >/dev/null 2>&1 || { log_error "rustup required"; exit 1; }
-    
+
     local needs_setup=false
-    
+
     # Check nightly toolchain
     if ! rustup toolchain list | grep -q "nightly"; then
         log_step "Installing nightly toolchain..."
@@ -110,21 +186,21 @@ setup_nightly_wasm() {
         rustup toolchain install nightly
         needs_setup=true
     fi
-    
+
     # Check rust-src component
     if ! rustup component list --toolchain nightly | grep -q "rust-src.*installed"; then
         log_step "Adding rust-src component..."
         rustup component add rust-src --toolchain nightly
         needs_setup=true
     fi
-    
+
     # Check wasm32 target
     if ! rustup target list --toolchain nightly | grep -q "wasm32-unknown-unknown.*installed"; then
         log_step "Adding wasm32 target..."
         rustup target add wasm32-unknown-unknown --toolchain nightly
         needs_setup=true
     fi
-    
+
     if $needs_setup; then
         log_success "nightly toolchain with wasm32 configured"
     else
@@ -135,19 +211,19 @@ setup_nightly_wasm() {
 setup_foundry() {
     local foundry_home="$SHAKENUP_DIR/foundry" bin_dir="$SHAKENUP_DIR/bin"
     [[ -f "$foundry_home/bin/forge" ]] && { log_success "Foundry already installed"; return; }
-    
+
     log_step "Installing Foundry..."
     mkdir -p "$foundry_home/bin" "$bin_dir"
     local platform=$(detect_platform "foundry") url
-    
+
     if [[ "$FOUNDRY_VERSION" == "stable" ]]; then
-        local version=$(curl -s https://api.github.com/repos/foundry-rs/foundry/releases/latest | grep '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+        local version=$(curl -s --connect-timeout 30 --max-time 60 https://api.github.com/repos/foundry-rs/foundry/releases/latest | grep '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
         [[ -n "$version" ]] || { log_error "Failed to parse Foundry version"; exit 1; }
         url="https://github.com/foundry-rs/foundry/releases/download/$version/foundry_${version}_${platform}.tar.gz"
     else
         url="https://github.com/foundry-rs/foundry/releases/download/$FOUNDRY_VERSION/foundry_${FOUNDRY_VERSION}_${platform}.tar.gz"
     fi
-    
+
     download_extract "$url" "$foundry_home/bin/" || exit 1
     chmod +x "$foundry_home/bin"/*
     for tool in forge cast anvil chisel; do
@@ -161,25 +237,25 @@ setup_lyquor() {
     local all_exist=true; for tool in "${tools[@]}"; do [[ -f "$bin_dir/$tool" ]] || { all_exist=false; break; }; done
     local ldk_exists=false; [[ -d "$ldk_dir" && -n "$(ls -A "$ldk_dir" 2>/dev/null)" ]] && ldk_exists=true
     $all_exist && $ldk_exists && { log_success "Lyquor tools and LDK already installed"; return; }
-    
+
     log_step "Installing Lyquor tools and LDK..."
     mkdir -p "$bin_dir" "$ldk_dir"
     local platform=$(detect_platform "lyquor")
-    
+
     # Download tools if needed
     if ! $all_exist; then
-        local filename=$(curl -s https://api.github.com/repos/lyquor-labs/ldk/releases/tags/latest | \
+        local filename=$(curl -s --connect-timeout 30 --max-time 60 https://api.github.com/repos/lyquor-labs/ldk/releases/tags/latest | \
             grep "browser_download_url.*${platform}\.tar\.gz" | sed -E 's|.*/([^"/]+\.tar\.gz)".*|\1|')
         [[ -n "$filename" ]] || { log_error "No Lyquor tools for $platform"; exit 1; }
         download_extract "https://github.com/lyquor-labs/ldk/releases/download/latest/$filename" "$bin_dir" 1 || exit 1
         chmod +x "$bin_dir"/*
     fi
-    
+
     # Download LDK if needed
     if ! $ldk_exists; then
         download_extract "https://github.com/lyquor-labs/ldk/releases/download/latest/ldk.tar.gz" "$ldk_dir" 1 || exit 1
     fi
-    
+
     log_success "Lyquor tools and LDK installed"
 }
 
@@ -193,7 +269,9 @@ rm -rf lyquor_db && LYQUOR_LOG=${LYQUOR_LOG:-info} "$SCRIPT_DIR/lyquor" --networ
 pid=$!
 trap 'echo "Received signal, stopping devnet node..."; kill -INT "$pid" 2>/dev/null; wait "$pid"; exit' INT TERM
 sleep 1
-"$SCRIPT_DIR/setup-devnet" -b "$SCRIPT_DIR/../ldk/bartender/Cargo.toml" > /dev/null
+if ! "$SCRIPT_DIR/setup-devnet" -b "$SCRIPT_DIR/../ldk/bartender/Cargo.toml" > /dev/null; then
+    kill -INT "$pid" 2>/dev/null; wait "$pid"; exit 1
+fi
 wait "$pid"
 EOF
 
@@ -213,7 +291,7 @@ command -v rustc >/dev/null && {
 [[ -f "$SHAKENUP_DIR/bin/forge" ]] && echo "✓ Foundry: $($SHAKENUP_DIR/bin/forge --version)" || echo "✗ Foundry: not installed"
 [[ -f "$SHAKENUP_DIR/bin/lyquor" ]] && echo "✓ Lyquor: installed" || echo "✗ Lyquor: not installed"
 EOF
-    
+
     chmod +x "$SHAKENUP_DIR/status"
     log_success "Status script created"
 }
@@ -221,7 +299,7 @@ EOF
 setup_shell_config() {
     local bin_dir="$SHAKENUP_DIR/bin" marker="# Added by shakenup"
     [[ ":$PATH:" == *":$bin_dir:"* ]] && { log_info "Already in PATH"; return; }
-    
+
     local shell=$(basename "$SHELL") config_file
     case "$shell" in
         bash) config_file="$HOME/.bashrc" ;;
@@ -230,10 +308,10 @@ setup_shell_config() {
         fish) config_file="$HOME/.config/fish/config.fish"; mkdir -p "$(dirname "$config_file")" ;;
         *) log_warn "Unknown shell: $shell" >&2; return ;;
     esac
-    
+
     touch "$config_file"
     grep -q "$marker" "$config_file" && { log_info "PATH already configured"; return; }
-    
+
     if [[ "$shell" == "fish" ]]; then
         printf '\n%s\nfish_add_path "%s"\n' "$marker" "$bin_dir" >> "$config_file"
     else
@@ -246,18 +324,19 @@ main() {
     echo -e "${BOLD}${BLUE}Shakenup - Lyquor Development Environment Setup${NC}"
     echo "==============================================="
     echo
-    
+
     setup_shell_config
     # Add shakenup bin to PATH for current session
     export PATH="$SHAKENUP_DIR/bin:$PATH"
 
+    install_build_tools
     setup_rustup
     setup_nightly_wasm
     setup_foundry
     setup_lyquor
     create_devnet_script
     create_status_script
-    
+
     log_success "Self-contained installation to $SHAKENUP_DIR succeeded!"
     log_info "Restart your shell to use the tools"
     log_info "Start devnet: start-devnet"
