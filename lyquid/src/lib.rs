@@ -1,4 +1,3 @@
-#![doc(html_no_source)] // remove it upon open-source
 #![cfg_attr(feature = "ldk", feature(allocator_api, btreemap_alloc))]
 #![cfg_attr(feature = "ldk", allow(incomplete_features))] // used by specialization feature
 #![cfg_attr(feature = "ldk", feature(specialization))] // only used by EthABI

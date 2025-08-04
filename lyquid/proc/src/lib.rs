@@ -1,4 +1,3 @@
-#![doc(html_no_source)] // remove it upon open-source
 #![allow(dead_code)]
 
 use proc_macro;

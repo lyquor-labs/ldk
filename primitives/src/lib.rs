@@ -1,5 +1,3 @@
-#![doc(html_no_source)] // remove it upon open-source
-
 pub extern crate serde;
 
 use std::fmt;
