@@ -139,7 +139,7 @@ install_build_tools() {
             
             local package cmd description
             case "$ID" in
-                ubuntu|debian)
+                ubuntu|debian|linuxmint)
                     package="build-essential"
                     description="package provides C compiler needed for building Rust projects"
                     cmd="${sudo_cmd}apt update && ${sudo_cmd}apt install -y build-essential"
@@ -147,17 +147,12 @@ install_build_tools() {
                 arch|manjaro)
                     package="base-devel"
                     description="group provides C compiler needed for building Rust projects"
-                    cmd="${sudo_cmd}pacman -S --needed base-devel"
+                    cmd="${sudo_cmd}pacman -Sy --needed base-devel"
                     ;;
                 fedora|rhel|centos)
-                    package="Development Tools"
-                    description="group provides C compiler needed for building Rust projects"
-                    cmd="${sudo_cmd}dnf groupinstall -y \"Development Tools\""
-                    ;;
-                alpine)
-                    package="build-base"
+                    package="gcc"
                     description="package provides C compiler needed for building Rust projects"
-                    cmd="${sudo_cmd}apk add build-base"
+                    cmd="${sudo_cmd}dnf install -y gcc"
                     ;;
                 *)
                     log_error "Unsupported Linux distribution: $PRETTY_NAME"
@@ -363,7 +358,7 @@ setup_shell_config() {
     case "$shell" in
         bash) config_file="$HOME/.bashrc" ;;
         zsh) config_file="$HOME/.zshenv" ;;
-        ash) config_file="$HOME/.profile" ;;
+        sh) config_file="$HOME/.profile" ;;
         fish) config_file="$HOME/.config/fish/config.fish"; mkdir -p "$(dirname "$config_file")" ;;
         *) log_warn "Unknown shell: $shell" >&2; return ;;
     esac
