@@ -202,32 +202,36 @@ setup_nightly_wasm() {
     local needs_setup=false
 
     # Check nightly toolchain
-    if ! rustup toolchain list | grep -q "nightly"; then
-        log_info "Lyquor requires wasm32 nightly toolchain to build Lyquids"
-        ask_user "Install nightly toolchain?" || { log_error "nightly required for Lyquid development"; exit 1; }
-        log_step "Installing nightly toolchain..."
-        rustup toolchain install nightly
+    if ! rustup toolchain list | grep -q "nightly-2025-08-02"; then
+        log_info "Lyquor requires wasm32 nightly-2025-08-02 toolchain to build Lyquids"
+        ask_user "Install nightly-2025-08-02 toolchain?" || { log_error "nightly-2025-08-02 required for Lyquid development"; exit 1; }
+        log_step "Installing nightly-2025-08-02 toolchain..."
+        rustup toolchain install nightly-2025-08-02
         needs_setup=true
     fi
 
     # Check rust-src component
-    if ! rustup component list --toolchain nightly | grep -q "rust-src.*installed"; then
+    if ! rustup component list --toolchain nightly-2025-08-02 | grep -q "rust-src.*installed"; then
         log_step "Adding rust-src component..."
-        rustup component add rust-src --toolchain nightly
+        rustup component add rust-src --toolchain nightly-2025-08-02
         needs_setup=true
     fi
 
     # Check wasm32 target
-    if ! rustup target list --toolchain nightly | grep -q "wasm32-unknown-unknown.*installed"; then
+    if ! rustup target list --toolchain nightly-2025-08-02 | grep -q "wasm32-unknown-unknown.*installed"; then
         log_step "Adding wasm32 target..."
-        rustup target add wasm32-unknown-unknown --toolchain nightly
+        rustup target add wasm32-unknown-unknown --toolchain nightly-2025-08-02
         needs_setup=true
     fi
 
+    # Check lyquid toolchain link
+    log_step "Linking lyquid toolchain..."
+    rustup toolchain link lyquid $(rustc +nightly-2025-08-02 --print sysroot)
+
     if $needs_setup; then
-        log_success "nightly toolchain with wasm32 configured"
+        log_success "Lyquid toolchain configured"
     else
-        log_success "nightly toolchain with wasm32 ready"
+        log_success "Lyquid toolchain ready"
     fi
 }
 
@@ -334,12 +338,12 @@ SHAKENUP_DIR="\${SHAKENUP_DIR:-\$HOME/.shakenup}"
 echo "Shakenup Development Environment Status"
 echo "======================================"
 command -v rustc >/dev/null && {
-    echo "✓ Rust: \$(rustc +nightly --version 2>/dev/null || rustc --version)"
-    if rustup target list --toolchain nightly 2>/dev/null | grep -q "wasm32.*installed" && \\
-       rustup component list --toolchain nightly 2>/dev/null | grep -q "rust-src.*installed"; then
+    echo "✓ Rust: \$(rustc +nightly-2025-08-02 --version 2>/dev/null || rustc --version)"
+    if rustup target list --toolchain nightly-2025-08-02 2>/dev/null | grep -q "wasm32.*installed" && \\
+       rustup component list --toolchain nightly-2025-08-02 2>/dev/null | grep -q "rust-src.*installed"; then
         echo "✓ WASM: available (wasm32 + rust-src)"
     else
-        echo "✗ WASM: missing (need both wasm32 target and rust-src component for nightly)"
+        echo "✗ WASM: missing (need both wasm32 target and rust-src component for nightly-2025-08-02)"
     fi
 } || echo "✗ Rust: not installed"
 [[ -f "\$SHAKENUP_DIR/bin/forge" ]] && echo "✓ Foundry: \$(\$SHAKENUP_DIR/bin/forge --version)" || echo "✗ Foundry: not installed"
