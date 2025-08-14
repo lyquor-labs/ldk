@@ -16,7 +16,7 @@ pub use lyquor_primitives::{
     uint,
 };
 pub use lyquor_primitives::{
-    Address, Bytes, ConsoleSink, GROUP_DEFAULT, GROUP_NODE, GROUP_UPC_CALLEE, GROUP_UPC_REQ, GROUP_UPC_RESP, anyhow,
+    Address, Bytes, ConsoleSink, GROUP_DEFAULT, GROUP_NODE, GROUP_UPC_CALLEE, GROUP_UPC_REQ, GROUP_UPC_RESP,
 };
 
 #[cfg(feature = "ldk")] pub mod runtime;

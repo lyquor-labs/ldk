@@ -4,17 +4,13 @@ use std::fmt;
 
 pub use alloy_primitives::hex;
 pub use alloy_primitives::{self, Address, B256, U32, U64, U128, U256, address, uint};
-pub use anyhow;
 pub use blake3;
 pub use bytes::{self, Bytes};
 pub use cb58;
-use futures::channel::oneshot;
-pub use parking_lot;
 pub use serde::{Deserialize, Serialize};
 
 mod id;
 pub use id::{LyquidID, LyquidNumber, NodeID, RequiredLyquid};
-pub use typed_builder::TypedBuilder;
 
 pub type Hash = blake3::Hash;
 
@@ -60,98 +56,11 @@ pub enum EventABI {
     Eth,
 }
 
-/// Used by the callee to end the call with a result.
-pub struct InterCall(Option<oneshot::Sender<Vec<u8>>>);
-
-impl Default for InterCall {
-    fn default() -> Self {
-        Self(None)
-    }
-}
-
-impl Clone for InterCall {
-    fn clone(&self) -> Self {
-        Self::default()
-    }
-}
-
-impl InterCall {
-    pub fn new() -> (Self, oneshot::Receiver<Vec<u8>>) {
-        let (tx, rx) = oneshot::channel();
-        let me = Self(Some(tx));
-        (me, rx)
-    }
-
-    pub fn set_result(&mut self, data: Vec<u8>) {
-        if let Some(tx) = self.0.take() {
-            tx.send(data).ok();
-        }
-    }
-}
-
 pub const GROUP_DEFAULT: &str = "main";
 pub const GROUP_NODE: &str = "node";
 pub const GROUP_UPC_CALLEE: &str = "upc_callee";
 pub const GROUP_UPC_REQ: &str = "upc_request";
 pub const GROUP_UPC_RESP: &str = "upc_response";
-
-#[derive(Serialize, Deserialize, PartialEq, Clone, TypedBuilder)]
-pub struct CallParams<I> {
-    /// The ultimate origin of the call (the transaction signer, for example if the call comes from
-    /// the chain. The default is zero address when unused.
-    #[builder(default = Address::ZERO)]
-    pub origin: Address,
-    /// The direct caller.
-    pub caller: Address,
-    #[builder(default = GROUP_DEFAULT.into())]
-    pub group: String,
-    pub method: String,
-    pub input: I,
-    #[builder(default = EventABI::Lyquor)]
-    pub abi: EventABI,
-}
-
-impl<I: Eq> Eq for CallParams<I> {}
-
-impl<I: fmt::Debug> fmt::Debug for CallParams<I> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(
-            f,
-            "CallParams(caller={}, origin={}, group={}, method={}, input={:?}, abi={:?})",
-            self.caller, self.origin, self.group, self.method, &self.input, self.abi
-        )
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct SeqEvent {
-    pub params: CallParams<Bytes>,
-    #[serde(skip)]
-    pub inter_call: InterCall,
-}
-
-impl fmt::Debug for SeqEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "SeqEvent({:?})", self.params)
-    }
-}
-
-impl PartialEq for SeqEvent {
-    fn eq(&self, other: &Self) -> bool {
-        self.params.eq(&other.params)
-    }
-}
-
-impl Eq for SeqEvent {}
-
-impl SeqEvent {
-    pub fn new(params: CallParams<Bytes>) -> Self {
-        Self {
-            params,
-            inter_call: InterCall::default(),
-        }
-    }
-}
 
 pub type LyteLogTopic = B256;
 

@@ -45,7 +45,7 @@ lyquor-tls = { path = "tls" }
 lyquor-tools = { path = "tools" }
 lyquor-upc = { path = "upc" }
 lyquor-vm = { path = "vm" }
-parking_lot = { version = "0.12", features = ["send_guard"] }
+parking_lot = { version = "0.12" }
 rand = "0.9"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 rustls-pemfile = { version = "2.2" }
