@@ -2,11 +2,12 @@ use std::any::Any;
 
 use super::{Immutable, Mutable, internal};
 use crate::{Address, Bytes, CallContext, LyquidResult, NodeID, upc::CachePtr};
+use internal::{OracleCertifyContext, StateAccessor, sealed};
 
 /// UPC callee context, which is allowed to only read the network state variables.
 pub struct CalleeContextImpl<S>
 where
-    S: internal::StateAccessor,
+    S: StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -17,7 +18,7 @@ where
 
 impl<S> CalleeContextImpl<S>
 where
-    S: internal::StateAccessor,
+    S: StateAccessor,
 {
     pub fn new(ctx: CallContext, id: u64) -> LyquidResult<Self> {
         Ok(Self {
@@ -33,8 +34,8 @@ where
 /// UPC request context, which is allowed to only read the network state variables and read/write the instance state variables.
 pub struct RequestContextImpl<S, I>
 where
-    S: internal::StateAccessor,
-    I: internal::StateAccessor,
+    S: StateAccessor,
+    I: StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -47,8 +48,8 @@ where
 
 impl<S, I> RequestContextImpl<S, I>
 where
-    S: internal::StateAccessor,
-    I: internal::StateAccessor,
+    S: StateAccessor,
+    I: StateAccessor,
 {
     pub fn new(ctx: CallContext, from: NodeID, id: u64) -> LyquidResult<Self> {
         Ok(Self {
@@ -63,10 +64,13 @@ where
     }
 }
 
+impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for RequestContextImpl<S, I> {}
+impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for RequestContextImpl<S, I> {}
+
 /// UPC response context, which is allowed to only read the network state variables.
 pub struct ResponseContextImpl<S>
 where
-    S: internal::StateAccessor,
+    S: StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -79,7 +83,7 @@ where
 
 impl<S> ResponseContextImpl<S>
 where
-    S: internal::StateAccessor,
+    S: StateAccessor,
 {
     pub fn new(ctx: CallContext, from: NodeID, id: u64, cache: Option<CachePtr>) -> LyquidResult<Self> {
         Ok(Self {

@@ -9,6 +9,7 @@ use talc::{ErrOnOom, Span, Talc};
 
 pub use super::*;
 mod allocator;
+mod oracle;
 #[doc(hidden)] pub mod syntax;
 pub mod upc;
 
@@ -294,7 +295,17 @@ pub mod internal {
             Self {}
         }
     }
+
+    // NOTE: limit the implementor of this trait to this LDK crate using sealed trait pattern
+    pub(crate) mod sealed {
+        pub trait Sealed {}
+    }
+
+    /// Contexts that impls this trait are those that support calling `Oracle::certify()`.
+    pub trait OracleCertifyContext: sealed::Sealed {}
 }
+
+use internal::{OracleCertifyContext, StateAccessor, sealed};
 
 /// Defines a host-side API in WASM environment. It generates a function that directs the flow
 /// control to the Lyquor host and returns upon completion.
@@ -345,7 +356,7 @@ pub mod lyquor_api {
         log(record: LyteLog);
         whoami() -> (NodeID, LyquidID);
         console_output(output: ConsoleSink, s: String);
-        universal_procedural_call(target: LyquidID, method: String, input: Vec<u8>, targets: Option<Vec<NodeID>>) -> Vec<u8>;
+        universal_procedural_call(target: LyquidID, method: String, input: Vec<u8>, nodes: Option<Vec<NodeID>>) -> Vec<u8>;
         inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
     );
 }
@@ -811,6 +822,8 @@ pub mod network {
     }
 
     gen_container_types!(Alloc);
+
+    pub use oracle::Oracle;
 }
 
 /// Instance persistent state memory allocator and standard containers.
@@ -936,7 +949,7 @@ impl<T> std::ops::DerefMut for Mutable<T> {
 /// Read/write the network state variables, which is allowed for network funcs.
 pub struct NetworkContextImpl<S>
 where
-    S: internal::StateAccessor,
+    S: StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -946,7 +959,7 @@ where
 
 impl<S> NetworkContextImpl<S>
 where
-    S: internal::StateAccessor,
+    S: StateAccessor,
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
@@ -961,7 +974,7 @@ where
 /// Read-only wrapper for network state variables.
 pub struct ImmutableNetworkContextImpl<S>
 where
-    S: internal::StateAccessor,
+    S: StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -971,7 +984,7 @@ where
 
 impl<S> ImmutableNetworkContextImpl<S>
 where
-    S: internal::StateAccessor,
+    S: StateAccessor,
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
@@ -987,8 +1000,8 @@ where
 /// Also allowed to read the network state variables.
 pub struct InstanceContextImpl<S, I>
 where
-    S: internal::StateAccessor,
-    I: internal::StateAccessor,
+    S: StateAccessor,
+    I: StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -999,8 +1012,8 @@ where
 
 impl<S, I> InstanceContextImpl<S, I>
 where
-    S: internal::StateAccessor,
-    I: internal::StateAccessor,
+    S: StateAccessor,
+    I: StateAccessor,
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
@@ -1013,11 +1026,14 @@ where
     }
 }
 
+impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for InstanceContextImpl<S, I> {}
+impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for InstanceContextImpl<S, I> {}
+
 /// Read-only wrapper for state variables.
 pub struct ImmutableInstanceContextImpl<S, I>
 where
-    S: internal::StateAccessor,
-    I: internal::StateAccessor,
+    S: StateAccessor,
+    I: StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -1028,8 +1044,8 @@ where
 
 impl<S, I> ImmutableInstanceContextImpl<S, I>
 where
-    S: internal::StateAccessor,
-    I: internal::StateAccessor,
+    S: StateAccessor,
+    I: StateAccessor,
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
@@ -1041,3 +1057,6 @@ where
         })
     }
 }
+
+impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for ImmutableInstanceContextImpl<S, I> {}
+impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for ImmutableInstanceContextImpl<S, I> {}

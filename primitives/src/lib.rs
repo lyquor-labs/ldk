@@ -56,6 +56,122 @@ pub enum EventABI {
     Eth,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct HashBytes(Hash);
+
+impl HashBytes {
+    pub fn new(hash: Hash) -> Self {
+        Self(hash)
+    }
+
+    pub fn into_inner(self) -> Hash {
+        self.0
+    }
+
+    pub fn as_inner(&self) -> &Hash {
+        &self.0
+    }
+}
+
+impl From<Hash> for HashBytes {
+    fn from(hash: Hash) -> Self {
+        Self(hash)
+    }
+}
+
+impl From<HashBytes> for Hash {
+    fn from(hash_bytes: HashBytes) -> Self {
+        hash_bytes.0
+    }
+}
+
+impl Serialize for HashBytes {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let bytes: &[u8; 32] = self.0.as_bytes();
+        serializer.serialize_bytes(bytes)
+    }
+}
+
+impl<'de> Deserialize<'de> for HashBytes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let bytes = <Vec<u8>>::deserialize(deserializer)?;
+        if bytes.len() != 32 {
+            return Err(D::Error::custom(format!(
+                "Expected 32 bytes for HashBytes, got {}",
+                bytes.len()
+            )));
+        }
+        let mut array = [0u8; 32];
+        array.copy_from_slice(&bytes);
+        Ok(HashBytes(blake3::Hash::from(array)))
+    }
+}
+
+pub type Signature = (); // TODO
+pub type Certificate = (); // TODO
+pub type PubKey = (); // TODO
+
+#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
+pub enum OracleCallTarget {
+    LVM(LyquidID),
+    SequenceVM(Address), // the native contract of the sequence backend (such as EVM)
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct OracleCall {
+    /// The node that proposed the call for certification.
+    pub proposer: NodeID,
+    pub proposer_sig: Signature,
+    pub from: LyquidID,
+    /// The universal identifier of the oracle.
+    pub oracle_id: String,
+    pub method: String,
+    pub input: Bytes, // encoded by the ABI selected by `target`,
+    pub target: OracleCallTarget,
+}
+
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct OracleSigner {
+    pub id: NodeID,
+    pub key: PubKey,
+}
+
+/// This will be put on the target chain when the config is changed.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct OracleConfig {
+    pub committee: Vec<OracleSigner>,
+    pub threshold: usize,
+}
+
+/// UPC message sent to each signer. The signer will check config hash to see if it's consistent
+/// with its oracle state as of the given network state version, and then run `validate`, a
+/// signature will be automatically signed using the derived key, and respond to the caller if it
+/// `validate()` returns true.
+#[derive(Serialize, Deserialize)]
+pub struct OracleMessage {
+    pub call: OracleCall,
+    pub version: LyquidNumber,
+    pub config: HashBytes,
+}
+
+/// Oracle certificate that could be sequenced.
+pub struct OracleCert {
+    pub config_hash: Hash,
+    // If Some, a new config is agreed upon for this and following certificates, and becomes
+    // effective until the next update.
+    pub config: Option<OracleConfig>,
+    // The bundled certificate (could be implemented by a vector of multi sigs), the signature is
+    // signed for the hash of OracleCall and OracleConfig.
+    pub cert: Certificate,
+}
+
 pub const GROUP_DEFAULT: &str = "main";
 pub const GROUP_NODE: &str = "node";
 pub const GROUP_UPC_CALLEE: &str = "upc_callee";
