@@ -164,65 +164,85 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
             type_ = quote::quote! {lyquid::runtime::RwLock<#type_>};
         }
 
-        var_setup.extend(
-            [quote::quote! {
-                // the pointer (only need to do it once, upon initialization of the instance's
-                // LiteMemory)
-                let ptr: *mut (#type_) = Box::leak(Box::new_in(#init, #cat_alloc));
-                let bytes = (ptr as usize).to_be_bytes();
-                pa.extend(#name_str.as_bytes()).set(#cat_value, &[], &bytes)
-                  .expect("cannot write to low-level state store during LiteMemory initialization");
-            }]
-            .into_iter(),
-        );
+        var_setup.extend([quote::quote! {
+            // the pointer (only need to do it once, upon initialization of the instance's
+            // LiteMemory)
+            let ptr: *mut (#type_) = Box::leak(Box::new_in(#init, #cat_alloc));
+            let bytes = (ptr as u64).to_be_bytes();
+            pa.set(#cat_value, #name_str.as_bytes(), &bytes).expect(FAIL_WRITE_STATE);
+        }]);
 
-        field_ts.extend(
-            [quote::quote! {
-                pub #name: &'static mut (#type_),
-            }]
-            .into_iter(),
-        );
+        field_ts.extend([quote::quote! {
+            pub #name: &'static mut (#type_),
+        }]);
 
-        init_ts.extend(
-            [quote::quote! {
-                #name: {
-                    // retrieve the pointer for Box<T>
-                    let bytes = pa.extend(#name_str.as_bytes()).get(#cat_value, &[])?.ok_or(lyquid::LyquidError::Init)?;
-                    let addr = usize::from_be_bytes(bytes.try_into().map_err(|_| lyquid::LyquidError::Init)?);
-                    unsafe { &mut *(addr as *mut (#type_)) }
-                },
-            }]
-            .into_iter(),
-        );
+        init_ts.extend([quote::quote! {
+            #name: {
+                // retrieve the pointer for Box<T>
+                let bytes = pa.get(#cat_value, &#name_str.as_bytes())?.ok_or(lyquid::LyquidError::Init)?;
+                let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| lyquid::LyquidError::Init)?);
+                unsafe { &mut *(addr as *mut (#type_)) }
+            },
+        }]);
     }
+
+    var_setup.extend(
+        [quote::quote! {
+            // the pointer (only need to do it once, upon initialization of the instance's
+            // LiteMemory)
+            let ptr: *mut lyquid::runtime::internal::NetworkState = Box::leak(Box::new_in(lyquid::runtime::internal::NetworkState::new(), lyquid::runtime::NetworkAlloc));
+            let bytes = (ptr as u64).to_be_bytes();
+            internal_pa.set(StateCategory::Network, "network".as_bytes(), &bytes).expect(FAIL_WRITE_STATE);
+        }]
+    );
+
+    struct_fields
+        .entry("network".to_string())
+        .or_insert_with(|| TokenStream::new())
+        .extend([quote::quote! {
+            pub __internal: &'static mut lyquid::runtime::internal::NetworkState,
+        }]);
+    struct_inits
+        .entry("network".to_string())
+        .or_insert_with(|| TokenStream::new())
+        .extend([quote::quote! {
+            __internal: {
+                // retrieve the pointer for Box<T>
+                let bytes = internal_pa.get(StateCategory::Network, "network".as_bytes())?.ok_or(lyquid::LyquidError::Init)?;
+                let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| lyquid::LyquidError::Init)?);
+                unsafe { &mut *(addr as *mut lyquid::runtime::internal::NetworkState) }
+            },
+        }]);
+
     // now we summary up each category and generate output
     let mut structs = TokenStream::new();
     for (cat, (_, _, cat_prefix)) in cats.iter() {
         let field_ts = struct_fields.entry(cat.clone()).or_insert_with(|| TokenStream::new());
         let init_ts = struct_inits.entry(cat.clone()).or_insert_with(|| TokenStream::new());
         let sname = quote::format_ident!("{}{}", cat_prefix, struct_suffix);
-        structs.extend(
-            [quote::quote! {
-                pub struct #sname {
-                    #field_ts
-                }
+        structs.extend([quote::quote! {
+            pub struct #sname {
+                #field_ts
+            }
 
-                impl lyquid::runtime::internal::PrefixedAccessible<Vec<u8>> for #sname {
-                    fn new(pa: &lyquid::runtime::internal::PrefixedAccess<Vec<u8>>) -> Result<Self, lyquid::LyquidError> {
-                        Ok(Self {
-                            #init_ts
-                        })
-                    }
+            impl lyquid::runtime::internal::StateAccessor for #sname {
+                fn new() -> Result<Self, lyquid::LyquidError> {
+                    let internal_pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::INTERNAL_STATE_PREFIX));
+                    let pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::VAR_CATALOG_PREFIX));
+                    Ok(Self {
+                        #init_ts
+                    })
                 }
-            }]
-            .into_iter(),
-        );
+            }
+        }]);
     }
     quote::quote! {
         #structs
 
         #[unsafe(no_mangle)]
         unsafe fn #init_func() {
+            const FAIL_WRITE_STATE: &str = "cannot write to low-level state store during LiteMemory initialization";
+            let internal_pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::INTERNAL_STATE_PREFIX));
             let pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::VAR_CATALOG_PREFIX));
             #var_setup
         }

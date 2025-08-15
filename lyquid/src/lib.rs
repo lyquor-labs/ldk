@@ -69,6 +69,7 @@ pub const VOLATILE_MEMSIZE_IN_MB: usize = 1024; // 1GB
 
 /// Prefix bytes used for varaiable catalog in versioned state.
 pub const VAR_CATALOG_PREFIX: [u8; 1] = [0x2a];
+pub const INTERNAL_STATE_PREFIX: [u8; 1] = [0x20];
 /// Prefix bytes used for lite pages in versioned state.
 pub const LYTEMEM_PAGE_PREFIX: [u8; 1] = [0x00];
 
@@ -111,19 +112,21 @@ pub mod upc {
     // TODO: refactor request output to be a struct with more sophisticated error handling
     pub type RequestOutput = Vec<u8>;
 
+    pub type CachePtr = u64;
+
     #[derive(Serialize, Deserialize)]
     pub struct ResponseInput {
         pub from: NodeID,
         pub id: u64,
         pub returned: Vec<u8>,
-        pub cache: Option<Vec<u8>>,
+        pub cache: Option<CachePtr>,
     }
 
     /// The ResponseOutput is similar to std::ops::ControlFlow, we don't depend on std::ops::ControlFlow because it is
     /// not serializable.
     #[derive(Serialize, Deserialize)]
     pub enum ResponseOutput {
-        Continue(Option<Vec<u8>>),
+        Continue(Option<CachePtr>),
         Return(Vec<u8>),
     }
 

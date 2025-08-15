@@ -204,8 +204,8 @@ pub mod internal {
         ((output_len as u64) << 32) | output_base as u64
     }
 
-    pub trait PrefixedAccessible<P: AsRef<[u8]>> {
-        fn new(pa: &PrefixedAccess<P>) -> Result<Self, LyquidError>
+    pub trait StateAccessor {
+        fn new() -> Result<Self, LyquidError>
         where
             Self: Sized;
     }
@@ -284,6 +284,14 @@ pub mod internal {
                 };
                 Some(format!("({}) returns ({})", type_parts.join(", "), rt_part))
             }
+        }
+    }
+
+    pub struct NetworkState {}
+
+    impl NetworkState {
+        pub fn new() -> Self {
+            Self {}
         }
     }
 }
@@ -928,7 +936,7 @@ impl<T> std::ops::DerefMut for Mutable<T> {
 /// Read/write the network state variables, which is allowed for network funcs.
 pub struct NetworkContextImpl<S>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -938,16 +946,14 @@ where
 
 impl<S> NetworkContextImpl<S>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            network: Mutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
+            network: Mutable::new(S::new()?),
         })
     }
 }
@@ -955,7 +961,7 @@ where
 /// Read-only wrapper for network state variables.
 pub struct ImmutableNetworkContextImpl<S>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -965,16 +971,14 @@ where
 
 impl<S> ImmutableNetworkContextImpl<S>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
+            network: Immutable::new(S::new()?),
         })
     }
 }
@@ -983,8 +987,8 @@ where
 /// Also allowed to read the network state variables.
 pub struct InstanceContextImpl<S, I>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
-    I: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
+    I: internal::StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -995,20 +999,16 @@ where
 
 impl<S, I> InstanceContextImpl<S, I>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
-    I: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
+    I: internal::StateAccessor,
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
-            instance: Mutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
+            network: Immutable::new(S::new()?),
+            instance: Mutable::new(I::new()?),
         })
     }
 }
@@ -1016,8 +1016,8 @@ where
 /// Read-only wrapper for state variables.
 pub struct ImmutableInstanceContextImpl<S, I>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
-    I: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
+    I: internal::StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -1028,20 +1028,16 @@ where
 
 impl<S, I> ImmutableInstanceContextImpl<S, I>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
-    I: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
+    I: internal::StateAccessor,
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
-            instance: Immutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
+            network: Immutable::new(S::new()?),
+            instance: Immutable::new(I::new()?),
         })
     }
 }

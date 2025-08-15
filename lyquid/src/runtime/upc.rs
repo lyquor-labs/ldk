@@ -1,12 +1,12 @@
 use std::any::Any;
 
 use super::{Immutable, Mutable, internal};
-use crate::{Address, Bytes, CallContext, LyquidError, LyquidResult, NodeID};
+use crate::{Address, Bytes, CallContext, LyquidResult, NodeID, upc::CachePtr};
 
 /// UPC callee context, which is allowed to only read the network state variables.
 pub struct CalleeContextImpl<S>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -17,16 +17,14 @@ where
 
 impl<S> CalleeContextImpl<S>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
 {
     pub fn new(ctx: CallContext, id: u64) -> LyquidResult<Self> {
         Ok(Self {
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
+            network: Immutable::new(S::new()?),
             id,
         })
     }
@@ -35,8 +33,8 @@ where
 /// UPC request context, which is allowed to only read the network state variables and read/write the instance state variables.
 pub struct RequestContextImpl<S, I>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
-    I: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
+    I: internal::StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -49,20 +47,16 @@ where
 
 impl<S, I> RequestContextImpl<S, I>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
-    I: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
+    I: internal::StateAccessor,
 {
     pub fn new(ctx: CallContext, from: NodeID, id: u64) -> LyquidResult<Self> {
         Ok(Self {
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
-            instance: Mutable::new(I::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
+            network: Immutable::new(S::new()?),
+            instance: Mutable::new(I::new()?),
             from,
             id,
         })
@@ -72,7 +66,7 @@ where
 /// UPC response context, which is allowed to only read the network state variables.
 pub struct ResponseContextImpl<S>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
 {
     pub origin: Address,
     pub caller: Address,
@@ -85,19 +79,17 @@ where
 
 impl<S> ResponseContextImpl<S>
 where
-    S: internal::PrefixedAccessible<Vec<u8>>,
+    S: internal::StateAccessor,
 {
-    pub fn new(ctx: CallContext, from: NodeID, id: u64, cache: Option<Vec<u8>>) -> LyquidResult<Self> {
+    pub fn new(ctx: CallContext, from: NodeID, id: u64, cache: Option<CachePtr>) -> LyquidResult<Self> {
         Ok(Self {
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
-            network: Immutable::new(S::new(&internal::PrefixedAccess::new(Vec::from(
-                crate::VAR_CATALOG_PREFIX,
-            )))?),
+            network: Immutable::new(S::new()?),
             from,
             id,
-            cache: Cache::new(cache)?,
+            cache: Cache::new(cache),
         })
     }
 }
@@ -105,29 +97,23 @@ where
 /// We use this struct to hold a Box<dyn Any>, so we just leak a pointer to Cache instead of a dyn Any,
 /// since a pointer of dyn Any needs a vtable to be constructed from a raw address.
 #[doc(hidden)]
-pub struct CachePointer(Box<dyn Any>);
+pub struct CacheMem(Box<dyn Any>);
 
 pub struct Cache {
-    inner: Option<Box<CachePointer>>,
+    inner: Option<Box<CacheMem>>,
 }
 
 impl Cache {
     #[doc(hidden)]
-    pub fn new(cache_ptr: Option<Vec<u8>>) -> LyquidResult<Self> {
-        let cache_ptr = match cache_ptr {
-            Some(bytes) => Some(usize::from_be_bytes(
-                bytes.try_into().map_err(|_| LyquidError::LyquorInput)?,
-            )),
-            None => None,
-        };
-        Ok(Self {
-            inner: cache_ptr.map(|addr| unsafe { Box::from_raw(addr as *mut CachePointer) }),
-        })
+    pub fn new(cache_ptr: Option<CachePtr>) -> Self {
+        Self {
+            inner: cache_ptr.map(|addr| unsafe { Box::from_raw(addr as *mut CacheMem) }),
+        }
     }
 
     pub fn get_or_init<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
         if self.inner.is_none() {
-            self.inner = Some(Box::new(CachePointer(Box::new(init()))));
+            self.inner = Some(Box::new(CacheMem(Box::new(init()))));
         }
         self.inner
             .as_mut()
@@ -139,7 +125,7 @@ impl Cache {
     }
 
     #[doc(hidden)]
-    pub fn take_cache(&mut self) -> Option<Box<CachePointer>> {
+    pub fn take_cache(&mut self) -> Option<Box<CacheMem>> {
         self.inner.take()
     }
 }
