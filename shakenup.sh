@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Shakenup - Lyquor development environment setup
-FOUNDRY_VERSION="stable"
+FOUNDRY_VERSION="v1.3.1"
 SHAKENUP_DIR="${SHAKENUP_DIR:-$HOME/.shakenup}"
 
 # Colors and logging

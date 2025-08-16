@@ -2,7 +2,7 @@
 node_modules
 /dist
 /docker/dist
-/lyquid_tools_target/
+lyquid_tools_target/
 /lyquid_image_db/
 /lyquor_db/
 .DS_Store
