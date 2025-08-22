@@ -174,9 +174,9 @@ pub struct OracleCert {
 
 pub const GROUP_DEFAULT: &str = "main";
 pub const GROUP_NODE: &str = "node";
-pub const GROUP_UPC_CALLEE: &str = "upc_callee";
-pub const GROUP_UPC_REQ: &str = "upc_request";
-pub const GROUP_UPC_RESP: &str = "upc_response";
+pub const GROUP_UPC_CALLEE: &str = "upc::callee";
+pub const GROUP_UPC_REQ: &str = "upc::request";
+pub const GROUP_UPC_RESP: &str = "upc::response";
 
 pub type LyteLogTopic = B256;
 

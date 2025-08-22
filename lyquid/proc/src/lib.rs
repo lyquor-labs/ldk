@@ -49,7 +49,19 @@ fn add_prefix(attr: TokenStream, ident: Ident) -> Ident {
                 s.value()
             }
             TokenTree::Punct(_) => continue,
-            _ => panic!("invalid prefix token"),
+            TokenTree::Group(g) => {
+                // Handle grouped tokens like ($($group)::*) - stringify the contents
+                let mut group_result = String::new();
+                for token in g.stream().into_iter() {
+                    match token {
+                        TokenTree::Ident(id) => group_result.push_str(&id.to_string()),
+                        TokenTree::Punct(p) => group_result.push(p.as_char()),
+                        TokenTree::Literal(l) => group_result.push_str(&l.to_string()),
+                        TokenTree::Group(_) => panic!("nested groups not supported"),
+                    }
+                }
+                group_result
+            }
         };
         tokens.push(l);
     }

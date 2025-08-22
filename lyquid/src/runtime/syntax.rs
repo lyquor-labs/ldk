@@ -254,10 +254,10 @@ macro_rules! state {
 ///
 /// #### Special Notes on UPC Functions:
 ///
-/// - The `upc_callee` function (which defines dynamic callee selection logic) is **optional**.  
+/// - The `upc::callee` function (which defines dynamic callee selection logic) is **optional**.
 ///   If omitted, the caller must manually specify which nodes should participate in the UPC call.
 ///
-/// - The `upc_response` aggregator function is also **optional**.  
+/// - The `upc::response` aggregator function is also **optional**.
 ///   If omitted, UPC behaves like a traditional **RPC-style request-response**, where the result from one node is taken as the final result.
 ///
 #[macro_export]
@@ -274,13 +274,13 @@ macro_rules! method {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_categorize_methods {
-    ({network($group:ident) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+    ({network($($group:ident)::*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
-                $group (true) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
+                $($group)::* (true) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::NetworkContext::new(ctx)?;
                     let result = $body; // execute the body of the function
@@ -294,13 +294,13 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
 
-    ({network($group:ident) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+    ({network($($group:ident)::*) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
-                $group (false) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
+                $($group)::* (false) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let $handle = __lyquid::ImmutableNetworkContext::new(ctx)?;
                     let result = $body; // execute the body of the function
@@ -319,20 +319,20 @@ macro_rules! __lyquid_categorize_methods {
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({network(main) fn $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
-    ({network($group:ident) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
+    ({network($($group:ident)::*) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({network($group) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({network($($group)::*) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
-    ({network($group:ident) fn $fn:ident(&$handle:ident) $($rest:tt)*},
+    ({network($($group:ident)::*) fn $fn:ident(&$handle:ident) $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({network($group) fn $fn(&$handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({network($($group)::*) fn $fn(&$handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
     ({constructor($($args:tt)*) $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({
         network(main) fn __lyquid_constructor($($args)*) -> LyquidResult<bool> {$body; Ok(true)} $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
-    ({upc(callee) fn $fn:ident(&$handle:ident) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
+    ({upc(callee$($group:tt)*) fn $fn:ident(&$handle:ident) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
@@ -340,7 +340,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($network_funcs)*},
             {$($instance_funcs)*
                 // see CalleeInput
-                upc_callee (true) fn $fn(id: u64) -> LyquidResult<$crate::upc::CalleeOutput> {|ctx: CallContext| {
+                upc::callee$($group)* (true) fn $fn(id: u64) -> LyquidResult<$crate::upc::CalleeOutput> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcCalleeContext::new(ctx, id)?;
                     let result: LyquidResult<Vec<NodeID>> = $body;
@@ -351,7 +351,7 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
 
-    ({upc(request) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+    ({upc(request$($group:tt)*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
@@ -359,7 +359,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($network_funcs)*},
             {$($instance_funcs)*
                 // see RequestInput
-                upc_request (true) fn $fn(from: $crate::NodeID, id: u64, input: Vec<u8>) -> LyquidResult<$rt> {|ctx: CallContext| {
+                upc::request$($group)* (true) fn $fn(from: $crate::NodeID, id: u64, input: Vec<u8>) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcRequestContext::new(ctx, from, id)?;
                     let input = $crate::lyquor_primitives::decode_by_fields!(&input, $($name: $type),*).ok_or($crate::LyquidError::LyquorInput)?;
@@ -371,19 +371,19 @@ macro_rules! __lyquid_categorize_methods {
             }
         );
     };
-    ({upc(request) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
+    ({upc(request$($group:tt)*) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request$($group)*) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
     // TODO: handle immutable UPC request correctly
-    ({upc(request) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) $($rest:tt)*},
+    ({upc(request$($group:tt)*) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request) fn $fn(&mut $handle, $($name: $type),*) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
-    ({upc(request) fn $fn:ident(&$handle:ident) $($rest:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request$($group)*) fn $fn(&mut $handle, $($name: $type),*) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+    ({upc(request$($group:tt)*) fn $fn:ident(&$handle:ident) $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request$($group)*) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
-    ({upc(response) fn $fn:ident(&$handle:ident, $returned:ident: LyquidResult<$rt:ty>) -> LyquidResult<Option<$rt_:ty>> $body:block $($rest:tt)*},
+    ({upc(response$($group:tt)*) fn $fn:ident(&$handle:ident, $returned:ident: LyquidResult<$rt:ty>) -> LyquidResult<Option<$rt_:ty>> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
@@ -391,7 +391,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($network_funcs)*},
             {$($instance_funcs)*
                 // see ResponseInput
-                upc_response (true) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>, cache: Option<$crate::upc::CachePtr>) -> LyquidResult<$crate::upc::ResponseOutput> {|ctx: CallContext| {
+                upc::response$($group)* (true) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>, cache: Option<$crate::upc::CachePtr>) -> LyquidResult<$crate::upc::ResponseOutput> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcResponseContext::new(ctx, from, id, cache)?;
                     let $returned = $crate::lyquor_primitives::decode_object::<LyquidResult<$rt>>(&returned).ok_or($crate::LyquidError::LyquorInput)?;
@@ -410,14 +410,14 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
 
-    ({instance($group:ident) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+    ({instance($($group:ident)::*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*},
             {$($network_funcs)*},
             {$($instance_funcs)*
-                $group (true) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
+                $($group)::* (true) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::InstanceContext::new(ctx)?;
                     let result = $body;
@@ -427,14 +427,14 @@ macro_rules! __lyquid_categorize_methods {
             }
         );
     };
-    ({instance($group:ident) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+    ({instance($($group:ident)::*) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*},
             {$($network_funcs)*},
             {$($instance_funcs)*
-                $group (false) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
+                $($group)::* (false) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let $handle = __lyquid::ImmutableInstanceContext::new(ctx)?;
                     let result = $body;
@@ -444,12 +444,12 @@ macro_rules! __lyquid_categorize_methods {
             }
         );
     };
-    ({instance($group:ident) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
+    ({instance($($group:ident)::*) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
-    ({instance($group:ident) fn $fn:ident(&$handle:ident) $($rest:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance($($group)::*) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+    ({instance($($group:ident)::*) fn $fn:ident(&$handle:ident) $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(main) fn $fn(&$handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance($($group)::*) fn $fn(&$handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
     // instance function syntax sugar
     ({instance fn $($rest:tt)*},
@@ -465,30 +465,30 @@ macro_rules! __lyquid_categorize_methods {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_method_alias {
-    ("__lyquid_method_network" $group:ident (false) $fn:ident) => {
-        #[prefix_item("__lyquid_method_instance", "info", $group)]
+    ("__lyquid_method_network" $($group:ident)::* (false) $fn:ident) => {
+        #[prefix_item("__lyquid_method_instance", "info", ($($group)::*))]
         #[unsafe(no_mangle)]
         fn $fn(base: u32, len: u32, abi: u32) -> u64 {
-            prefix_call!(("__lyquid_method_network", "info", $group), $fn(base, len, abi))
+            prefix_call!(("__lyquid_method_network", "info", $($group)::*), $fn(base, len, abi))
         }
 
-        #[prefix_item("__lyquid_method_instance", $group)]
+        #[prefix_item("__lyquid_method_instance", ($($group)::*))]
         #[unsafe(no_mangle)]
         fn $fn(base: u32, len: u32, abi: u32) -> u64 {
-            prefix_call!(("__lyquid_method_network", $group), $fn(base, len, abi))
+            prefix_call!(("__lyquid_method_network", $($group)::*), $fn(base, len, abi))
         }
     };
-    ("__lyquid_method_network" $group:ident (true) $fn:ident) => {};
-    ("__lyquid_method_instance" $group:ident (false) $fn:ident) => {};
-    ("__lyquid_method_instance" $group:ident (true) $fn:ident) => {};
+    ("__lyquid_method_network" $($group:ident)::* (true) $fn:ident) => {};
+    ("__lyquid_method_instance" $($group:ident)::* (false) $fn:ident) => {};
+    ("__lyquid_method_instance" $($group:ident)::* (true) $fn:ident) => {};
 }
 
 /// Transform a user-defined WASM function into a Lyquid function that can be invoked by the host.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_wrap_methods {
-    ($prefix:tt, $group:ident ($mutable:ident) fn $fn:ident($($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*) => {
-        #[$crate::runtime::internal::prefix_item($prefix, $group)]
+    ($prefix:tt, $($group:ident)::* ($mutable:ident) fn $fn:ident($($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*) => {
+        #[$crate::runtime::internal::prefix_item($prefix, ($($group)::*))]
         mod $fn {
             use super::*;
             use $crate::alloy_dyn_abi::{DynSolType, DynSolValue};
@@ -503,7 +503,7 @@ macro_rules! __lyquid_wrap_methods {
                     [$((<$type as EthABI>::type_string(), <$type as EthABI>::is_scalar())),*].into_iter())
             }
 
-            #[prefix_item($prefix, "info", $group)]
+            #[prefix_item($prefix, "info", ($($group)::*))]
             #[unsafe(no_mangle)]
             fn $fn(base: u32, len: u32, _: u32) -> u64 {
                 let raw = unsafe { HostInput::new(base, len) };
@@ -522,7 +522,7 @@ macro_rules! __lyquid_wrap_methods {
                 })))
             }
 
-            #[prefix_item($prefix, $group)]
+            #[prefix_item($prefix, ($($group)::*))]
             #[unsafe(no_mangle)]
             fn $fn(base: u32, len: u32, abi: u32) -> u64 {
                 let raw = unsafe { HostInput::new(base, len) };
@@ -577,7 +577,7 @@ macro_rules! __lyquid_wrap_methods {
                 output_to_host(&output)
             }
 
-            $crate::__lyquid_method_alias!($prefix $group ($mutable) $fn);
+            $crate::__lyquid_method_alias!($prefix $($group)::* ($mutable) $fn);
         }
 
         $crate::__lyquid_wrap_methods!($prefix, $($rest)*);
