@@ -125,6 +125,32 @@ pub fn prefix_call(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     panic!("expected a function call");
 }
 
+fn oracle_codegen(name: &Ident, output: &mut TokenStream) {
+    output.extend(quote::quote! {
+        lyquid::method! {
+            upc(callee::oracle::committee::#name) fn validate(&ctx) -> LyquidResult<Vec<NodeID>> {
+                Ok(ctx.network.#name.committee())
+            }
+
+            upc(response::oracle::committee::#name) fn validate(&ctx, resp: LyquidResult<oracle::OracleResponse>) -> LyquidResult<Option< Option<oracle::OracleCert> >> {
+                use std::collections::HashMap;
+                let cache = ctx.cache.get_or_init(|| {
+                    // FIXME: initialize by caller.
+                    oracle::Aggregation::new(oracle::OracleHeader {
+                        proposer: 0.into(),
+                        target: oracle::OracleTarget::Lyquor(0.into()),
+                        config_hash: [0; 32].into()
+                    }, [0; 32].into())
+                });
+                if let Ok(resp) = resp {
+                    return Ok(cache.add_response(ctx.from, resp, &ctx.network.#name))
+                }
+                Ok(None)
+            }
+        }
+    });
+}
+
 #[proc_macro]
 pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut toplevel_tokens = TokenStream::from(item).into_iter(); // use proc_macro2 instead of proc_macro as it is more convenient
@@ -146,19 +172,38 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
     let mut struct_fields = HashMap::new(); // maps from categories to a token stream of struct fields
     let mut struct_inits = HashMap::new(); // maps from categories to a token stream of field initializers
     let mut var_setup = TokenStream::new();
+
+    let mut extra = TokenStream::new();
     for def in toplevel_tokens {
         let mut def_iter = token_is_group(def)
             .expect("expect state variable definition")
             .stream()
             .into_iter();
         let cat = next_token_is_ident(&mut def_iter).expect("expect storage category");
-        let cat_str = cat.to_string();
+        let mut cat_str = cat.to_string();
         let name = next_token_is_ident(&mut def_iter).expect("expect variable identifer");
         let name_str = name.to_string();
-        let mut type_ = def_iter.next().expect("expect variable type").into();
-        let mut init = next_token_is_group(&mut def_iter)
-            .expect("expect an initializer")
-            .stream();
+        let type_;
+        let init;
+
+        match cat_str.as_str() {
+            "oracle" => {
+                cat_str = "network".to_string();
+                type_ = quote::quote! { lyquid::runtime::network::Oracle };
+                init = quote::quote! { lyquid::runtime::network::Oracle::new(#name_str) };
+                oracle_codegen(&name, &mut extra);
+            }
+            _ => {
+                type_ = def_iter.next().expect("expect variable type").into();
+                init = next_token_is_group(&mut def_iter)
+                    .expect("expect an initializer")
+                    .stream();
+            }
+        }
+
+        let mut type_ = type_;
+        let mut init = init;
+
         let (cat_alloc, cat_value, _) = match cats.get(&cat_str) {
             Some(v) => v,
             None => panic!("invalid category {}", cat.to_string()),
@@ -250,6 +295,9 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
     }
     quote::quote! {
         #structs
+
+        use lyquid::runtime::{oracle, Hash};
+        #extra
 
         #[unsafe(no_mangle)]
         unsafe fn #init_func() {

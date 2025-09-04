@@ -8,16 +8,22 @@
 
 pub use alloy_dyn_abi;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use thiserror::Error;
 
 #[cfg(feature = "ldk")]
 pub use lyquor_primitives::{
-    self, LyquidID, LyquidNumber, LyteLog, NodeID, RequiredLyquid, StateCategory, U64, U128, U256, address, blake3,
-    uint,
+    self, Hash, LyquidID, LyquidNumber, LyteLog, NodeID, RequiredLyquid, StateCategory, U64, U128, U256, address,
+    blake3, decode_by_fields, encode_by_fields, uint,
 };
+
+pub type CallParams = lyquor_primitives::CallParams<Bytes>;
+
 pub use lyquor_primitives::{
-    Address, Bytes, ConsoleSink, GROUP_DEFAULT, GROUP_NODE, GROUP_UPC_CALLEE, GROUP_UPC_REQ, GROUP_UPC_RESP,
+    Address, Bytes, ConsoleSink, GROUP_DEFAULT, GROUP_NODE, GROUP_UPC_CALLEE, GROUP_UPC_REQ, GROUP_UPC_RESP, OracleCert,
 };
+
+use lyquor_primitives::arc_option_serde;
 
 #[cfg(feature = "ldk")] pub mod runtime;
 
@@ -27,6 +33,8 @@ pub struct CallContext {
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
+    #[serde(with = "arc_option_serde", default)]
+    pub input_cert: Option<Arc<OracleCert>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Error)]
@@ -45,6 +53,8 @@ pub enum LyquidError {
     LyquorRuntime(String),
     #[error("Lyquid runtime: {0}")]
     LyquidRuntime(String),
+    #[error("Invalid certificate for the input.")]
+    InputCert,
 }
 
 pub const ABI_ETH: u32 = 0x1;

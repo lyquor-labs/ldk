@@ -115,7 +115,25 @@
 /// ```
 #[macro_export]
 macro_rules! state {
-    {$($cat:ident $var:ident: $type:ty = $init:expr;)*} => {
+    {$($token:tt)*} => {
+        __lyquid_state_preprocess!({$($token)*}, {});
+    };
+}
+
+#[macro_export]
+macro_rules! __lyquid_state_preprocess {
+    ({}, {$($token:tt)*}) => { __lyquid_state_generate!($($token)*); };
+    ({network oracle $var:ident; $($rest:tt)*}, {$($token:tt)*}) => {
+        __lyquid_state_preprocess!({$($rest)*}, {(oracle $var) $($token)*});
+    };
+    ({$cat:ident $var:ident: $type:ty = $init:expr; $($rest:tt)*}, {$($token:tt)*}) => {
+        __lyquid_state_preprocess!({$($rest)*}, {($cat $var $type $init) $($token)*});
+    };
+}
+
+#[macro_export]
+macro_rules! __lyquid_state_generate {
+    ($($token:tt)*) => {
         pub mod __lyquid {
             use super::*;
             use $crate::runtime::*;
@@ -124,7 +142,7 @@ macro_rules! state {
                 State
                 __lyquid_initialize_state_variables
                 [(network NetworkAlloc Network StateCategory::Network)
-                (instance InstanceAlloc Instance StateCategory::Instance)] $(($cat $var $type $init))*);
+                (instance InstanceAlloc Instance StateCategory::Instance)] $($token)*);
 
             pub type NetworkContext = $crate::runtime::NetworkContextImpl<NetworkState>;
             pub type ImmutableNetworkContext = $crate::runtime::ImmutableNetworkContextImpl<NetworkState>;
@@ -274,6 +292,33 @@ macro_rules! method {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_categorize_methods {
+    ({network(oracle::certified::$oname:ident) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => {
+        $crate::__lyquid_categorize_methods!(
+            {$($rest)*}, // recurisvely categorize the rest of the funcs
+            {$($network_funcs)* // append this func to the end of network_funcs
+                oracle::certified::$oname (true) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
+                    use crate::__lyquid;
+
+                    // Check oracle certificate.
+                    ctx.input_cert
+                       .as_ref()
+                       .and_then(|cert| if cert.verify(&ctx.caller, ctx.input.clone()) { Some(()) } else { None })
+                       .ok_or($crate::LyquidError::InputCert)?;
+
+                    let mut $handle = __lyquid::NetworkContext::new(ctx)?;
+                    let result = $body; // execute the body of the function
+                    drop($handle); // drop the state handle here to ensure the correct lifetime
+                                   // for the handle when accessed in $body so the handle is not
+                                   // leaked out by the result
+                    result
+                }}
+            },
+            {$($instance_funcs)*} // retain the collected instance_funcs
+        );
+    };
+
     ({network($($group:ident)::*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
@@ -343,7 +388,7 @@ macro_rules! __lyquid_categorize_methods {
                 upc::callee$($group)* (true) fn $fn(id: u64) -> LyquidResult<$crate::upc::CalleeOutput> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcCalleeContext::new(ctx, id)?;
-                    let result: LyquidResult<Vec<NodeID>> = $body;
+                    let result: LyquidResult<Vec<NodeID>> = (|| {$body})();
                     drop($handle);
                     result.map(|r| $crate::upc::CalleeOutput { result: r })
                 }}
@@ -395,7 +440,7 @@ macro_rules! __lyquid_categorize_methods {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcResponseContext::new(ctx, from, id, cache)?;
                     let $returned = $crate::lyquor_primitives::decode_object::<LyquidResult<$rt>>(&returned).ok_or($crate::LyquidError::LyquorInput)?;
-                    let result: LyquidResult<Option<$rt_>> = $body;
+                    let result: LyquidResult<Option<$rt_>> = (|| {$body})();
                     let cache = $handle.cache.take_cache();
                     drop($handle);
                     result.map(|r|
@@ -409,6 +454,28 @@ macro_rules! __lyquid_categorize_methods {
             }
         );
     };
+
+    ({instance(oracle::committee::$name:ident) fn validate(&mut $handle:ident, $params:ident: CallParams) -> bool $body:block $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => {
+         $crate::__lyquid_categorize_methods!({
+            upc(request::oracle::committee::$name) fn validate(&mut ctx, msg: $crate::runtime::oracle::OracleMessage) -> LyquidResult<$crate::runtime::oracle::OracleResponse> {
+                if ctx.network.$name.config_hash() != &*msg.header.config_hash {
+                    return Err($crate::LyquidError::LyquidRuntime("Mismatch config hash".into()))
+                }
+                let approval = {
+                    let $params = msg.params;
+                    let $handle = &mut ctx.instance;
+                    $body
+                };
+                Ok($crate::runtime::oracle::OracleResponse {
+                    approval,
+                    // TODO
+                    sig: (),
+                })
+            } $($rest)*
+         }, {$($network_funcs)*}, {$($instance_funcs)*});
+     };
 
     ({instance($($group:ident)::*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},

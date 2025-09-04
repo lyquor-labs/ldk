@@ -1,6 +1,7 @@
 pub extern crate serde;
 
 use std::fmt;
+use std::sync::Arc;
 
 pub use alloy_primitives::hex;
 pub use alloy_primitives::{self, Address, B256, U32, U64, U128, U256, address, uint};
@@ -8,9 +9,36 @@ pub use blake3;
 pub use bytes::{self, Bytes};
 pub use cb58;
 pub use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
 
 mod id;
 pub use id::{LyquidID, LyquidNumber, NodeID, RequiredLyquid};
+
+// Custom serde module for Arc<Option<T>>
+pub mod arc_option_serde {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<T, S>(value: &Option<Arc<T>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        T: Serialize,
+        S: Serializer,
+    {
+        match value {
+            Some(arc) => arc.as_ref().serialize(serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, T, D>(deserializer: D) -> Result<Option<Arc<T>>, D::Error>
+    where
+        T: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        let opt = Option::<T>::deserialize(deserializer)?;
+        Ok(opt.map(Arc::new))
+    }
+}
 
 pub type Hash = blake3::Hash;
 
@@ -67,9 +95,18 @@ impl HashBytes {
     pub fn into_inner(self) -> Hash {
         self.0
     }
+}
 
-    pub fn as_inner(&self) -> &Hash {
+impl std::ops::Deref for HashBytes {
+    type Target = Hash;
+    fn deref(&self) -> &Hash {
         &self.0
+    }
+}
+
+impl From<[u8; 32]> for HashBytes {
+    fn from(hash: [u8; 32]) -> Self {
+        Self(hash.into())
     }
 }
 
@@ -114,27 +151,66 @@ impl<'de> Deserialize<'de> for HashBytes {
     }
 }
 
-pub type Signature = (); // TODO
-pub type Certificate = (); // TODO
-pub type PubKey = (); // TODO
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
-pub enum OracleCallTarget {
-    LVM(LyquidID),
-    SequenceVM(Address), // the native contract of the sequence backend (such as EVM)
+#[derive(Serialize, Deserialize, PartialEq, Clone, TypedBuilder)]
+pub struct CallParams<I> {
+    /// The ultimate origin of the call (the transaction signer, for example if the call comes from
+    /// the chain. The default is zero address when unused.
+    #[builder(default = Address::ZERO)]
+    pub origin: Address,
+    /// The direct caller.
+    pub caller: Address,
+    #[builder(default = GROUP_DEFAULT.into())]
+    pub group: String,
+    pub method: String,
+    pub input: I,
+    #[builder(default = None)]
+    #[serde(with = "arc_option_serde", default)]
+    pub input_cert: Option<Arc<OracleCert>>,
+    #[builder(default = EventABI::Lyquor)]
+    pub abi: EventABI,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct OracleCall {
+impl<I: Eq> Eq for CallParams<I> {}
+
+impl<I: fmt::Debug> fmt::Debug for CallParams<I> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            "CallParams(caller={}, origin={}, group={}, method={}, input={:?}, input_cert={}, abi={:?})",
+            self.caller,
+            self.origin,
+            self.group,
+            self.method,
+            &self.input,
+            self.input_cert.is_some(),
+            self.abi
+        )
+    }
+}
+
+pub type Signature = (); // TODO
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct Certificate; // TODO
+pub type PubKey = (); // TODO
+
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+pub enum OracleTarget {
+    // Lyquor network fn
+    Lyquor(LyquidID),
+    // Native contract of the sequence backend (such as EVM)
+    SequenceVM(Address),
+}
+
+/// Contains other fields needed to define a call alongside the standard call parameters.
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct OracleHeader {
     /// The node that proposed the call for certification.
     pub proposer: NodeID,
-    pub proposer_sig: Signature,
-    pub from: LyquidID,
-    /// The universal identifier of the oracle.
-    pub oracle_id: String,
-    pub method: String,
-    pub input: Bytes, // encoded by the ABI selected by `target`,
-    pub target: OracleCallTarget,
+    /// The way the call will end (e.g., to be a network fn call, or to call the sequencing chain's
+    /// own VM.)
+    pub target: OracleTarget,
+    /// The hash of the oracle config.
+    pub config_hash: HashBytes,
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
@@ -143,7 +219,6 @@ pub struct OracleSigner {
     pub key: PubKey,
 }
 
-/// This will be put on the target chain when the config is changed.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleConfig {
     pub committee: Vec<OracleSigner>,
@@ -154,22 +229,66 @@ pub struct OracleConfig {
 /// with its oracle state as of the given network state version, and then run `validate`, a
 /// signature will be automatically signed using the derived key, and respond to the caller if it
 /// `validate()` returns true.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleMessage {
-    pub call: OracleCall,
-    pub version: LyquidNumber,
-    pub config: HashBytes,
+    pub header: OracleHeader,
+    /// params.input_cert will be None and unused.
+    pub params: CallParams<Bytes>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct OracleResponse {
+    pub approval: bool,
+    /// Signer signs on hash(<OracleMessage> and <approval bool>)
+    pub sig: Signature,
+}
+
+impl OracleResponse {
+    pub fn sign(msg: OracleMessage, approval: bool) -> Self {
+        // TODO
+        let _ = msg;
+        Self { approval, sig: () }
+    }
+
+    pub fn verify(&self, msg_hash: &Hash) -> bool {
+        // TODO
+        let _ = msg_hash;
+        true
+    }
 }
 
 /// Oracle certificate that could be sequenced.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleCert {
-    pub config_hash: Hash,
+    pub header: OracleHeader,
     // If Some, a new config is agreed upon for this and following certificates, and becomes
     // effective until the next update.
-    pub config: Option<OracleConfig>,
-    // The bundled certificate (could be implemented by a vector of multi sigs), the signature is
-    // signed for the hash of OracleCall and OracleConfig.
+    pub new_config: Option<OracleConfig>,
+    // The certificate that shows a threshold approval (could be implemented by a vector of multi
+    // sigs).
     pub cert: Certificate,
+}
+
+impl Certificate {
+    pub fn new(sigs: Vec<(OracleSigner, Signature)>) -> Self {
+        // TODO
+        let _ = sigs;
+        Self
+    }
+
+    pub fn verify(&self, input: &CallParams<Bytes>) -> bool {
+        // TODO
+        let _ = input;
+        true
+    }
+}
+
+impl OracleCert {
+    pub fn verify(&self, caller: &Address, input: Bytes) -> bool {
+        // TODO
+        let _ = (caller, input);
+        true
+    }
 }
 
 pub const GROUP_DEFAULT: &str = "main";

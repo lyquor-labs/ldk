@@ -9,7 +9,7 @@ use talc::{ErrOnOom, Span, Talc};
 
 pub use super::*;
 mod allocator;
-mod oracle;
+pub mod oracle;
 #[doc(hidden)] pub mod syntax;
 pub mod upc;
 
@@ -356,7 +356,7 @@ pub mod lyquor_api {
         log(record: LyteLog);
         whoami() -> (NodeID, LyquidID);
         console_output(output: ConsoleSink, s: String);
-        universal_procedural_call(target: LyquidID, method: String, input: Vec<u8>, nodes: Option<Vec<NodeID>>) -> Vec<u8>;
+        universal_procedural_call(target: LyquidID, group: Option<String>, method: String, input: Vec<u8>, nodes: Option<Vec<NodeID>>) -> Vec<u8>;
         inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
     );
 }
@@ -419,6 +419,7 @@ macro_rules! upc {
     (($network: expr).$method: ident[$callee:expr]($($var:ident: $type:ty = $val: expr),*) -> ($($ovar:ident: $otype:ty),*)) => {
         lyquor_api::universal_procedural_call(
             $network,
+            None, // TODO: allow user to specify group with upc macro
             stringify!($method).to_string().into(),
             Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
             $callee,

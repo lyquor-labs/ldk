@@ -16,3 +16,4 @@ cb58 = "0.0.2"
 ed25519-compact = { workspace = true }
 serde = { workspace = true }
 sha3 = { version = "0.10", default-features = false }
+typed-builder.workspace = true
