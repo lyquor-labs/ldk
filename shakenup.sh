@@ -191,6 +191,7 @@ setup_rustup() {
     mkdir -p "$bin_dir"
     [[ -f "$HOME/.cargo/bin/rustup" ]] && ln -sf "$HOME/.cargo/bin/rustup" "$bin_dir/rustup"
     [[ -f "$HOME/.cargo/bin/cargo" ]] && ln -sf "$HOME/.cargo/bin/cargo" "$bin_dir/cargo"
+    [[ -f "$HOME/.cargo/bin/rustc" ]] && ln -sf "$HOME/.cargo/bin/rustc" "$bin_dir/rustc"
 
     log_success "rustup installed"
     log_info "Consider adding ~/.cargo/bin to your PATH for direct access to Rust tools"
