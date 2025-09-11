@@ -377,7 +377,12 @@ macro_rules! __lyquid_categorize_methods {
      {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({
         network(main) fn __lyquid_constructor($($args)*) -> LyquidResult<bool> {$body; Ok(true)} $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
-    ({upc(callee$($group:tt)*) fn $fn:ident(&$handle:ident) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
+    // Syntactic sugar for UPC functions.
+    ({upc($role:ident$($group:tt)*) $($rest:tt)*}, {$($network_funcs:tt)*}, {$($instance_funcs:tt)*}) => {
+        $crate::__lyquid_categorize_methods!({instance(upc::$role$($group)*) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*});
+    };
+
+    ({instance(upc::callee$($group:tt)*) fn $fn:ident(&$handle:ident) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
@@ -396,7 +401,7 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
 
-    ({upc(request$($group:tt)*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+    ({instance(upc::request$($group:tt)*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
@@ -416,19 +421,19 @@ macro_rules! __lyquid_categorize_methods {
             }
         );
     };
-    ({upc(request$($group:tt)*) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
+    ({instance(upc::request$($group:tt)*) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request$($group)*) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(upc::request$($group)*) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
     // TODO: handle immutable UPC request correctly
-    ({upc(request$($group:tt)*) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) $($rest:tt)*},
+    ({instance(upc::request$($group:tt)*) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request$($group)*) fn $fn(&mut $handle, $($name: $type),*) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
-    ({upc(request$($group:tt)*) fn $fn:ident(&$handle:ident) $($rest:tt)*},
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(upc::request$($group)*) fn $fn(&mut $handle, $($name: $type),*) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+    ({instance(upc::request$($group:tt)*) fn $fn:ident(&$handle:ident) $($rest:tt)*},
      {$($network_funcs:tt)*},
-     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({upc(request$($group)*) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
+     {$($instance_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(upc::request$($group)*) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}); };
 
-    ({upc(response$($group:tt)*) fn $fn:ident(&$handle:ident, $returned:ident: LyquidResult<$rt:ty>) -> LyquidResult<Option<$rt_:ty>> $body:block $($rest:tt)*},
+    ({instance(upc::response$($group:tt)*) fn $fn:ident(&$handle:ident, $returned:ident: LyquidResult<$rt:ty>) -> LyquidResult<Option<$rt_:ty>> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
@@ -459,7 +464,7 @@ macro_rules! __lyquid_categorize_methods {
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
          $crate::__lyquid_categorize_methods!({
-            upc(request::oracle::committee::$name) fn validate(&mut ctx, msg: $crate::runtime::oracle::OracleMessage) -> LyquidResult<$crate::runtime::oracle::OracleResponse> {
+            instance(upc::request::oracle::committee::$name) fn validate(&mut ctx, msg: $crate::runtime::oracle::OracleMessage) -> LyquidResult<$crate::runtime::oracle::OracleResponse> {
                 if ctx.network.$name.config_hash() != &*msg.header.config_hash {
                     return Err($crate::LyquidError::LyquidRuntime("Mismatch config hash".into()))
                 }

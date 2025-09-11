@@ -80,7 +80,7 @@ impl Oracle {
         let mut params = CallParams {
             origin,
             caller: origin, // TODO: use node/lyquid here?
-            group: format!("oracle::certified::{}", self.id),
+            group: self.id.into(),
             method,
             input,
             input_cert: None,
