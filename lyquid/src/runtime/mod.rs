@@ -60,8 +60,10 @@ fn instance_segment_header() -> &'static mut InstanceSegmentHeader {
     unsafe { &mut *(INSTANCE_HEADER_BASE as *mut InstanceSegmentHeader) }
 }
 
-#[derive(Default)]
-struct VolatileAlloc;
+#[derive(Clone, Default)]
+pub struct VolatileAlloc;
+pub use instance::Alloc as InstanceAlloc;
+pub use network::Alloc as NetworkAlloc;
 
 #[global_allocator]
 static ALLOCATOR: VolatileAlloc = VolatileAlloc;
@@ -72,6 +74,16 @@ unsafe impl alloc::GlobalAlloc for VolatileAlloc {
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: alloc::Layout) {
         unsafe { volatile_segment_header().allocator.dealloc(ptr, layout) }
+    }
+}
+
+unsafe impl alloc::Allocator for VolatileAlloc {
+    fn allocate(&self, layout: alloc::Layout) -> Result<core::ptr::NonNull<[u8]>, alloc::AllocError> {
+        volatile_segment_header().allocator.allocate(layout)
+    }
+
+    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: alloc::Layout) {
+        unsafe { volatile_segment_header().allocator.deallocate(ptr, layout) }
     }
 }
 
@@ -365,7 +377,7 @@ pub mod lyquor_api {
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => {
-        lyquor_api::console_output(ConsoleSink::StdOut, format!($($arg)*)).unwrap();
+        lyquor_api::console_output($crate::ConsoleSink::StdOut, format!($($arg)*)).unwrap();
     };
 }
 
@@ -373,7 +385,7 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     ($($arg:tt)*) => {
-        lyquor_api::console_output(ConsoleSink::StdOut, format!($($arg)*) + "\n").unwrap();
+        lyquor_api::console_output($crate::ConsoleSink::StdOut, format!($($arg)*) + "\n").unwrap();
     };
 }
 
@@ -381,7 +393,7 @@ macro_rules! println {
 #[macro_export]
 macro_rules! eprint {
     ($($arg:tt)*) => {
-        lyquor_api::console_output(ConsoleSink::StdErr, format!($($arg)*)).unwrap();
+        lyquor_api::console_output($crate::ConsoleSink::StdErr, format!($($arg)*)).unwrap();
     };
 }
 
@@ -389,7 +401,7 @@ macro_rules! eprint {
 #[macro_export]
 macro_rules! eprintln {
     ($($arg:tt)*) => {
-        lyquor_api::console_output(ConsoleSink::StdErr, format!($($arg)*) + "\n").unwrap();
+        lyquor_api::console_output($crate::ConsoleSink::StdErr, format!($($arg)*) + "\n").unwrap();
     };
 }
 
@@ -709,11 +721,12 @@ impl EthABI for RequiredLyquid {
 }
 
 pub use hashbrown;
-pub type HashMap<K, V, A> = hashbrown::HashMap<K, V, ahash::RandomState, A>;
-pub type HashSet<K, A> = hashbrown::HashSet<K, ahash::RandomState, A>;
+type HashMap_<K, V, A> = hashbrown::HashMap<K, V, ahash::RandomState, A>;
+type HashSet_<K, A> = hashbrown::HashSet<K, ahash::RandomState, A>;
 
-pub use instance::Alloc as InstanceAlloc;
-pub use network::Alloc as NetworkAlloc;
+pub type HashMap<K, V> = volatile::HashMap<K, V>;
+pub type HashSet<K> = volatile::HashSet<K>;
+pub use volatile::{new_hashmap, new_hashset};
 
 macro_rules! gen_container_types {
     ($alloc: tt) => {
@@ -742,12 +755,12 @@ macro_rules! gen_container_types {
             LinkedList::new_in($alloc)
         }
 
-        pub type HashMap<K, V> = super::HashMap<K, V, $alloc>;
+        pub type HashMap<K, V> = super::HashMap_<K, V, $alloc>;
         pub fn new_hashmap<K, V>() -> HashMap<K, V> {
             HashMap::with_hasher_in(ahash::RandomState::with_seed(0), $alloc)
         }
 
-        pub type HashSet<K> = super::HashSet<K, $alloc>;
+        pub type HashSet<K> = super::HashSet_<K, $alloc>;
         pub fn new_hashset<K>() -> HashSet<K> {
             HashSet::with_hasher_in(ahash::RandomState::with_seed(0), $alloc)
         }
@@ -865,6 +878,11 @@ pub mod instance {
     }
 
     gen_container_types!(Alloc);
+}
+
+pub mod volatile {
+    use super::VolatileAlloc;
+    gen_container_types!(VolatileAlloc);
 }
 
 pub struct RwLock<T: ?Sized>(std::sync::RwLock<T>);

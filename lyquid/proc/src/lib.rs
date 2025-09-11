@@ -128,12 +128,7 @@ pub fn prefix_call(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 fn oracle_codegen(name: &Ident, output: &mut TokenStream) {
     output.extend(quote::quote! {
         lyquid::method! {
-            upc(callee::oracle::committee::#name) fn validate(&ctx) -> LyquidResult<Vec<NodeID>> {
-                Ok(ctx.network.#name.committee())
-            }
-
             upc(response::oracle::committee::#name) fn validate(&ctx, resp: LyquidResult<oracle::OracleResponse>) -> LyquidResult<Option< Option<oracle::OracleCert> >> {
-                use std::collections::HashMap;
                 let cache = ctx.cache.get_or_init(|| {
                     // FIXME: initialize by caller.
                     oracle::Aggregation::new(oracle::OracleHeader {

@@ -1,32 +1,33 @@
 use super::{LyquidError, LyquidResult, NodeID, lyquor_api};
 use lyquor_primitives::{
-    Address, Bytes, CallParams, Certificate, EventABI, Hash, OracleConfig, OracleSigner, PubKey, Signature,
-    encode_object,
+    Address, Bytes, CallParams, Certificate, EventABI, Hash, OracleSigner, PubKey, Signature, encode_object,
 };
-pub use lyquor_primitives::{OracleCert, OracleHeader, OracleMessage, OracleResponse, OracleTarget};
-use std::collections::HashSet;
+pub use lyquor_primitives::{OracleCert, OracleConfig, OracleHeader, OracleMessage, OracleResponse, OracleTarget};
 
 pub struct Oracle {
     id: &'static str,
     threshold: usize,
     committee: super::network::HashMap<NodeID, PubKey>,
-    config_cached: (OracleConfig, Hash),
+    config_hash: Hash,
     config_update: bool,
 }
 
 impl Oracle {
     fn updated_config(&mut self) {
-        let config = OracleConfig {
-            committee: self
-                .committee
-                .iter()
-                .map(|(id, key)| OracleSigner { id: *id, key: *key })
-                .collect(),
-            threshold: self.threshold,
-        };
-        let hash = lyquor_primitives::blake3::hash(&encode_object(&config));
-        self.config_cached = (config, hash);
+        let hash = lyquor_primitives::blake3::hash(&encode_object(&self.get_config()));
+        self.config_hash = hash;
         self.config_update = true;
+    }
+
+    fn get_config(&self) -> OracleConfig {
+        let mut committee = Vec::new();
+        for (id, key) in self.committee.iter() {
+            committee.push(OracleSigner { id: *id, key: *key });
+        }
+        OracleConfig {
+            committee,
+            threshold: self.threshold,
+        }
     }
 
     pub fn new(id: &'static str) -> Self {
@@ -34,13 +35,7 @@ impl Oracle {
             id,
             threshold: 0,
             committee: super::network::new_hashmap(),
-            config_cached: (
-                OracleConfig {
-                    threshold: 0,
-                    committee: Vec::new(),
-                },
-                [0; 32].into(),
-            ),
+            config_hash: [0; 32].into(),
             config_update: false,
         }
     }
@@ -53,10 +48,15 @@ impl Oracle {
     }
 
     /// Remove a node from the committee. If the node does not exist, returns false.
-    pub fn remove_node(&mut self, node: &NodeID) -> bool {
-        let ret = self.committee.remove(node);
+    pub fn remove_node(&mut self, id: &NodeID) -> bool {
+        let ret = self.committee.remove(id);
         self.updated_config();
         ret.is_some()
+    }
+
+    /// Get the committee size.
+    pub fn len(&self) -> usize {
+        self.committee.len()
     }
 
     /// Update the threshold of the oracle.
@@ -90,7 +90,7 @@ impl Oracle {
             header: OracleHeader {
                 proposer: node,
                 target,
-                config_hash: self.config_cached.1.into(),
+                config_hash: self.config_hash.into(),
             },
             params: params.clone(),
         });
@@ -114,7 +114,7 @@ impl Oracle {
     }
 
     pub fn config_hash(&self) -> &Hash {
-        &self.config_cached.1
+        &self.config_hash
     }
 }
 
@@ -122,7 +122,7 @@ pub struct Aggregation {
     msg_header: OracleHeader,
     msg_hash: Hash,
 
-    voted: HashSet<NodeID>,
+    voted: super::volatile::HashSet<NodeID>,
     yea_sigs: Vec<(OracleSigner, Signature)>,
     yea: usize,
     nay: usize,
@@ -135,7 +135,7 @@ impl Aggregation {
         Self {
             msg_header,
             msg_hash,
-            voted: HashSet::new(),
+            voted: super::volatile::new_hashset(),
             yea_sigs: Vec::new(),
             yea: 0,
             nay: 0,
@@ -163,11 +163,12 @@ impl Aggregation {
         }
 
         if self.result.is_none() {
+            crate::println!("yea = {}, thres = {}", self.yea, oracle.threshold);
             if self.yea >= oracle.threshold {
                 self.result = Some(Some(OracleCert {
                     header: self.msg_header,
                     new_config: if oracle.config_update {
-                        Some(oracle.config_cached.0.clone())
+                        Some(oracle.get_config())
                     } else {
                         None
                     },

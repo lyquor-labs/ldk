@@ -455,7 +455,7 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
 
-    ({instance(oracle::committee::$name:ident) fn validate(&mut $handle:ident, $params:ident: CallParams) -> bool $body:block $($rest:tt)*},
+    ({instance(oracle::committee::$name:ident) fn validate(&mut $handle:ident, $params:ident: CallParams) -> LyquidResult<bool> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
          $crate::__lyquid_categorize_methods!({
@@ -465,9 +465,9 @@ macro_rules! __lyquid_categorize_methods {
                 }
                 let approval = {
                     let $params = msg.params;
-                    let $handle = &mut ctx.instance;
+                    let $handle = &mut ctx;
                     $body
-                };
+                }?;
                 Ok($crate::runtime::oracle::OracleResponse {
                     approval,
                     // TODO

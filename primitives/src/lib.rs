@@ -25,8 +25,8 @@ pub mod arc_option_serde {
         S: Serializer,
     {
         match value {
-            Some(arc) => arc.as_ref().serialize(serializer),
-            None => serializer.serialize_none(),
+            Some(arc) => Some(arc.as_ref()).serialize(serializer),
+            None => Option::<&T>::None.serialize(serializer),
         }
     }
 
@@ -172,17 +172,17 @@ pub struct CallParams<I> {
 
 impl<I: Eq> Eq for CallParams<I> {}
 
-impl<I: fmt::Debug> fmt::Debug for CallParams<I> {
+impl fmt::Debug for CallParams<Bytes> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         write!(
             f,
-            "CallParams(caller={}, origin={}, group={}, method={}, input={:?}, input_cert={}, abi={:?})",
+            "CallParams(caller={}, origin={}, group={}, method={}, input={}, input_cert={:?}, abi={:?})",
             self.caller,
             self.origin,
             self.group,
             self.method,
-            &self.input,
-            self.input_cert.is_some(),
+            hex::encode(&self.input),
+            self.input_cert,
             self.abi
         )
     }
