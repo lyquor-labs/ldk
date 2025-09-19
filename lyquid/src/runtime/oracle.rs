@@ -1,6 +1,6 @@
 use super::{LyquidError, LyquidResult, NodeID, lyquor_api};
 use lyquor_primitives::{
-    Address, Bytes, CallParams, Certificate, EventABI, Hash, OracleSigner, PubKey, Signature, encode_object,
+    Address, Bytes, CallParams, Certificate, Hash, InputABI, OracleSigner, PubKey, Signature, encode_object,
 };
 pub use lyquor_primitives::{OracleCert, OracleConfig, OracleHeader, OracleMessage, OracleResponse, OracleTarget};
 
@@ -70,7 +70,7 @@ impl Oracle {
     pub fn certify(
         &self, ctx: &impl super::internal::OracleCertifyContext, origin: Address, method: String, input: Bytes,
         target: OracleTarget,
-    ) -> LyquidResult<Option<CallParams<Bytes>>> {
+    ) -> LyquidResult<Option<CallParams>> {
         if self.threshold == 0 || self.committee.len() < self.threshold {
             return Err(crate::LyquidError::LyquidRuntime("Invalid oracle config.".into()))
         }
@@ -83,8 +83,7 @@ impl Oracle {
             group: self.id.into(),
             method,
             input,
-            input_cert: None,
-            abi: EventABI::Lyquor,
+            abi: InputABI::Lyquor,
         };
         let input = encode_object(&OracleMessage {
             header: OracleHeader {
@@ -104,7 +103,11 @@ impl Oracle {
         .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))?;
 
         Ok(cert.map(move |c| {
-            params.input_cert = Some(std::sync::Arc::new(c));
+            params.input = crate::encode_by_fields!(
+                cert: OracleCert = c,
+                input_raw: Bytes = params.input
+            )
+            .into();
             params
         }))
     }

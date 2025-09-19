@@ -282,6 +282,7 @@ macro_rules! __lyquid_state_generate {
 macro_rules! method {
     {$($rest:tt)*} => {
         const _: () = {
+            use $crate::LyquidError;
             $crate::__lyquid_categorize_methods!({$($rest)*}, {}, {});
         };
     }
@@ -298,15 +299,16 @@ macro_rules! __lyquid_categorize_methods {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
-                oracle::certified::$oname (true) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| {
+                oracle::certified::$oname (true) fn $fn(cert: $crate::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
 
                     // Check oracle certificate.
-                    ctx.input_cert
-                       .as_ref()
-                       .and_then(|cert| if cert.verify(&ctx.caller, ctx.input.clone()) { Some(()) } else { None })
-                       .ok_or($crate::LyquidError::InputCert)?;
+                    if !cert.verify(&ctx.caller, ctx.input.clone()) {
+                        return Err(LyquidError::InputCert)
+                    }
 
+                    let input = $crate::lyquor_primitives::decode_by_fields!(&input_raw, $($name: $type),*).ok_or(LyquidError::LyquorInput)?;
+                    $(let $name = input.$name;)*
                     let mut $handle = __lyquid::NetworkContext::new(ctx)?;
                     let result = $body; // execute the body of the function
                     drop($handle); // drop the state handle here to ensure the correct lifetime
@@ -412,7 +414,7 @@ macro_rules! __lyquid_categorize_methods {
                 upc::request$($group)* (true) fn $fn(from: $crate::NodeID, id: u64, input: Vec<u8>) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcRequestContext::new(ctx, from, id)?;
-                    let input = $crate::lyquor_primitives::decode_by_fields!(&input, $($name: $type),*).ok_or($crate::LyquidError::LyquorInput)?;
+                    let input = $crate::lyquor_primitives::decode_by_fields!(&input, $($name: $type),*).ok_or(LyquidError::LyquorInput)?;
                     $(let $name = input.$name;)*
                     let result = $body;
                     drop($handle);
@@ -444,7 +446,7 @@ macro_rules! __lyquid_categorize_methods {
                 upc::response$($group)* (true) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>, cache: Option<$crate::upc::CachePtr>) -> LyquidResult<$crate::upc::ResponseOutput> {|ctx: CallContext| {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcResponseContext::new(ctx, from, id, cache)?;
-                    let $returned = $crate::lyquor_primitives::decode_object::<LyquidResult<$rt>>(&returned).ok_or($crate::LyquidError::LyquorInput)?;
+                    let $returned = $crate::lyquor_primitives::decode_object::<LyquidResult<$rt>>(&returned).ok_or(LyquidError::LyquorInput)?;
                     let result: LyquidResult<Option<$rt_>> = (|| {$body})();
                     let cache = $handle.cache.take_cache();
                     drop($handle);
@@ -466,7 +468,7 @@ macro_rules! __lyquid_categorize_methods {
          $crate::__lyquid_categorize_methods!({
             instance(upc::request::oracle::committee::$name) fn validate(&mut ctx, msg: $crate::runtime::oracle::OracleMessage) -> LyquidResult<$crate::runtime::oracle::OracleResponse> {
                 if ctx.network.$name.config_hash() != &*msg.header.config_hash {
-                    return Err($crate::LyquidError::LyquidRuntime("Mismatch config hash".into()))
+                    return Err(LyquidError::LyquidRuntime("Mismatch config hash".into()))
                 }
                 let approval = {
                     let $params = msg.params;

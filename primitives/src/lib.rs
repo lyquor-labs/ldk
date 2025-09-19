@@ -79,7 +79,7 @@ impl fmt::Debug for ChainPos {
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
-pub enum EventABI {
+pub enum InputABI {
     Lyquor,
     Eth,
 }
@@ -152,7 +152,7 @@ impl<'de> Deserialize<'de> for HashBytes {
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, TypedBuilder)]
-pub struct CallParams<I> {
+pub struct CallParams {
     /// The ultimate origin of the call (the transaction signer, for example if the call comes from
     /// the chain. The default is zero address when unused.
     #[builder(default = Address::ZERO)]
@@ -162,27 +162,23 @@ pub struct CallParams<I> {
     #[builder(default = GROUP_DEFAULT.into())]
     pub group: String,
     pub method: String,
-    pub input: I,
-    #[builder(default = None)]
-    #[serde(with = "arc_option_serde", default)]
-    pub input_cert: Option<Arc<OracleCert>>,
-    #[builder(default = EventABI::Lyquor)]
-    pub abi: EventABI,
+    pub input: Bytes,
+    #[builder(default = InputABI::Lyquor)]
+    pub abi: InputABI,
 }
 
-impl<I: Eq> Eq for CallParams<I> {}
+impl Eq for CallParams {}
 
-impl fmt::Debug for CallParams<Bytes> {
+impl fmt::Debug for CallParams {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         write!(
             f,
-            "CallParams(caller={}, origin={}, group={}, method={}, input={}, input_cert={:?}, abi={:?})",
+            "CallParams(caller={}, origin={}, group={}, method={}, input={}, abi={:?})",
             self.caller,
             self.origin,
             self.group,
             self.method,
             hex::encode(&self.input),
-            self.input_cert,
             self.abi
         )
     }
@@ -232,8 +228,7 @@ pub struct OracleConfig {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleMessage {
     pub header: OracleHeader,
-    /// params.input_cert will be None and unused.
-    pub params: CallParams<Bytes>,
+    pub params: CallParams,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -276,7 +271,7 @@ impl Certificate {
         Self
     }
 
-    pub fn verify(&self, input: &CallParams<Bytes>) -> bool {
+    pub fn verify(&self, input: &CallParams) -> bool {
         // TODO
         let _ = input;
         true
