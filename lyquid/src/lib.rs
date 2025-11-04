@@ -17,7 +17,7 @@ pub use lyquor_primitives::{
 };
 
 pub use lyquor_primitives::{
-    Address, Bytes, CallParams, ConsoleSink, GROUP_DEFAULT, GROUP_NODE, GROUP_UPC_CALLEE, GROUP_UPC_REQ,
+    Address, Bytes, CallParams, ConsoleSink, GROUP_DEFAULT, GROUP_NODE, GROUP_UPC_PREPARE, GROUP_UPC_REQ,
     GROUP_UPC_RESP, OracleCert,
 };
 
@@ -135,13 +135,13 @@ pub mod upc {
     }
 
     #[derive(Serialize, Deserialize)]
-    pub struct CalleeInput {
-        //pub from: lyquor_primitives::NodeID,
-        pub id: u64,
+    pub struct PrepareInput {
+        pub client_params: Bytes,
     }
 
     #[derive(Serialize, Deserialize)]
-    pub struct CalleeOutput {
+    pub struct PrepareOutput {
         pub result: Vec<NodeID>,
+        pub cache: Option<CachePtr>,
     }
 }

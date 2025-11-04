@@ -98,7 +98,13 @@ impl Oracle {
             Some(format!("oracle::committee::{}", self.id)),
             "validate".into(),
             input,
-            Some(self.committee()),
+            Some(
+                lyquor_primitives::encode_by_fields!(
+                    // Use Oracle macro expected field "callee" for callee list.
+                    callee: Vec<NodeID> = self.committee()
+                )
+                .into(),
+            ),
         )
         .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))?;
 

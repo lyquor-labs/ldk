@@ -4,8 +4,8 @@ use super::{Immutable, Mutable, internal};
 use crate::{Address, Bytes, CallContext, LyquidResult, NodeID, upc::CachePtr};
 use internal::{OracleCertifyContext, StateAccessor, sealed};
 
-/// UPC callee context, which is allowed to only read the network state variables.
-pub struct CalleeContextImpl<S>
+/// UPC prepare context, which is allowed to only read the network state variables.
+pub struct PrepareContextImpl<S>
 where
     S: StateAccessor,
 {
@@ -13,20 +13,20 @@ where
     pub caller: Address,
     pub input: Bytes,
     pub network: Immutable<S>,
-    pub id: u64,
+    pub cache: Cache,
 }
 
-impl<S> CalleeContextImpl<S>
+impl<S> PrepareContextImpl<S>
 where
     S: StateAccessor,
 {
-    pub fn new(ctx: CallContext, id: u64) -> LyquidResult<Self> {
+    pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
             network: Immutable::new(S::new()?),
-            id,
+            cache: Cache::new(None),
         })
     }
 }

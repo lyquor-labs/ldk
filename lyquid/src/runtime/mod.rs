@@ -368,7 +368,7 @@ pub mod lyquor_api {
         log(record: LyteLog);
         whoami() -> (NodeID, LyquidID);
         console_output(output: ConsoleSink, s: String);
-        universal_procedural_call(target: LyquidID, group: Option<String>, method: String, input: Vec<u8>, nodes: Option<Vec<NodeID>>) -> Vec<u8>;
+        universal_procedural_call(target: LyquidID, group: Option<String>, method: String, input: Vec<u8>, client_params: Option<Bytes>) -> Vec<u8>;
         inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
     );
 }
@@ -428,13 +428,23 @@ macro_rules! call {
 /// Initiate a Universal Procedure Call (UPC). **Only usable by instance functions.**
 #[macro_export]
 macro_rules! upc {
-    (($network: expr).$method: ident[$callee:expr]($($var:ident: $type:ty = $val: expr),*) -> ($($ovar:ident: $otype:ty),*)) => {
+    (($network: expr).$method: ident($($var:ident: $type:ty = $val: expr),*) -> ($($ovar:ident: $otype:ty),*)) => {
         lyquor_api::universal_procedural_call(
             $network,
             None, // TODO: allow user to specify group with upc macro
             stringify!($method).to_string().into(),
             Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
-            $callee,
+            None,
+        ).and_then(|r| lyquor_primitives::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
+    };
+
+    (($network: expr).$method: ident[$($params:ident: $params_type:ty = $params_val: expr),*]($($var:ident: $type:ty = $val: expr),*) -> ($($ovar:ident: $otype:ty),*)) => {
+        lyquor_api::universal_procedural_call(
+            $network,
+            None, // TODO: allow user to specify group with upc macro
+            stringify!($method).to_string().into(),
+            Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
+            Some($crate::lyquor_primitives::encode_by_fields!($($params: $params_type = $params_val),*).into()),
         ).and_then(|r| lyquor_primitives::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
     };
 }

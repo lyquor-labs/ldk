@@ -148,7 +148,7 @@ macro_rules! __lyquid_state_generate {
             pub type ImmutableNetworkContext = $crate::runtime::ImmutableNetworkContextImpl<NetworkState>;
             pub type InstanceContext = $crate::runtime::InstanceContextImpl<NetworkState, InstanceState>;
             pub type ImmutableInstanceContext = $crate::runtime::ImmutableInstanceContextImpl<NetworkState, InstanceState>;
-            pub type UpcCalleeContext = $crate::runtime::upc::CalleeContextImpl<NetworkState>;
+            pub type UpcPrepareContext = $crate::runtime::upc::PrepareContextImpl<NetworkState>;
             pub type UpcRequestContext = $crate::runtime::upc::RequestContextImpl<NetworkState, InstanceState>;
             pub type UpcResponseContext = $crate::runtime::upc::ResponseContextImpl<NetworkState>;
         }
@@ -384,20 +384,49 @@ macro_rules! __lyquid_categorize_methods {
         $crate::__lyquid_categorize_methods!({instance(upc::$role$($group)*) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*});
     };
 
-    ({instance(upc::callee$($group:tt)*) fn $fn:ident(&$handle:ident) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
+    ({instance(upc::prepare$($group:tt)*) fn $fn:ident(&$handle:ident) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*},
             {$($network_funcs)*},
             {$($instance_funcs)*
-                // see CalleeInput
-                upc::callee$($group)* (true) fn $fn(id: u64) -> LyquidResult<$crate::upc::CalleeOutput> {|ctx: CallContext| {
+                // see PrepareInput
+                upc::prepare$($group)* (true) fn $fn(client_params: $crate::lyquor_primitives::Bytes) -> LyquidResult<$crate::upc::PrepareOutput> {|ctx: CallContext| {
                     use crate::__lyquid;
-                    let mut $handle = __lyquid::UpcCalleeContext::new(ctx, id)?;
+                    let mut $handle = __lyquid::UpcPrepareContext::new(ctx)?;
                     let result: LyquidResult<Vec<NodeID>> = (|| {$body})();
+                    let cache = $handle.cache.take_cache();
                     drop($handle);
-                    result.map(|r| $crate::upc::CalleeOutput { result: r })
+                    result.map(|r| $crate::upc::PrepareOutput {
+                        result: r,
+                        cache: cache.map(|c| Box::into_raw(c) as $crate::upc::CachePtr)
+                    })
+                }}
+            }
+        );
+    };
+
+    ({instance(upc::prepare$($group:tt)*) fn $fn:ident(&$handle:ident, $($params:ident: $type:ty),*) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*}) => {
+        $crate::__lyquid_categorize_methods!(
+            {$($rest)*},
+            {$($network_funcs)*},
+            {$($instance_funcs)*
+                // see PrepareInput
+                upc::prepare$($group)* (true) fn $fn(client_params: $crate::lyquor_primitives::Bytes) -> LyquidResult<$crate::upc::PrepareOutput> {|ctx: CallContext| {
+                    use crate::__lyquid;
+                    let mut $handle = __lyquid::UpcPrepareContext::new(ctx)?;
+                    let input = $crate::lyquor_primitives::decode_by_fields!(&client_params, $($params: $type),*).ok_or(LyquidError::LyquorInput)?;
+                    $(let $params = input.$params;)*
+                    let result: LyquidResult<Vec<NodeID>> = (|| {$body})();
+                    let cache = $handle.cache.take_cache();
+                    drop($handle);
+                    result.map(|r| $crate::upc::PrepareOutput {
+                        result: r,
+                        cache: cache.map(|c| Box::into_raw(c) as $crate::upc::CachePtr)
+                    })
                 }}
             }
         );
@@ -466,6 +495,9 @@ macro_rules! __lyquid_categorize_methods {
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
          $crate::__lyquid_categorize_methods!({
+            instance(upc::prepare::oracle::committee::$name) fn validate(&ctx, callee: Vec<NodeID>) -> LyquidResult<Vec<NodeID>> {
+                Ok(callee)
+            }
             instance(upc::request::oracle::committee::$name) fn validate(&mut ctx, msg: $crate::runtime::oracle::OracleMessage) -> LyquidResult<$crate::runtime::oracle::OracleResponse> {
                 if ctx.network.$name.config_hash() != &*msg.header.config_hash {
                     return Err(LyquidError::LyquidRuntime("Mismatch config hash".into()))
