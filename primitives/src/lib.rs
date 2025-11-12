@@ -195,6 +195,8 @@ pub enum OracleTarget {
     Lyquor(LyquidID),
     // Native contract of the sequence backend (such as EVM)
     SequenceVM(Address),
+    // Detect sequence backend
+    // TODO: add target chain ID
 }
 
 /// Contains other fields needed to define a call alongside the standard call parameters.
@@ -207,6 +209,10 @@ pub struct OracleHeader {
     pub target: OracleTarget,
     /// The hash of the oracle config.
     pub config_hash: HashBytes,
+    /// Hybrid replay prevention: epoch controls stale-proof rejection across epochs.
+    pub epoch: u32,
+    /// Hybrid replay prevention: random nonce for dedup inside an epoch.
+    pub nonce: [u8; 32],
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]

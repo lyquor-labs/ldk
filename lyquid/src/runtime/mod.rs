@@ -370,6 +370,7 @@ pub mod lyquor_api {
         console_output(output: ConsoleSink, s: String);
         universal_procedural_call(target: LyquidID, group: Option<String>, method: String, input: Vec<u8>, client_params: Option<Bytes>) -> Vec<u8>;
         inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
+        submit_certified_call(params: lyquor_primitives::CallParams) -> Vec<u8>;
     );
 }
 
@@ -423,6 +424,13 @@ macro_rules! call {
             Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
         ).and_then(|r| lyquor_primitives::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
     };
+}
+
+/// Submit a certified call to the sequencing backend. Returns the backend-specific
+/// submission result as raw bytes (e.g., tx hash for EVM).
+#[macro_export]
+macro_rules! submit_certified_call {
+    ($cert:expr) => {{ lyquor_api::submit_certified_call($cert) }};
 }
 
 /// Initiate a Universal Procedure Call (UPC). **Only usable by instance functions.**
@@ -727,6 +735,26 @@ impl EthABI for RequiredLyquid {
 
     fn encode(self) -> DynSolValue {
         DynSolValue::Address(self.0.0.into())
+    }
+}
+
+impl EthABI for NodeID {
+    fn type_string() -> Option<String> {
+        Some("bytes32".into())
+    }
+
+    fn decode(val: DynSolValue) -> Option<Self> {
+        match val {
+            DynSolValue::FixedBytes(v, 32) => {
+                let arr: [u8; 32] = v.as_slice().try_into().ok()?;
+                Some(NodeID::from(arr))
+            }
+            _ => None,
+        }
+    }
+
+    fn encode(self) -> DynSolValue {
+        DynSolValue::FixedBytes(<[u8; 32]>::from(self).into(), 32)
     }
 }
 

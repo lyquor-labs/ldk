@@ -4,12 +4,18 @@ use lyquor_primitives::{
 };
 pub use lyquor_primitives::{OracleCert, OracleConfig, OracleHeader, OracleMessage, OracleResponse, OracleTarget};
 
+/// Maximum number of unique nonces allowed per epoch on LVM before auto-advancing the epoch.
+const NONCE_LIMIT_PER_EPOCH: usize = 1_000_000;
+
 pub struct Oracle {
     id: &'static str,
     threshold: usize,
     committee: super::network::HashMap<NodeID, PubKey>,
     config_hash: Hash,
     config_update: bool,
+    epoch: u32,
+    // Per-epoch nonce deduplication set for the current epoch.
+    nonce_seen: super::network::HashMap<[u8; 32], ()>,
 }
 
 impl Oracle {
@@ -37,6 +43,8 @@ impl Oracle {
             committee: super::network::new_hashmap(),
             config_hash: [0; 32].into(),
             config_update: false,
+            epoch: 0,
+            nonce_seen: super::network::new_hashmap(),
         }
     }
 
@@ -65,6 +73,43 @@ impl Oracle {
         self.updated_config();
     }
 
+    /// Get the current epoch (used for hybrid replay prevention).
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
+    /// Advance epoch to a strictly higher value. Returns true if advanced.
+    pub fn advance_epoch(&mut self, new_epoch: u32) -> bool {
+        if new_epoch > self.epoch {
+            self.epoch = new_epoch;
+            // Reset dedup set on epoch advance
+            self.nonce_seen = super::network::new_hashmap();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Record a nonce for the given epoch. Returns false if stale epoch or nonce already seen.
+    pub fn record_nonce(&mut self, epoch: u32, nonce: [u8; 32]) -> bool {
+        if epoch < self.epoch {
+            return false;
+        }
+        if epoch > self.epoch {
+            self.epoch = epoch;
+            self.nonce_seen = super::network::new_hashmap();
+        }
+        if self.nonce_seen.insert(nonce, ()).is_some() {
+            return false; // duplicate
+        }
+        if self.nonce_seen.len() >= NONCE_LIMIT_PER_EPOCH {
+            // Auto-advance epoch and reset dedup set for next epoch
+            self.epoch = self.epoch.saturating_add(1);
+            self.nonce_seen = super::network::new_hashmap();
+        }
+        true
+    }
+
     /// Generate a certificate that testifies the validity of an oracle call to a target network
     /// (sequence backend).
     pub fn certify(
@@ -72,7 +117,12 @@ impl Oracle {
         target: OracleTarget,
     ) -> LyquidResult<Option<CallParams>> {
         if self.threshold == 0 || self.committee.len() < self.threshold {
-            return Err(crate::LyquidError::LyquidRuntime("Invalid oracle config.".into()))
+            return Err(crate::LyquidError::LyquidRuntime(format!(
+                "Invalid oracle config. threshold={}, committee_len={}",
+                self.threshold,
+                self.committee.len()
+            ))
+            .into());
         }
         let _ = ctx;
         let (node, lyquid) = super::lyquor_api::whoami()?;
@@ -85,11 +135,18 @@ impl Oracle {
             input,
             abi: InputABI::Lyquor,
         };
+        // Populate epoch from network state and derive a nonce per call.
+        // The nonce is derived from the call parameters to ensure uniqueness without RNG.
+        let epoch: u32 = self.epoch;
+        let nonce_hash = lyquor_primitives::blake3::hash(&encode_object(&params));
+        let nonce: [u8; 32] = *nonce_hash.as_bytes();
         let input = encode_object(&OracleMessage {
             header: OracleHeader {
                 proposer: node,
                 target,
                 config_hash: self.config_hash.into(),
+                epoch,
+                nonce,
             },
             params: params.clone(),
         });

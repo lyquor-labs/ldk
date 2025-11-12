@@ -8,7 +8,7 @@ use super::Address;
 
 /// The ID of a node in the network.
 /// The ID is 35 bytes long, the first 32 bytes are the node's ed25519 public key,
-/// and the following 2 bytes are checksums, the last byte is the version number (1)
+/// and the following 2 bytes are checksums, the last byte is the version number (0)
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NodeID(pub [u8; 32], pub [u8; 3]);
 
@@ -45,7 +45,7 @@ impl NodeID {
     const ALPHABET: base32::Alphabet = base32::Alphabet::Rfc4648Lower { padding: false };
 
     pub fn as_u64(&self) -> u64 {
-        u64::from_be_bytes(self.0[..8].try_into().unwrap())
+        u64::from_be_bytes(self.0[32 - 8..].try_into().unwrap())
     }
 
     pub fn as_ed25519_public_key(&self) -> ed25519_compact::PublicKey {
@@ -323,5 +323,13 @@ mod tests {
             id.as_dns_label(),
             "df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvqvfyya"
         );
+    }
+
+    #[test]
+    fn test_u64() {
+        for &x in &[0u64, 1u64, 42u64, u64::MAX] {
+            let id = NodeID::from(x);
+            assert_eq!(id.as_u64(), x, "NodeID <-> u64 roundtrip failed for {x}");
+        }
     }
 }

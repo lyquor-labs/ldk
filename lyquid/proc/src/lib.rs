@@ -134,7 +134,9 @@ fn oracle_codegen(name: &Ident, output: &mut TokenStream) {
                     oracle::Aggregation::new(oracle::OracleHeader {
                         proposer: 0.into(),
                         target: oracle::OracleTarget::Lyquor(0.into()),
-                        config_hash: [0; 32].into()
+                        config_hash: [0; 32].into(),
+                        epoch: 0u32,
+                        nonce: [0u8; 32],
                     }, [0; 32].into())
                 });
                 if let Ok(resp) = resp {

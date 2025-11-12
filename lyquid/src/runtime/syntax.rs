@@ -307,9 +307,19 @@ macro_rules! __lyquid_categorize_methods {
                         return Err(LyquidError::InputCert)
                     }
 
+                    // TODO: Ensure the certificate targets this Lyquor instance when using LVM path.
+
                     let input = $crate::lyquor_primitives::decode_by_fields!(&input_raw, $($name: $type),*).ok_or(LyquidError::LyquorInput)?;
                     $(let $name = input.$name;)*
                     let mut $handle = __lyquid::NetworkContext::new(ctx)?;
+
+                    // LVM-side replay prevention: epoch monotonic + per-epoch nonce dedup using oracle network state.
+                    {
+                        let o = &mut $handle.network.$oname;
+                        if !o.record_nonce(cert.header.epoch, cert.header.nonce) {
+                            return Err(LyquidError::InputCert)
+                        }
+                    }
                     let result = $body; // execute the body of the function
                     drop($handle); // drop the state handle here to ensure the correct lifetime
                                    // for the handle when accessed in $body so the handle is not
