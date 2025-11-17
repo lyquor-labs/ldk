@@ -143,16 +143,19 @@ impl Oracle {
         let epoch: u32 = self.epoch;
         let nonce_hash = lyquor_primitives::blake3::hash(&encode_object(&params));
         let nonce: [u8; 32] = *nonce_hash.as_bytes();
-        let input = encode_object(&OracleMessage {
-            header: OracleHeader {
-                proposer: node,
-                target,
-                config_hash: self.config_hash.into(),
-                epoch,
-                nonce,
-            },
+        let header = OracleHeader {
+            proposer: node,
+            target,
+            config_hash: self.config_hash.into(),
+            epoch,
+            nonce,
+        };
+        let message = OracleMessage {
+            header,
             params: params.clone(),
-        });
+        };
+        let msg_hash: Hash = lyquor_primitives::blake3::hash(&encode_object(&message));
+        let input = lyquor_primitives::encode_by_fields!(msg: OracleMessage = message);
         let cert: Option<OracleCert> = lyquor_api::universal_procedural_call(
             lyquid,
             Some(format!("oracle::committee::{}", self.id)),
@@ -160,31 +163,18 @@ impl Oracle {
             input,
             Some(
                 lyquor_primitives::encode_by_fields!(
-                    // Use Oracle macro expected field "callee" for callee list.
-                    callee: Vec<NodeID> = self.committee()
+                    // Use Oracle macro expected field "callee" for callee list and pass verification context.
+                    callee: Vec<NodeID> = self.committee(),
+                    header: OracleHeader = header,
+                    msg_hash: lyquor_primitives::HashBytes = msg_hash.into()
                 )
                 .into(),
             ),
         )
         .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))?;
 
-        Ok(cert.map(move |c| {
-            // Override the header coming from the aggregator with the intended header
-            // from this request.
-            // TODO: revisit this once dummy header is removed.
-            let corrected_cert = OracleCert {
-                header: OracleHeader {
-                    proposer: node,
-                    target,
-                    config_hash: self.config_hash.into(),
-                    epoch,
-                    nonce,
-                },
-                new_config: c.new_config,
-                cert: c.cert,
-            };
-            params.input =
-                crate::encode_by_fields!(cert: OracleCert = corrected_cert, input_raw: Bytes = params.input).into();
+        Ok(cert.map(move |cert| {
+            params.input = crate::encode_by_fields!(cert: OracleCert = cert, input_raw: Bytes = params.input).into();
             params
         }))
     }

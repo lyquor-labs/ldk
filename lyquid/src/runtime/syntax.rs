@@ -505,7 +505,10 @@ macro_rules! __lyquid_categorize_methods {
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*}) => {
          $crate::__lyquid_categorize_methods!({
-            instance(upc::prepare::oracle::committee::$name) fn validate(&ctx, callee: Vec<NodeID>) -> LyquidResult<Vec<NodeID>> {
+            instance(upc::prepare::oracle::committee::$name) fn validate(
+                &ctx, callee: Vec<NodeID>, header: $crate::runtime::oracle::OracleHeader, msg_hash: $crate::lyquor_primitives::HashBytes
+            ) -> LyquidResult<Vec<NodeID>> {
+                let _ = ctx.cache.get_or_init(|| $crate::runtime::oracle::Aggregation::new(header, msg_hash.into()));
                 Ok(callee)
             }
             instance(upc::request::oracle::committee::$name) fn validate(&mut ctx, msg: $crate::runtime::oracle::OracleMessage) -> LyquidResult<$crate::runtime::oracle::OracleResponse> {

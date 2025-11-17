@@ -130,14 +130,11 @@ fn oracle_codegen(name: &Ident, output: &mut TokenStream) {
         lyquid::method! {
             upc(response::oracle::committee::#name) fn validate(&ctx, resp: LyquidResult<oracle::OracleResponse>) -> LyquidResult<Option< Option<oracle::OracleCert> >> {
                 let cache = ctx.cache.get_or_init(|| {
-                    // FIXME: initialize by caller.
-                    oracle::Aggregation::new(oracle::OracleHeader {
-                        proposer: 0.into(),
-                        target: oracle::OracleTarget::Lyquor(0.into()),
-                        config_hash: [0; 32].into(),
-                        epoch: 0u32,
-                        nonce: [0u8; 32],
-                    }, [0; 32].into())
+                    let msg = lyquor_primitives::decode_by_fields!(&ctx.input, msg: oracle::OracleMessage)
+                        .expect("invalid oracle message in UPC input")
+                        .msg;
+                    let msg_hash: Hash = lyquor_primitives::blake3::hash(&lyquor_primitives::encode_object(&msg));
+                    oracle::Aggregation::new(msg.header, msg_hash)
                 });
                 if let Ok(resp) = resp {
                     return Ok(cache.add_response(ctx.from, resp, &ctx.network.#name))
