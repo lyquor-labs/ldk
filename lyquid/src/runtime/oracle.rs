@@ -133,7 +133,10 @@ impl Oracle {
             group: self.id.into(),
             method,
             input,
-            abi: InputABI::Lyquor,
+            abi: match target {
+                OracleTarget::SequenceVM(_) => InputABI::Eth,
+                _ => InputABI::Lyquor,
+            },
         };
         // Populate epoch from network state and derive a nonce per call.
         // The nonce is derived from the call parameters to ensure uniqueness without RNG.
@@ -166,11 +169,22 @@ impl Oracle {
         .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))?;
 
         Ok(cert.map(move |c| {
-            params.input = crate::encode_by_fields!(
-                cert: OracleCert = c,
-                input_raw: Bytes = params.input
-            )
-            .into();
+            // Override the header coming from the aggregator with the intended header
+            // from this request.
+            // TODO: revisit this once dummy header is removed.
+            let corrected_cert = OracleCert {
+                header: OracleHeader {
+                    proposer: node,
+                    target,
+                    config_hash: self.config_hash.into(),
+                    epoch,
+                    nonce,
+                },
+                new_config: c.new_config,
+                cert: c.cert,
+            };
+            params.input =
+                crate::encode_by_fields!(cert: OracleCert = corrected_cert, input_raw: Bytes = params.input).into();
             params
         }))
     }

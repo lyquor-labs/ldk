@@ -620,6 +620,27 @@ impl EthABI for bool {
     }
 }
 
+impl EthABI for Bytes {
+    fn type_string() -> Option<String> {
+        Some("bytes".into())
+    }
+
+    fn is_scalar() -> bool {
+        false
+    }
+
+    fn decode(val: DynSolValue) -> Option<Self> {
+        match val {
+            DynSolValue::Bytes(b) => Some(b.into()),
+            _ => None,
+        }
+    }
+
+    fn encode(self) -> DynSolValue {
+        DynSolValue::Bytes(self.to_vec().into())
+    }
+}
+
 impl<T: EthABI> EthABI for Vec<T> {
     fn type_string() -> Option<String> {
         T::type_string().map(|s| format!("{}[]", s))
