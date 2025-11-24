@@ -41,6 +41,7 @@ lyquor-router = { path = "router" }
 lyquor-seq = { path = "sequencer" }
 lyquor-state = { path = "state" }
 lyquor-test = { path = "test" }
+lyquor-test-harness = { path = "test-harness" }
 lyquor-tls = { path = "tls" }
 lyquor-tools = { path = "tools" }
 lyquor-upc = { path = "upc" }
