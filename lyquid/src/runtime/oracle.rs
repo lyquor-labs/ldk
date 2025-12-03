@@ -50,7 +50,8 @@ impl Oracle {
 
     /// Add a node to the committee. If the node exists, returns false.
     pub fn add_node(&mut self, id: NodeID) -> bool {
-        let ret = self.committee.insert(id, ());
+        let pk = id.as_ed25519_public_key();
+        let ret = self.committee.insert(id, pk.into());
         self.updated_config();
         ret.is_none()
     }
@@ -193,7 +194,7 @@ pub struct Aggregation {
     msg_hash: Hash,
 
     voted: super::volatile::HashSet<NodeID>,
-    yea_sigs: Vec<(OracleSigner, Signature)>,
+    yea_sigs: Vec<(OracleSigner, Signature, Option<Bytes>)>,
     yea: usize,
     nay: usize,
 
@@ -214,35 +215,37 @@ impl Aggregation {
     }
 
     pub fn add_response(&mut self, node: NodeID, resp: OracleResponse, oracle: &Oracle) -> Option<Option<OracleCert>> {
-        if resp.verify(&self.msg_hash) {
-            if self.voted.insert(node) {
-                match resp.approval {
-                    true => {
-                        self.yea_sigs.push((
-                            OracleSigner {
-                                id: node,
-                                key: oracle.committee.get(&node).unwrap().clone(),
-                            },
-                            resp.sig,
-                        ));
-                        self.yea += 1
-                    }
-                    false => self.nay += 1,
+        // Delegate signature verification to the host-side API. If verification fails or the
+        // host API errors, treat this as a failed vote.
+        let ok = super::lyquor_api::oracle_verify(self.msg_hash.into(), resp.approval, resp.sig.ed25519.clone(), node)
+            .unwrap_or(false);
+
+        if ok && self.voted.insert(node) {
+            match resp.approval {
+                true => {
+                    let evm_sig: Option<Bytes> = resp.sig.evm.clone();
+                    self.yea_sigs.push((
+                        OracleSigner {
+                            id: node,
+                            key: *oracle.committee.get(&node).unwrap(),
+                        },
+                        resp.sig.ed25519,
+                        evm_sig,
+                    ));
+                    self.yea += 1
                 }
+                false => self.nay += 1,
             }
         }
 
         if self.result.is_none() {
             crate::println!("yea = {}, thres = {}", self.yea, oracle.threshold);
             if self.yea >= oracle.threshold {
+                let cfg = oracle.get_config();
                 self.result = Some(Some(OracleCert {
                     header: self.msg_header,
-                    new_config: if oracle.config_update {
-                        Some(oracle.get_config())
-                    } else {
-                        None
-                    },
-                    cert: Certificate::new(self.yea_sigs.clone()),
+                    new_config: if oracle.config_update { Some(cfg.clone()) } else { None },
+                    cert: Certificate::new(self.msg_hash.into(), self.yea_sigs.clone(), &cfg),
                 }))
             } else if oracle.committee.len() - self.nay < oracle.threshold {
                 self.result = Some(None)

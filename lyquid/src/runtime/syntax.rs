@@ -515,15 +515,19 @@ macro_rules! __lyquid_categorize_methods {
                 if ctx.network.$name.config_hash() != &*msg.header.config_hash {
                     return Err(LyquidError::LyquidRuntime("Mismatch config hash".into()))
                 }
+                // Compute canonical message hash before moving fields out of `msg`.
+                let msg_hash: $crate::Hash = $crate::lyquor_primitives::blake3::hash(
+                    &$crate::lyquor_primitives::encode_object(&msg)
+                );
                 let approval = {
                     let $params = msg.params;
                     let $handle = &mut ctx;
                     $body
                 }?;
+                let sig = $crate::runtime::lyquor_api::oracle_sign(msg_hash.into(), approval)?;
                 Ok($crate::runtime::oracle::OracleResponse {
                     approval,
-                    // TODO
-                    sig: (),
+                    sig,
                 })
             } $($rest)*
          }, {$($network_funcs)*}, {$($instance_funcs)*});

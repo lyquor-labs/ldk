@@ -1,7 +1,10 @@
+extern crate self as lyquor_primitives;
 pub extern crate serde;
 
 use std::fmt;
 use std::sync::Arc;
+
+use ed25519_compact::PublicKey;
 
 pub use alloy_primitives::hex;
 pub use alloy_primitives::{self, Address, B256, U32, U64, U128, U256, address, uint};
@@ -184,10 +187,64 @@ impl fmt::Debug for CallParams {
     }
 }
 
-pub type Signature = (); // TODO
+/// Opaque oracle signature bytes. Produced and verified by the host using
+/// ed25519 (ed25519-compact) over a canonical oracle message digest.
+pub type Signature = Bytes;
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-pub struct Certificate; // TODO
-pub type PubKey = (); // TODO
+pub struct Certificate {
+    /// Bitmap of signer indices (1-based in on-chain; store as 0-based LVM).
+    /// Bit i set means signer at index i in the committee approved.
+    pub signer_bitmap: u32,
+    /// Concatenated signatures.
+    pub signatures: Bytes,
+    /// Canonical oracle digest that signers are expected to have signed.
+    pub digest: HashBytes,
+}
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct PubKey(pub PublicKey);
+
+impl From<PublicKey> for PubKey {
+    fn from(pk: PublicKey) -> Self {
+        Self(pk)
+    }
+}
+
+impl From<PubKey> for PublicKey {
+    fn from(pk: PubKey) -> Self {
+        pk.0
+    }
+}
+
+impl std::ops::Deref for PubKey {
+    type Target = PublicKey;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Serialize for PubKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(self.0.as_ref())
+    }
+}
+
+impl<'de> Deserialize<'de> for PubKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes: Vec<u8> = Deserialize::deserialize(deserializer)?;
+        if bytes.len() != PublicKey::BYTES {
+            return Err(serde::de::Error::invalid_length(bytes.len(), &"32 bytes"));
+        }
+        let pk = PublicKey::from_slice(&bytes).map_err(|_| serde::de::Error::custom("invalid ed25519 public key"))?;
+        Ok(PubKey(pk))
+    }
+}
 
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum OracleTarget {
@@ -240,15 +297,26 @@ pub struct OracleMessage {
 #[derive(Serialize, Deserialize)]
 pub struct OracleResponse {
     pub approval: bool,
-    /// Signer signs on hash(<OracleMessage> and <approval bool>)
-    pub sig: Signature,
+    pub sig: OracleSignatures,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct OracleSignatures {
+    pub ed25519: Signature,
+    pub evm: Option<Bytes>,
 }
 
 impl OracleResponse {
     pub fn sign(msg: OracleMessage, approval: bool) -> Self {
         // TODO
         let _ = msg;
-        Self { approval, sig: () }
+        Self {
+            approval,
+            sig: OracleSignatures {
+                ed25519: Default::default(),
+                evm: None,
+            },
+        }
     }
 
     pub fn verify(&self, msg_hash: &Hash) -> bool {
@@ -271,24 +339,82 @@ pub struct OracleCert {
 }
 
 impl Certificate {
-    pub fn new(sigs: Vec<(OracleSigner, Signature)>) -> Self {
-        // TODO
-        let _ = sigs;
-        Self
+    /// Map signers to committee indices to form bitmap, and serialize signatures.
+    pub fn new(digest: HashBytes, sigs: Vec<(OracleSigner, Signature, Option<Bytes>)>, config: &OracleConfig) -> Self {
+        // Build map NodeID -> index
+        let mut index_of: std::collections::HashMap<NodeID, usize> = std::collections::HashMap::new();
+        for (i, s) in config.committee.iter().enumerate() {
+            index_of.insert(s.id, i);
+        }
+        let mut bitmap: u32 = 0;
+        let mut out: Vec<u8> = Vec::new();
+        for (signer, _ed_sig, evm_sig) in sigs.into_iter() {
+            if let Some(i) = index_of.get(&signer.id).copied() {
+                if i < 32 {
+                    bitmap |= 1u32 << i;
+                }
+                if let Some(ev) = evm_sig {
+                    out.extend_from_slice(&ev);
+                }
+            }
+        }
+        Self {
+            signer_bitmap: bitmap,
+            signatures: out.into(),
+            digest,
+        }
     }
 
-    pub fn verify(&self, input: &CallParams) -> bool {
-        // TODO
-        let _ = input;
-        true
+    /// Fast threshold check using bitmap and config threshold (f + 1).
+    pub fn meets_threshold(&self, config: &OracleConfig) -> bool {
+        let approved = self.signer_bitmap.count_ones() as usize;
+        approved >= config.threshold
+    }
+
+    /// Structural verification of the certificate against a given config.
+    ///
+    /// Note: cryptographic validity of individual signatures is enforced earlier by the host
+    /// (via `oracle_verify`) before this `Certificate` is constructed. So we do not need to
+    /// verify again here.
+    pub fn verify(&self, config: &OracleConfig) -> bool {
+        // Mask out bits that are outside the current committee range.
+        let max = config.committee.len().min(32);
+        let used_mask: u32 = match max {
+            0 => 0,
+            32 => u32::MAX,
+            n => (1u32 << n) - 1,
+        };
+
+        // If there are any bits set beyond the committee length, the certificate is invalid.
+        if self.signer_bitmap & !used_mask != 0 {
+            return false;
+        }
+
+        self.meets_threshold(config)
     }
 }
 
 impl OracleCert {
     pub fn verify(&self, caller: &Address, input: Bytes) -> bool {
-        // TODO
-        let _ = (caller, input);
-        true
+        // Note: currently we don't bind the certificate to the caller in the LVM as not necessary,
+        // but keep the parameter for future tightening if more context is available.
+        let _ = caller;
+
+        let Some(inner) = decode_by_fields!(&input, cert: OracleCert, _input_raw: Bytes) else {
+            return false;
+        };
+        if inner.cert != *self {
+            return false;
+        }
+
+        // If the cert carries a new config, enforce threshold against that config.
+        // For non-config-updating certs, we trust the aggregator-side threshold check
+        // performed when building `self.cert`.
+        if let Some(cfg) = self.new_config.as_ref() {
+            self.cert.verify(cfg)
+        } else {
+            true
+        }
     }
 }
 
