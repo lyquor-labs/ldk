@@ -155,7 +155,10 @@ impl Oracle {
             header,
             params: params.clone(),
         };
-        let msg_hash: Hash = lyquor_primitives::blake3::hash(&encode_object(&message));
+        let msg_hash: Hash = match target {
+            OracleTarget::SequenceVM(_) => lyquor_primitives::evm_digest(&message.header, &message.params),
+            OracleTarget::Lyquor(_) => lyquor_primitives::blake3::hash(&encode_object(&message)),
+        };
         let input = lyquor_primitives::encode_by_fields!(msg: OracleMessage = message);
         let cert: Option<OracleCert> = lyquor_api::universal_procedural_call(
             lyquid,
@@ -217,20 +220,19 @@ impl Aggregation {
     pub fn add_response(&mut self, node: NodeID, resp: OracleResponse, oracle: &Oracle) -> Option<Option<OracleCert>> {
         // Delegate signature verification to the host-side API. If verification fails or the
         // host API errors, treat this as a failed vote.
-        let ok = super::lyquor_api::oracle_verify(self.msg_hash.into(), resp.approval, resp.sig.ed25519.clone(), node)
+        let ok = super::lyquor_api::oracle_verify(self.msg_hash.into(), resp.approval, resp.ed25519_sig.clone(), node)
             .unwrap_or(false);
 
         if ok && self.voted.insert(node) {
             match resp.approval {
                 true => {
-                    let evm_sig: Option<Bytes> = resp.sig.evm.clone();
                     self.yea_sigs.push((
                         OracleSigner {
                             id: node,
                             key: *oracle.committee.get(&node).unwrap(),
                         },
-                        resp.sig.ed25519,
-                        evm_sig,
+                        resp.ed25519_sig.clone(),
+                        resp.ecdsa_sig.clone(),
                     ));
                     self.yea += 1
                 }

@@ -33,6 +33,7 @@ lyquid-examples = { path = "lyquid-examples" }
 lyquid-proc = { path = "lyquid/proc" }
 lyquor-api = { path = "api" }
 lyquor-cli = { path = "cli" }
+lyquor-crypto = { path = "crypto" }
 lyquor-db = { path = "db" }
 lyquor-jsonrpc = { path = "jsonrpc" }
 lyquor-net = { path = "net" }

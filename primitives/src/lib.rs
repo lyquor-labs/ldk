@@ -2,6 +2,7 @@ extern crate self as lyquor_primitives;
 pub extern crate serde;
 
 use std::fmt;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use ed25519_compact::PublicKey;
@@ -44,6 +45,48 @@ pub mod arc_option_serde {
 }
 
 pub type Hash = blake3::Hash;
+
+/// High-level network profile for Lyquor deployments.
+///
+/// This enum is shared across TLS, oracle key derivation and other places that
+/// need to distinguish devnet/testnet/mainnet behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Network {
+    Devnet,
+    Testnet,
+    Mainnet,
+}
+
+impl Network {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Network::Devnet => "devnet",
+            Network::Testnet => "testnet",
+            Network::Mainnet => "mainnet",
+        }
+    }
+
+    pub fn dns_suffix(&self) -> &str {
+        match self {
+            Network::Devnet => "dev.lyquor.net",
+            Network::Testnet => "test.lyquor.net",
+            Network::Mainnet => "lyquor.network",
+        }
+    }
+}
+
+impl FromStr for Network {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "devnet" => Ok(Network::Devnet),
+            "testnet" => Ok(Network::Testnet),
+            "mainnet" => Ok(Network::Mainnet),
+            _ => Err(format!("Invalid network: {}", s)),
+        }
+    }
+}
 
 /// Position of a slot in the sequencer's backend.
 ///
@@ -297,33 +340,17 @@ pub struct OracleMessage {
 #[derive(Serialize, Deserialize)]
 pub struct OracleResponse {
     pub approval: bool,
-    pub sig: OracleSignatures,
+    /// Ed25519 signature over the canonical oracle message digest.
+    pub ed25519_sig: Signature,
+    /// Optional EVM-side ECDSA signature (r || s || v) over the same digest.
+    pub ecdsa_sig: Option<Bytes>,
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-pub struct OracleSignatures {
-    pub ed25519: Signature,
-    pub evm: Option<Bytes>,
-}
-
-impl OracleResponse {
-    pub fn sign(msg: OracleMessage, approval: bool) -> Self {
-        // TODO
-        let _ = msg;
-        Self {
-            approval,
-            sig: OracleSignatures {
-                ed25519: Default::default(),
-                evm: None,
-            },
-        }
-    }
-
-    pub fn verify(&self, msg_hash: &Hash) -> bool {
-        // TODO
-        let _ = msg_hash;
-        true
-    }
+/// Oracle signature scheme used when requesting signatures from the host.
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+pub enum OracleCipher {
+    Ed25519,
+    EcdsaSecp256k1,
 }
 
 /// Oracle certificate that could be sequenced.
@@ -336,6 +363,51 @@ pub struct OracleCert {
     // The certificate that shows a threshold approval (could be implemented by a vector of multi
     // sigs).
     pub cert: Certificate,
+}
+
+/// Build the canonical Ed25519 oracle signing message: the 32-byte oracle
+/// digest followed by a single-byte approval flag (1 for approve, 0 for
+/// reject). This binds the signature to both the message and the oracle's
+/// vote.
+pub fn lvm_digest(msg_hash: &HashBytes, approval: bool) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(32 + 1);
+    payload.extend_from_slice(msg_hash.as_bytes());
+    payload.push(if approval { 1 } else { 0 });
+    payload
+}
+
+/// Construct the canonical EVM-side ECDSA digest that ECDSA signers are expected to sign
+/// for `OracleTarget::SequenceVM` calls. This digest binds:
+/// - the oracle config via `config_hash`,
+/// - replay-prevention context (`epoch`, `nonce`),
+/// - the call target type: LVM or SequenceVM.
+/// - the exact target method + ABI-encoded input.
+pub fn evm_digest(header: &OracleHeader, params: &CallParams) -> Hash {
+    use alloy_primitives::keccak256;
+
+    let (target_type, target_addr): (u8, Address) = match header.target {
+        OracleTarget::Lyquor(_) => (0, Address::ZERO),
+        OracleTarget::SequenceVM(addr) => (1, addr),
+    };
+
+    let cfg = keccak256(header.config_hash.as_bytes());
+    let input = keccak256(params.input.as_ref());
+    let selector = keccak256(params.method.as_bytes());
+
+    let mut preimage = Vec::new();
+    preimage.extend_from_slice(b"lyquor-cert-v1");
+    preimage.extend_from_slice(cfg.as_slice());
+    preimage.extend_from_slice(&header.epoch.to_be_bytes());
+    preimage.extend_from_slice(&header.nonce);
+    preimage.push(target_type);
+    preimage.extend_from_slice(target_addr.as_slice());
+    preimage.extend_from_slice(&selector.as_slice()[..4]);
+    preimage.extend_from_slice(input.as_slice());
+
+    let d = keccak256(preimage);
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(d.as_slice());
+    bytes.into()
 }
 
 impl Certificate {

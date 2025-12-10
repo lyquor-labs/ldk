@@ -515,19 +515,41 @@ macro_rules! __lyquid_categorize_methods {
                 if ctx.network.$name.config_hash() != &*msg.header.config_hash {
                     return Err(LyquidError::LyquidRuntime("Mismatch config hash".into()))
                 }
-                // Compute canonical message hash before moving fields out of `msg`.
-                let msg_hash: $crate::Hash = $crate::lyquor_primitives::blake3::hash(
-                    &$crate::lyquor_primitives::encode_object(&msg)
-                );
+                let msg_hash: $crate::Hash = match msg.header.target {
+                    $crate::runtime::oracle::OracleTarget::SequenceVM(_) => $crate::lyquor_primitives::evm_digest(&msg.header, &msg.params),
+                    $crate::runtime::oracle::OracleTarget::Lyquor(_) => {
+                        $crate::lyquor_primitives::blake3::hash(
+                            &$crate::lyquor_primitives::encode_object(&msg)
+                        )
+                    }
+                };
                 let approval = {
                     let $params = msg.params;
                     let $handle = &mut ctx;
                     $body
                 }?;
-                let sig = $crate::runtime::lyquor_api::oracle_sign(msg_hash.into(), approval)?;
+
+                let ed25519_sig = $crate::runtime::lyquor_api::oracle_sign(
+                    msg_hash.into(),
+                    approval,
+                    $crate::lyquor_primitives::OracleCipher::Ed25519,
+                )?;
+
+                let ecdsa_sig = match msg.header.target {
+                    $crate::runtime::oracle::OracleTarget::SequenceVM(_) => {
+                        let sig = $crate::runtime::lyquor_api::oracle_sign(
+                            msg_hash.into(),
+                            approval,
+                            $crate::lyquor_primitives::OracleCipher::EcdsaSecp256k1,
+                        )?;
+                        if sig.is_empty() { None } else { Some(sig) }
+                    }
+                    $crate::runtime::oracle::OracleTarget::Lyquor(_) => None,
+                };
                 Ok($crate::runtime::oracle::OracleResponse {
                     approval,
-                    sig,
+                    ed25519_sig,
+                    ecdsa_sig,
                 })
             } $($rest)*
          }, {$($network_funcs)*}, {$($instance_funcs)*});
