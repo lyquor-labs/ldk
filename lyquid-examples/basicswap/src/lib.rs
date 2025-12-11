@@ -78,7 +78,7 @@ lyquid::method! {
 
     network fn mint(&mut ctx, to: Address) -> LyquidResult<U256> {
         let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
-        let (_, lyquid_id) = lyquor_api::whoami()?;
+        let lyquid_id = ctx.lyquid_id;
         let self_address: Address = lyquid_id.into();
         let balance0 = _get_token_balance(*ctx.network.token0, self_address)?;
         let balance1 = _get_token_balance(*ctx.network.token1, self_address)?;
@@ -123,7 +123,7 @@ lyquid::method! {
         _safe_transfer(*ctx.network.token0, to, amount0)?;
         _safe_transfer(*ctx.network.token1, to, amount1)?;
 
-        let (_, lyquid_id) = lyquor_api::whoami()?;
+        let lyquid_id = ctx.lyquid_id;
         _update(lyquid_id.into(), &mut ctx.network)?;
         lyquid::println!("Burned {} LP tokens from {}, returned {} token0 and {} token1", 
                          liquidity, ctx.caller, amount0, amount1);
@@ -133,7 +133,8 @@ lyquid::method! {
     network fn swap(&mut ctx, amount0_out: U256, amount1_out: U256, to: Address, amount0_in: U256, amount1_in: U256) -> LyquidResult<bool> {
         let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
         let (token0, token1) = (*ctx.network.token0, *ctx.network.token1);
-        let (_, lyquid_id) = lyquor_api::whoami()?;
+
+        let lyquid_id = ctx.lyquid_id;
         let self_address: Address = lyquid_id.into();
 
         if amount0_out == U256::ZERO && amount1_out == U256::ZERO {

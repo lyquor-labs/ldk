@@ -125,8 +125,8 @@ impl Oracle {
             ))
             .into());
         }
-        let _ = ctx;
-        let (node, lyquid) = super::lyquor_api::whoami()?;
+        let node = ctx.get_node_id();
+        let lyquid = ctx.get_lyquid_id();
         // The network fn call to be certified.
         let mut params = CallParams {
             origin,

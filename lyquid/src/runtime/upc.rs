@@ -1,14 +1,16 @@
 use std::any::Any;
 
 use super::{Immutable, Mutable, internal};
-use crate::{Address, Bytes, CallContext, LyquidResult, NodeID, upc::CachePtr};
-use internal::{OracleCertifyContext, StateAccessor, sealed};
+use crate::{Address, Bytes, CallContext, LyquidID, LyquidResult, NodeID, upc::CachePtr};
+use internal::{StateAccessor, sealed};
 
 /// UPC prepare context, which is allowed to only read the network state variables.
 pub struct PrepareContextImpl<S>
 where
     S: StateAccessor,
 {
+    pub lyquid_id: LyquidID,
+    pub node_id: NodeID,
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
@@ -22,6 +24,8 @@ where
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
+            lyquid_id: ctx.lyquid_id,
+            node_id: ctx.node_id.unwrap(),
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
@@ -37,6 +41,8 @@ where
     S: StateAccessor,
     I: StateAccessor,
 {
+    pub lyquid_id: LyquidID,
+    pub node_id: NodeID,
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
@@ -53,6 +59,8 @@ where
 {
     pub fn new(ctx: CallContext, from: NodeID, id: u64) -> LyquidResult<Self> {
         Ok(Self {
+            lyquid_id: ctx.lyquid_id,
+            node_id: ctx.node_id.unwrap(),
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
@@ -65,13 +73,14 @@ where
 }
 
 impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for RequestContextImpl<S, I> {}
-impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for RequestContextImpl<S, I> {}
 
 /// UPC response context, which is allowed to only read the network state variables.
 pub struct ResponseContextImpl<S>
 where
     S: StateAccessor,
 {
+    pub lyquid_id: LyquidID,
+    pub node_id: NodeID,
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
@@ -87,6 +96,8 @@ where
 {
     pub fn new(ctx: CallContext, from: NodeID, id: u64, cache: Option<CachePtr>) -> LyquidResult<Self> {
         Ok(Self {
+            lyquid_id: ctx.lyquid_id,
+            node_id: ctx.node_id.unwrap(),
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,

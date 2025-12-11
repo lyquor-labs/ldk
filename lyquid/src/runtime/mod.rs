@@ -314,7 +314,10 @@ pub mod internal {
     }
 
     /// Contexts that impls this trait are those that support calling `Oracle::certify()`.
-    pub trait OracleCertifyContext: sealed::Sealed {}
+    pub trait OracleCertifyContext: sealed::Sealed {
+        fn get_lyquid_id(&self) -> LyquidID;
+        fn get_node_id(&self) -> NodeID;
+    }
 }
 
 use internal::{OracleCertifyContext, StateAccessor, sealed};
@@ -366,11 +369,10 @@ pub mod lyquor_api {
         state_get(cat: StateCategory, key: Vec<u8>) -> Option<Vec<u8>>;
         version() -> LyquidNumber;
         log(record: LyteLog);
-        whoami() -> (NodeID, LyquidID);
         console_output(output: ConsoleSink, s: String);
         universal_procedural_call(target: LyquidID, group: Option<String>, method: String, input: Vec<u8>, client_params: Option<Bytes>) -> Vec<u8>;
         inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
-        submit_certified_call(params: lyquor_primitives::CallParams) -> Vec<u8>;
+        submit_call(params: lyquor_primitives::CallParams, signed: bool) -> Vec<u8>;
         oracle_sign(
             msg_hash: lyquor_primitives::HashBytes,
             approval: bool,
@@ -441,7 +443,11 @@ macro_rules! call {
 /// submission result as raw bytes (e.g., tx hash for EVM).
 #[macro_export]
 macro_rules! submit_certified_call {
-    ($cert:expr) => {{ lyquor_api::submit_certified_call($cert) }};
+    ($cert:expr) => {{
+        // By default, rely on the node to sign.
+        lyquor_api::submit_call($cert, false)
+    }};
+    ($cert:expr, $signed:expr) => {{ lyquor_api::submit_call($cert, $signed) }};
 }
 
 /// Initiate a Universal Procedure Call (UPC). **Only usable by instance functions.**
@@ -1040,6 +1046,7 @@ pub struct NetworkContextImpl<S>
 where
     S: StateAccessor,
 {
+    pub lyquid_id: LyquidID,
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
@@ -1052,6 +1059,7 @@ where
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
+            lyquid_id: ctx.lyquid_id,
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
@@ -1065,6 +1073,7 @@ pub struct ImmutableNetworkContextImpl<S>
 where
     S: StateAccessor,
 {
+    pub lyquid_id: LyquidID,
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
@@ -1077,6 +1086,7 @@ where
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
+            lyquid_id: ctx.lyquid_id,
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
@@ -1092,6 +1102,8 @@ where
     S: StateAccessor,
     I: StateAccessor,
 {
+    pub lyquid_id: LyquidID,
+    pub node_id: NodeID,
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
@@ -1106,6 +1118,8 @@ where
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
+            lyquid_id: ctx.lyquid_id,
+            node_id: ctx.node_id.unwrap(), // If this panics then we have a bug as this is InstanceContext
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
@@ -1116,7 +1130,14 @@ where
 }
 
 impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for InstanceContextImpl<S, I> {}
-impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for InstanceContextImpl<S, I> {}
+impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for InstanceContextImpl<S, I> {
+    fn get_lyquid_id(&self) -> LyquidID {
+        return self.lyquid_id;
+    }
+    fn get_node_id(&self) -> NodeID {
+        return self.node_id;
+    }
+}
 
 /// Read-only wrapper for state variables.
 pub struct ImmutableInstanceContextImpl<S, I>
@@ -1124,6 +1145,8 @@ where
     S: StateAccessor,
     I: StateAccessor,
 {
+    pub lyquid_id: LyquidID,
+    pub node_id: NodeID,
     pub origin: Address,
     pub caller: Address,
     pub input: Bytes,
@@ -1138,6 +1161,8 @@ where
 {
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
+            lyquid_id: ctx.lyquid_id,
+            node_id: ctx.node_id.unwrap(), // If this panics then we have a bug as this is InstanceContext
             origin: ctx.origin,
             caller: ctx.caller,
             input: ctx.input,
@@ -1148,4 +1173,11 @@ where
 }
 
 impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for ImmutableInstanceContextImpl<S, I> {}
-impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for ImmutableInstanceContextImpl<S, I> {}
+impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for ImmutableInstanceContextImpl<S, I> {
+    fn get_lyquid_id(&self) -> LyquidID {
+        return self.lyquid_id;
+    }
+    fn get_node_id(&self) -> NodeID {
+        return self.node_id;
+    }
+}
