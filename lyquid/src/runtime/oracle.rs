@@ -220,8 +220,11 @@ impl Aggregation {
     pub fn add_response(&mut self, node: NodeID, resp: OracleResponse, oracle: &Oracle) -> Option<Option<OracleCert>> {
         // Delegate signature verification to the host-side API. If verification fails or the
         // host API errors, treat this as a failed vote.
-        let ok = super::lyquor_api::oracle_verify(self.msg_hash.into(), resp.approval, resp.ed25519_sig.clone(), node)
-            .unwrap_or(false);
+        let msg: Bytes = lyquor_primitives::Bytes::copy_from_slice(&lyquor_primitives::lvm_digest(
+            &self.msg_hash.into(),
+            resp.approval,
+        ));
+        let ok = super::lyquor_api::verify(msg, resp.ed25519_sig.clone(), node).unwrap_or(false);
 
         if ok && self.voted.insert(node) {
             match resp.approval {

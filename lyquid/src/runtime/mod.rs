@@ -373,14 +373,12 @@ pub mod lyquor_api {
         universal_procedural_call(target: LyquidID, group: Option<String>, method: String, input: Vec<u8>, client_params: Option<Bytes>) -> Vec<u8>;
         inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
         submit_call(params: lyquor_primitives::CallParams, signed: bool) -> Vec<u8>;
-        oracle_sign(
-            msg_hash: lyquor_primitives::HashBytes,
-            approval: bool,
+        sign(
+            msg: lyquor_primitives::Bytes,
             cipher: lyquor_primitives::OracleCipher
         ) -> lyquor_primitives::Signature;
-        oracle_verify(
-            msg_hash: lyquor_primitives::HashBytes,
-            approval: bool,
+        verify(
+            msg: lyquor_primitives::Bytes,
             sig: lyquor_primitives::Signature,
             signer: NodeID
         ) -> bool;

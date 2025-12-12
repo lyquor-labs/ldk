@@ -369,11 +369,11 @@ pub struct OracleCert {
 /// digest followed by a single-byte approval flag (1 for approve, 0 for
 /// reject). This binds the signature to both the message and the oracle's
 /// vote.
-pub fn lvm_digest(msg_hash: &HashBytes, approval: bool) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(32 + 1);
-    payload.extend_from_slice(msg_hash.as_bytes());
-    payload.push(if approval { 1 } else { 0 });
-    payload
+pub fn lvm_digest(msg_hash: &HashBytes, approval: bool) -> [u8; 33] {
+    let mut out = [0u8; 33];
+    out[..32].copy_from_slice(msg_hash.as_bytes());
+    out[32] = if approval { 1 } else { 0 };
+    out
 }
 
 /// Construct the canonical EVM-side ECDSA digest that ECDSA signers are expected to sign
@@ -445,8 +445,8 @@ impl Certificate {
 
     /// Structural verification of the certificate against a given config.
     ///
-    /// Note: cryptographic validity of individual signatures is enforced earlier by the host
-    /// (via `oracle_verify`) before this `Certificate` is constructed. So we do not need to
+    /// Note: cryptographic validity of individual signatures is enforced earlier
+    /// by the host before this `Certificate` is constructed. So we do not need to
     /// verify again here.
     pub fn verify(&self, config: &OracleConfig) -> bool {
         // Mask out bits that are outside the current committee range.
