@@ -303,7 +303,7 @@ macro_rules! __lyquid_categorize_methods {
                     use crate::__lyquid;
 
                     // Check oracle certificate.
-                    if !cert.verify(&ctx.caller, ctx.input.clone()) {
+                    if !cert.verify(&ctx.caller) {
                         return Err(LyquidError::InputCert)
                     }
 
