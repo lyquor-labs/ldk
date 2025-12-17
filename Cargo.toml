@@ -69,3 +69,6 @@ typed-builder = "0.23"
 [patch.crates-io]
 svm-rs-builds = { git = "https://github.com/alloy-rs/svm-rs", rev = "2d38b660365a9a30bb48839fb66c7b8ade8e31a7" }
 svm-rs = { git = "https://github.com/alloy-rs/svm-rs", rev = "2d38b660365a9a30bb48839fb66c7b8ade8e31a7" }
+
+[profile.dev.package."*"]
+opt-level = 1
