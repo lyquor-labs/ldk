@@ -348,7 +348,7 @@ pub struct OracleResponse {
 
 /// Oracle signature scheme used when requesting signatures from the host.
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
-pub enum OracleCipher {
+pub enum Cipher {
     Ed25519,
     EcdsaSecp256k1,
 }

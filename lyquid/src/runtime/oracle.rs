@@ -84,7 +84,7 @@ impl Oracle {
         if new_epoch > self.epoch {
             self.epoch = new_epoch;
             // Reset dedup set on epoch advance
-            self.nonce_seen = super::network::new_hashmap();
+            self.nonce_seen.clear();
             true
         } else {
             false
@@ -97,16 +97,13 @@ impl Oracle {
             return false;
         }
         if epoch > self.epoch {
-            self.epoch = epoch;
-            self.nonce_seen = super::network::new_hashmap();
+            self.advance_epoch(epoch);
         }
         if self.nonce_seen.insert(nonce, ()).is_some() {
-            return false; // duplicate
+            return false;
         }
         if self.nonce_seen.len() >= NONCE_LIMIT_PER_EPOCH {
-            // Auto-advance epoch and reset dedup set for next epoch
-            self.epoch = self.epoch.saturating_add(1);
-            self.nonce_seen = super::network::new_hashmap();
+            self.advance_epoch(self.epoch.saturating_add(1));
         }
         true
     }

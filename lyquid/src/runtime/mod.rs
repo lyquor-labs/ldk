@@ -375,7 +375,7 @@ pub mod lyquor_api {
         submit_call(params: lyquor_primitives::CallParams, signed: bool) -> Vec<u8>;
         sign(
             msg: lyquor_primitives::Bytes,
-            cipher: lyquor_primitives::OracleCipher
+            cipher: lyquor_primitives::Cipher
         ) -> lyquor_primitives::Signature;
         verify(
             msg: lyquor_primitives::Bytes,

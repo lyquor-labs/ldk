@@ -535,7 +535,7 @@ macro_rules! __lyquid_categorize_methods {
                     );
                 let ed25519_sig = $crate::runtime::lyquor_api::sign(
                     ed25519_msg,
-                    $crate::lyquor_primitives::OracleCipher::Ed25519,
+                    $crate::lyquor_primitives::Cipher::Ed25519,
                 )?;
 
                 let ecdsa_sig = match msg.header.target {
@@ -544,7 +544,7 @@ macro_rules! __lyquid_categorize_methods {
                             $crate::lyquor_primitives::Bytes::copy_from_slice(msg_hash.as_bytes());
                         let sig = $crate::runtime::lyquor_api::sign(
                             ecdsa_msg,
-                            $crate::lyquor_primitives::OracleCipher::EcdsaSecp256k1,
+                            $crate::lyquor_primitives::Cipher::EcdsaSecp256k1,
                         )?;
                         if sig.is_empty() { None } else { Some(sig) }
                     }
