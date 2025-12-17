@@ -2,7 +2,6 @@ extern crate self as lyquor_primitives;
 pub extern crate serde;
 
 use std::fmt;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use ed25519_compact::PublicKey;
@@ -46,47 +45,7 @@ pub mod arc_option_serde {
 
 pub type Hash = blake3::Hash;
 
-/// High-level network profile for Lyquor deployments.
-///
-/// This enum is shared across TLS, oracle key derivation and other places that
-/// need to distinguish devnet/testnet/mainnet behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Network {
-    Devnet,
-    Testnet,
-    Mainnet,
-}
-
-impl Network {
-    pub fn as_str(&self) -> &str {
-        match self {
-            Network::Devnet => "devnet",
-            Network::Testnet => "testnet",
-            Network::Mainnet => "mainnet",
-        }
-    }
-
-    pub fn dns_suffix(&self) -> &str {
-        match self {
-            Network::Devnet => "dev.lyquor.net",
-            Network::Testnet => "test.lyquor.net",
-            Network::Mainnet => "lyquor.network",
-        }
-    }
-}
-
-impl FromStr for Network {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "devnet" => Ok(Network::Devnet),
-            "testnet" => Ok(Network::Testnet),
-            "mainnet" => Ok(Network::Mainnet),
-            _ => Err(format!("Invalid network: {}", s)),
-        }
-    }
-}
+// Network definitions moved to lyquor-api::profile.
 
 /// Position of a slot in the sequencer's backend.
 ///
