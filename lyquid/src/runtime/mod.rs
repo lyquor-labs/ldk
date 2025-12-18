@@ -179,6 +179,7 @@ fn initialize_persistent_heap() -> Option<u32> {
 #[doc(hidden)]
 pub mod internal {
     use super::*;
+    use lyquor_primitives::{HashBytes, OracleConfig, blake3};
     pub struct HostInput(&'static [u8]);
     pub use lyquid_proc::*;
 
@@ -300,11 +301,127 @@ pub mod internal {
         }
     }
 
-    pub struct NetworkState {}
+    pub struct BuiltinState {
+        oracle: super::network::HashMap<[u8; 32], OracleVerifier>,
+    }
 
-    impl NetworkState {
+    /// Per-topic destination-chain oracle state.
+    pub struct OracleVerifier {
+        config: OracleConfig,
+        config_hash: HashBytes,
+        // Replay protection (epoch + per-epoch nonce dedup).
+        epoch: u32,
+        nonce_seen: super::network::HashMap<[u8; 32], ()>,
+    }
+
+    impl Default for OracleVerifier {
+        fn default() -> Self {
+            Self {
+                config: OracleConfig {
+                    threshold: 0,
+                    committee: Vec::new(),
+                },
+                config_hash: [0u8; 32].into(),
+                epoch: 0,
+                nonce_seen: super::network::new_hashmap(),
+            }
+        }
+    }
+
+    impl OracleVerifier {
+        const NONCE_LIMIT_PER_EPOCH: usize = 1_000_000;
+
+        fn update_config(&mut self, config: OracleConfig) {
+            self.config = config;
+        }
+
+        /// Record a nonce for the given epoch. Returns false if invalid.
+        fn record_nonce(&mut self, epoch: u32, nonce: [u8; 32]) -> bool {
+            if epoch < self.epoch {
+                // Stale epoch.
+                return false;
+            }
+
+            // Enter a new epoch if higher.
+            if epoch > self.epoch {
+                if self.nonce_seen.len() < Self::NONCE_LIMIT_PER_EPOCH {
+                    // Epoch advanced too early.
+                    return false;
+                }
+                self.epoch = epoch;
+                self.nonce_seen.clear();
+            }
+
+            if self.nonce_seen.len() >= Self::NONCE_LIMIT_PER_EPOCH {
+                // Epoch full.
+                return false;
+            }
+
+            // Mark the nonce as used.
+            if self.nonce_seen.insert(nonce, ()).is_some() {
+                // Nonce is used.
+                return false;
+            }
+
+            true
+        }
+
+        pub fn verify(&mut self, oc: OracleCert, target: LyquidID) -> bool {
+            // Ensure the certificate targets this Lyquor instance
+            match oc.header.target {
+                lyquor_primitives::OracleTarget::Lyquor(id) => {
+                    if id != target {
+                        // Target mismatch (possible Lyquid-level replay attempt).
+                        return false
+                    }
+                }
+                _ => return false,
+            }
+
+            let config = match &oc.new_config {
+                Some(config) => config,
+                None => {
+                    if oc.header.config_hash != self.config_hash {
+                        // Config mismatch.
+                        return false
+                    }
+                    &self.config
+                }
+            };
+
+            if config.committee.is_empty() {
+                // Empty committee.
+                return false
+            }
+
+            // First, verify the validity of the oc.cert itself.
+            if !oc.cert.verify(config) {
+                return false
+            }
+
+            if let Some(config) = oc.new_config {
+                // This certificate also piggybacks a config update (that's signed
+                // together with the call payload, and therefore has also been
+                // validated). Let's first update the config because it is used for
+                // this call and future calls, until a later update.
+                self.update_config(config)
+            }
+
+            // Replay prevention: epoch monotonic + per-epoch nonce dedup.
+            self.record_nonce(oc.header.epoch, oc.header.nonce)
+        }
+    }
+
+    impl BuiltinState {
         pub fn new() -> Self {
-            Self {}
+            Self {
+                oracle: super::network::new_hashmap(),
+            }
+        }
+
+        /// Get (and create if missing) the destination-chain oracle topic state for the given topic key.
+        pub fn oracle_verifier(&mut self, topic: [u8; 32]) -> &mut OracleVerifier {
+            self.oracle.entry(topic).or_insert_with(OracleVerifier::default)
         }
     }
 

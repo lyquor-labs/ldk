@@ -241,7 +241,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         [quote::quote! {
             // the pointer (only need to do it once, upon initialization of the instance's
             // LiteMemory)
-            let ptr: *mut lyquid::runtime::internal::NetworkState = Box::leak(Box::new_in(lyquid::runtime::internal::NetworkState::new(), lyquid::runtime::NetworkAlloc));
+            let ptr: *mut lyquid::runtime::internal::BuiltinState = Box::leak(Box::new_in(lyquid::runtime::internal::BuiltinState::new(), lyquid::runtime::NetworkAlloc));
             let bytes = (ptr as u64).to_be_bytes();
             internal_pa.set(StateCategory::Network, "network".as_bytes(), &bytes).expect(FAIL_WRITE_STATE);
         }]
@@ -251,7 +251,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         .entry("network".to_string())
         .or_insert_with(|| TokenStream::new())
         .extend([quote::quote! {
-            pub __internal: &'static mut lyquid::runtime::internal::NetworkState,
+            pub __internal: &'static mut lyquid::runtime::internal::BuiltinState,
         }]);
     struct_inits
         .entry("network".to_string())
@@ -261,7 +261,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
                 // retrieve the pointer for Box<T>
                 let bytes = internal_pa.get(StateCategory::Network, "network".as_bytes())?.ok_or(lyquid::LyquidError::Init)?;
                 let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| lyquid::LyquidError::Init)?);
-                unsafe { &mut *(addr as *mut lyquid::runtime::internal::NetworkState) }
+                unsafe { &mut *(addr as *mut lyquid::runtime::internal::BuiltinState) }
             },
         }]);
 

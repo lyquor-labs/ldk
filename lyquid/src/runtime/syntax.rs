@@ -302,24 +302,17 @@ macro_rules! __lyquid_categorize_methods {
                 oracle::certified::$oname (true) fn $fn(cert: $crate::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| {
                     use crate::__lyquid;
 
-                    // Check oracle certificate.
-                    if !cert.verify(&ctx.caller) {
+                    let input = $crate::lyquor_primitives::decode_by_fields!(&input_raw, $($name: $type),*).ok_or(LyquidError::LyquorInput)?;
+                    $(let $name = input.$name;)*
+                    let (caller, lyquid_id) = (ctx.caller, ctx.lyquid_id);
+                    let mut $handle = __lyquid::NetworkContext::new(ctx)?;
+
+                    let topic: [u8; 32] = *$crate::lyquor_primitives::blake3::hash(stringify!($oname).as_bytes()).as_bytes();
+                    let v = $handle.network.__internal.oracle_verifier(topic);
+                    if !v.verify(cert, lyquid_id) {
                         return Err(LyquidError::InputCert)
                     }
 
-                    // TODO: Ensure the certificate targets this Lyquor instance when using LVM path.
-
-                    let input = $crate::lyquor_primitives::decode_by_fields!(&input_raw, $($name: $type),*).ok_or(LyquidError::LyquorInput)?;
-                    $(let $name = input.$name;)*
-                    let mut $handle = __lyquid::NetworkContext::new(ctx)?;
-
-                    // LVM-side replay prevention: epoch monotonic + per-epoch nonce dedup using oracle network state.
-                    {
-                        let o = &mut $handle.network.$oname;
-                        if !o.record_nonce(cert.header.epoch, cert.header.nonce) {
-                            return Err(LyquidError::InputCert)
-                        }
-                    }
                     let result = $body; // execute the body of the function
                     drop($handle); // drop the state handle here to ensure the correct lifetime
                                    // for the handle when accessed in $body so the handle is not

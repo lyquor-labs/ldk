@@ -425,23 +425,6 @@ impl Certificate {
     }
 }
 
-impl OracleCert {
-    pub fn verify(&self, caller: &Address) -> bool {
-        // Note: currently we don't bind the certificate to the caller in the LVM as not necessary,
-        // but keep the parameter for future tightening if more context is available.
-        let _ = caller;
-
-        // If the cert carries a new config, enforce threshold against that config.
-        // For non-config-updating certs, we trust the aggregator-side threshold check
-        // performed when building `self.cert`.
-        if let Some(cfg) = self.new_config.as_ref() {
-            self.cert.verify(cfg)
-        } else {
-            true
-        }
-    }
-}
-
 pub const GROUP_DEFAULT: &str = "main";
 pub const GROUP_NODE: &str = "node";
 pub const GROUP_UPC_PREPARE: &str = "upc::prepare";
