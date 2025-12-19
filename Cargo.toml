@@ -70,3 +70,12 @@ typed-builder = "0.23"
 # sacrificing debuggability of our own application code.
 [profile.dev.package.cranelift-codegen]
 opt-level = 2
+
+[profile.dev.package.wasmtime-environ]
+opt-level = 1
+
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 1
+
+[profile.dev.package.cranelift-isle]
+opt-level = 1
