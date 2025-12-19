@@ -11,6 +11,7 @@ pub struct Oracle {
     committee: super::network::HashMap<NodeID, PubKey>,
     config_hash: Hash,
     config_update: bool,
+    // FIXME: remove both epoch and nonce_count, as they belong to the builtin instance state.
     epoch: Cell<u32>,
     nonce_count: Cell<u32>,
 }

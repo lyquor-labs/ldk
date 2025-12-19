@@ -194,14 +194,14 @@ impl fmt::Debug for CallParams {
 pub type Signature = Bytes;
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct Certificate {
-    /// Bitmap of signer indices (1-based in on-chain; store as 0-based LVM).
-    /// Bit i set means signer at index i in the committee approved.
-    pub signer_bitmap: u32,
-    /// Concatenated signatures.
-    pub signatures: Bytes,
+    /// The index for each signer in the committee list of OracleConfig.
+    pub signers: Vec<u16>,
+    /// Vote signatures.
+    pub signatures: Vec<Bytes>,
     /// Canonical oracle digest that signers are expected to have signed.
     pub digest: HashBytes,
 }
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PubKey(pub PublicKey);
 
@@ -377,50 +377,35 @@ impl Certificate {
         for (i, s) in config.committee.iter().enumerate() {
             index_of.insert(s.id, i);
         }
-        let mut bitmap: u32 = 0;
-        let mut out: Vec<u8> = Vec::new();
+        let mut signers: Vec<u16> = Vec::new();
+        let mut signatures: Vec<Bytes> = Vec::new();
+        // fIXME: WHY throw away _ed_sig?
         for (signer, _ed_sig, evm_sig) in sigs.into_iter() {
+            // FIXME: this part is a mess of these shaky ifs.
             if let Some(i) = index_of.get(&signer.id).copied() {
-                if i < 32 {
-                    bitmap |= 1u32 << i;
-                }
-                if let Some(ev) = evm_sig {
-                    out.extend_from_slice(&ev);
+                signers.push(i as u16);
+                if let Some(sig) = evm_sig {
+                    signatures.push(sig);
                 }
             }
         }
         Self {
-            signer_bitmap: bitmap,
-            signatures: out.into(),
+            signers,
+            signatures,
             digest,
         }
     }
 
     /// Fast threshold check using bitmap and config threshold (f + 1).
     pub fn meets_threshold(&self, config: &OracleConfig) -> bool {
-        let approved = self.signer_bitmap.count_ones() as usize;
-        approved >= config.threshold
+        // TODO: WIP
+        self.signers.len() >= config.threshold
     }
 
     /// Structural verification of the certificate against a given config.
-    ///
-    /// Note: cryptographic validity of individual signatures is enforced earlier
-    /// by the host before this `Certificate` is constructed. So we do not need to
-    /// verify again here.
     pub fn verify(&self, config: &OracleConfig) -> bool {
-        // Mask out bits that are outside the current committee range.
-        let max = config.committee.len().min(32);
-        let used_mask: u32 = match max {
-            0 => 0,
-            32 => u32::MAX,
-            n => (1u32 << n) - 1,
-        };
-
-        // If there are any bits set beyond the committee length, the certificate is invalid.
-        if self.signer_bitmap & !used_mask != 0 {
-            return false;
-        }
-
+        // TODO: Mask out bits that are outside the current committee range.
+        // Need crypto verification here!
         self.meets_threshold(config)
     }
 }

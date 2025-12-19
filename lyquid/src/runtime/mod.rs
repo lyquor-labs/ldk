@@ -331,8 +331,22 @@ pub mod internal {
     impl OracleVerifier {
         const NONCE_LIMIT_PER_EPOCH: usize = 1_000_000;
 
-        fn update_config(&mut self, config: OracleConfig) {
+        fn update_config(&mut self, config: OracleConfig, config_hash: HashBytes) -> bool {
+            if config.committee.is_empty() {
+                // No signers.
+                return false
+            }
+            if config.committee.len() >= 4096 {
+                // Too many signers.
+                return false
+            }
+            if config.threshold == 0 || config.threshold > config.committee.len() {
+                // Invalid threshold.
+                return false
+            }
             self.config = config;
+            self.config_hash = config_hash;
+            true
         }
 
         /// Record a nonce for the given epoch. Returns false if invalid.
@@ -379,7 +393,10 @@ pub mod internal {
             }
 
             let config = match &oc.new_config {
-                Some(config) => config,
+                Some(config) => {
+                    // TODO: verify if hash of config matches oc.header.config_hash
+                    config
+                }
                 None => {
                     if oc.header.config_hash != self.config_hash {
                         // Config mismatch.
@@ -404,7 +421,9 @@ pub mod internal {
                 // together with the call payload, and therefore has also been
                 // validated). Let's first update the config because it is used for
                 // this call and future calls, until a later update.
-                self.update_config(config)
+                if !self.update_config(config, oc.header.config_hash) {
+                    return false
+                }
             }
 
             // Replay prevention: epoch monotonic + per-epoch nonce dedup.
