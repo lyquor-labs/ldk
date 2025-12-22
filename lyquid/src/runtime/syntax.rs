@@ -307,9 +307,8 @@ macro_rules! __lyquid_categorize_methods {
                     let (caller, lyquid_id) = (ctx.caller, ctx.lyquid_id);
                     let mut $handle = __lyquid::NetworkContext::new(ctx)?;
 
-                    let topic: [u8; 32] = *$crate::lyquor_primitives::blake3::hash(stringify!($oname).as_bytes()).as_bytes();
-                    let v = $handle.network.__internal.oracle_verifier(topic);
-                    if !v.verify(cert, lyquid_id) {
+                    let topic = stringify!($oname);
+                    if !$handle.network.__internal.oracle_verifier(topic).verify(cert, lyquid_id) {
                         return Err(LyquidError::InputCert)
                     }
 
@@ -509,7 +508,7 @@ macro_rules! __lyquid_categorize_methods {
                     return Err(LyquidError::LyquidRuntime("Mismatch config hash".into()))
                 }
                 let msg_hash: $crate::Hash = match msg.header.target {
-                    $crate::runtime::oracle::OracleTarget::SequenceVM(_) => $crate::lyquor_primitives::evm_digest(&msg.header, &msg.params),
+                    $crate::runtime::oracle::OracleTarget::SequenceVM(_) => $crate::runtime::oracle::evm_digest(&msg.header, &msg.params),
                     $crate::runtime::oracle::OracleTarget::Lyquor(_) => {
                         $crate::lyquor_primitives::blake3::hash(
                             &$crate::lyquor_primitives::encode_object(&msg)

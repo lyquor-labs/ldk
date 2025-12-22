@@ -1,9 +1,38 @@
 use super::{LyquidError, LyquidResult, NodeID, lyquor_api};
-use core::cell::Cell;
 use lyquor_primitives::{
     Address, Bytes, CallParams, Certificate, Hash, InputABI, OracleSigner, PubKey, Signature, encode_object,
 };
 pub use lyquor_primitives::{OracleCert, OracleConfig, OracleHeader, OracleMessage, OracleResponse, OracleTarget};
+
+/// FIXME: eliminate this function.
+/// Construct the canonical EVM-side OracleMessage with keccak256 digest that ECDSA signers are expected to sign.
+pub fn evm_digest(header: &OracleHeader, params: &CallParams) -> super::Hash {
+    use lyquor_primitives::alloy_primitives::keccak256;
+
+    let (target_type, target_addr): (u8, Address) = match header.target {
+        OracleTarget::Lyquor(_) => (0, Address::ZERO),
+        OracleTarget::SequenceVM(addr) => (1, addr),
+    };
+
+    let cfg = keccak256(header.config_hash.as_bytes());
+    let input = keccak256(params.input.as_ref());
+    let selector = keccak256(params.method.as_bytes());
+
+    let mut preimage = Vec::new();
+    preimage.extend_from_slice(b"lyquor-cert-v1");
+    preimage.extend_from_slice(cfg.as_slice());
+    preimage.extend_from_slice(&header.epoch.to_be_bytes());
+    preimage.extend_from_slice(header.nonce.as_bytes());
+    preimage.push(target_type);
+    preimage.extend_from_slice(target_addr.as_slice());
+    preimage.extend_from_slice(&selector.as_slice()[..4]);
+    preimage.extend_from_slice(input.as_slice());
+
+    let d = keccak256(preimage);
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(d.as_slice());
+    bytes.into()
+}
 
 pub struct Oracle {
     id: &'static str,
@@ -11,33 +40,16 @@ pub struct Oracle {
     committee: super::network::HashMap<NodeID, PubKey>,
     config_hash: Hash,
     config_update: bool,
-    // FIXME: remove both epoch and nonce_count, as they belong to the builtin instance state.
-    epoch: Cell<u32>,
-    nonce_count: Cell<u32>,
 }
 
 impl Oracle {
-    const NONCE_LIMIT_PER_EPOCH: u32 = 1_000_000;
-
     fn updated_config(&mut self) {
-        let hash = lyquor_primitives::blake3::hash(&encode_object(&self.get_config()));
+        let hash = lyquor_primitives::blake3::hash(&encode_object(&self.consolidate_config()));
         self.config_hash = hash;
         self.config_update = true;
     }
 
-    fn get_epoch(&self) -> u32 {
-        let epoch = self.epoch.get();
-        let nonce_count = self.nonce_count.get().saturating_add(1);
-        if nonce_count >= Self::NONCE_LIMIT_PER_EPOCH {
-            self.epoch.set(epoch.saturating_add(1));
-            self.nonce_count.set(0);
-        } else {
-            self.nonce_count.set(nonce_count);
-        }
-        epoch
-    }
-
-    fn get_config(&self) -> OracleConfig {
+    fn consolidate_config(&self) -> OracleConfig {
         let mut committee = Vec::new();
         for (id, key) in self.committee.iter() {
             committee.push(OracleSigner { id: *id, key: *key });
@@ -55,24 +67,26 @@ impl Oracle {
             committee: super::network::new_hashmap(),
             config_hash: [0; 32].into(),
             config_update: false,
-            epoch: Cell::new(0),
-            nonce_count: Cell::new(0),
         }
     }
 
     /// Add a node to the committee. If the node exists, returns false.
     pub fn add_node(&mut self, id: NodeID) -> bool {
         let pk = id.as_ed25519_public_key();
-        let ret = self.committee.insert(id, pk.into());
+        if self.committee.insert(id, pk.into()).is_some() {
+            return false
+        }
         self.updated_config();
-        ret.is_none()
+        true
     }
 
     /// Remove a node from the committee. If the node does not exist, returns false.
     pub fn remove_node(&mut self, id: &NodeID) -> bool {
-        let ret = self.committee.remove(id);
+        if self.committee.remove(id).is_none() {
+            return false
+        }
         self.updated_config();
-        ret.is_some()
+        true
     }
 
     /// Get the committee size.
@@ -81,14 +95,13 @@ impl Oracle {
     }
 
     /// Update the threshold of the oracle.
-    pub fn set_threshold(&mut self, new_thres: usize) {
+    pub fn set_threshold(&mut self, new_thres: usize) -> bool {
+        if new_thres == self.threshold {
+            return true
+        }
         self.threshold = new_thres;
         self.updated_config();
-    }
-
-    /// Get the current epoch (used for hybrid replay prevention).
-    pub fn epoch(&self) -> u32 {
-        self.epoch.get()
+        true
     }
 
     /// Generate a certificate that testifies the validity of an oracle call to a target network
@@ -97,16 +110,18 @@ impl Oracle {
         &self, ctx: &impl super::internal::OracleCertifyContext, origin: Address, method: String, input: Bytes,
         target: OracleTarget,
     ) -> LyquidResult<Option<CallParams>> {
-        if self.threshold == 0 || self.committee.len() < self.threshold {
+        if self.threshold == 0 || self.committee.len() < self.threshold || self.committee.len() > u16::MAX as usize {
             return Err(crate::LyquidError::LyquidRuntime(format!(
-                "Invalid oracle config. threshold={}, committee_len={}",
+                "Invalid oracle config: threshold={}, committee.len()={}.",
                 self.threshold,
                 self.committee.len()
             ))
             .into());
         }
+
         let node = ctx.get_node_id();
         let lyquid = ctx.get_lyquid_id();
+
         // The network fn call to be certified.
         let mut params = CallParams {
             origin,
@@ -116,14 +131,15 @@ impl Oracle {
             input,
             abi: match target {
                 OracleTarget::SequenceVM(_) => InputABI::Eth,
-                _ => InputABI::Lyquor,
+                OracleTarget::Lyquor(_) => InputABI::Lyquor,
             },
         };
-        // Populate epoch from network state and derive a nonce per call.
-        // The nonce is derived from the call parameters to ensure uniqueness without RNG.
-        let nonce_hash = lyquor_primitives::blake3::hash(&encode_object(&params));
-        let nonce: [u8; 32] = *nonce_hash.as_bytes();
-        let epoch: u32 = self.get_epoch();
+
+        // Populate epoch from instance state and derive a nonce per call.
+        let nonce = Hash::from_slice(&lyquor_api::random_bytes(32)?)
+            .map_err(|_| LyquidError::LyquidRuntime("Oracle: invalid random nonce from the host.".into()))?
+            .into();
+        let epoch: u32 = 0; // FIXME: use the cached epoch from instance state.
         let header = OracleHeader {
             proposer: node,
             target,
@@ -136,7 +152,7 @@ impl Oracle {
             params: params.clone(),
         };
         let msg_hash: Hash = match target {
-            OracleTarget::SequenceVM(_) => lyquor_primitives::evm_digest(&message.header, &message.params),
+            OracleTarget::SequenceVM(_) => evm_digest(&message.header, &message.params),
             OracleTarget::Lyquor(_) => lyquor_primitives::blake3::hash(&encode_object(&message)),
         };
         let input = lyquor_primitives::encode_by_fields!(msg: OracleMessage = message);
@@ -226,7 +242,7 @@ impl Aggregation {
         if self.result.is_none() {
             crate::println!("yea = {}, thres = {}", self.yea, oracle.threshold);
             if self.yea >= oracle.threshold {
-                let cfg = oracle.get_config();
+                let cfg = oracle.consolidate_config();
                 self.result = Some(Some(OracleCert {
                     header: self.msg_header,
                     new_config: if oracle.config_update { Some(cfg.clone()) } else { None },

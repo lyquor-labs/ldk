@@ -16,6 +16,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 actix = "0.13.5"
 actix-rt = "2.11"
+alloy-sol-types = { version = "1.5" }
 anyhow = "1.0"
 async-trait = "0.1"
 aws-lc-rs = "1.15"

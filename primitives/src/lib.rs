@@ -115,6 +115,12 @@ impl From<[u8; 32]> for HashBytes {
     }
 }
 
+impl From<HashBytes> for [u8; 32] {
+    fn from(hash: HashBytes) -> Self {
+        hash.0.into()
+    }
+}
+
 impl From<Hash> for HashBytes {
     fn from(hash: Hash) -> Self {
         Self(hash)
@@ -271,7 +277,7 @@ pub struct OracleHeader {
     /// Hybrid replay prevention: epoch controls stale-proof rejection across epochs.
     pub epoch: u32,
     /// Hybrid replay prevention: random nonce for dedup inside an epoch.
-    pub nonce: [u8; 32],
+    pub nonce: HashBytes,
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
@@ -333,40 +339,6 @@ pub fn lvm_digest(msg_hash: &HashBytes, approval: bool) -> [u8; 33] {
     out[..32].copy_from_slice(msg_hash.as_bytes());
     out[32] = if approval { 1 } else { 0 };
     out
-}
-
-/// Construct the canonical EVM-side ECDSA digest that ECDSA signers are expected to sign
-/// for `OracleTarget::SequenceVM` calls. This digest binds:
-/// - the oracle config via `config_hash`,
-/// - replay-prevention context (`epoch`, `nonce`),
-/// - the call target type: LVM or SequenceVM.
-/// - the exact target method + ABI-encoded input.
-pub fn evm_digest(header: &OracleHeader, params: &CallParams) -> Hash {
-    use alloy_primitives::keccak256;
-
-    let (target_type, target_addr): (u8, Address) = match header.target {
-        OracleTarget::Lyquor(_) => (0, Address::ZERO),
-        OracleTarget::SequenceVM(addr) => (1, addr),
-    };
-
-    let cfg = keccak256(header.config_hash.as_bytes());
-    let input = keccak256(params.input.as_ref());
-    let selector = keccak256(params.method.as_bytes());
-
-    let mut preimage = Vec::new();
-    preimage.extend_from_slice(b"lyquor-cert-v1");
-    preimage.extend_from_slice(cfg.as_slice());
-    preimage.extend_from_slice(&header.epoch.to_be_bytes());
-    preimage.extend_from_slice(&header.nonce);
-    preimage.push(target_type);
-    preimage.extend_from_slice(target_addr.as_slice());
-    preimage.extend_from_slice(&selector.as_slice()[..4]);
-    preimage.extend_from_slice(input.as_slice());
-
-    let d = keccak256(preimage);
-    let mut bytes = [0u8; 32];
-    bytes.copy_from_slice(d.as_slice());
-    bytes.into()
 }
 
 impl Certificate {

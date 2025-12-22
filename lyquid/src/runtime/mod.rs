@@ -301,17 +301,21 @@ pub mod internal {
         }
     }
 
-    pub struct BuiltinState {
-        oracle: super::network::HashMap<[u8; 32], OracleVerifier>,
+    pub struct BuiltinNetworkState {
+        oracle: super::network::HashMap<Hash, OracleVerifier>,
     }
 
     /// Per-topic destination-chain oracle state.
     pub struct OracleVerifier {
+        // The following states are used for certificate verification.
+        // Active oracle config for the topic.
         config: OracleConfig,
+        // Hash of _config for the topic.
         config_hash: HashBytes,
-        // Replay protection (epoch + per-epoch nonce dedup).
+        // The following variables are used to ensure a certified call is at most invoked once.
+        // Epoch number.
         epoch: u32,
-        nonce_seen: super::network::HashMap<[u8; 32], ()>,
+        used_nonce: super::network::HashSet<Hash>,
     }
 
     impl Default for OracleVerifier {
@@ -321,22 +325,30 @@ pub mod internal {
                     threshold: 0,
                     committee: Vec::new(),
                 },
-                config_hash: [0u8; 32].into(),
+                config_hash: [0; 32].into(),
                 epoch: 0,
-                nonce_seen: super::network::new_hashmap(),
+                used_nonce: super::network::new_hashset(),
             }
         }
     }
 
     impl OracleVerifier {
-        const NONCE_LIMIT_PER_EPOCH: usize = 1_000_000;
+        const MAX_NONCE_PER_EPOCH: usize = 1_000_000;
+
+        pub fn get_epoch(&self) -> u32 {
+            self.epoch
+        }
+
+        pub fn get_config_hash(&self) -> &HashBytes {
+            &self.config_hash
+        }
 
         fn update_config(&mut self, config: OracleConfig, config_hash: HashBytes) -> bool {
             if config.committee.is_empty() {
                 // No signers.
                 return false;
             }
-            if config.committee.len() >= 4096 {
+            if config.committee.len() > u16::MAX as usize {
                 // Too many signers.
                 return false;
             }
@@ -349,8 +361,8 @@ pub mod internal {
             true
         }
 
-        /// Record a nonce for the given epoch. Returns false if invalid.
-        fn record_nonce(&mut self, epoch: u32, nonce: [u8; 32]) -> bool {
+        /// Record a nonce in the given epoch. Returns false if invalid.
+        fn record_nonce(&mut self, epoch: u32, nonce: Hash) -> bool {
             if epoch < self.epoch {
                 // Stale epoch.
                 return false;
@@ -358,26 +370,22 @@ pub mod internal {
 
             // Enter a new epoch if higher.
             if epoch > self.epoch {
-                if self.nonce_seen.len() < Self::NONCE_LIMIT_PER_EPOCH {
+                if self.used_nonce.len() < Self::MAX_NONCE_PER_EPOCH {
                     // Epoch advanced too early.
                     return false;
                 }
                 self.epoch = epoch;
-                self.nonce_seen.clear();
+                self.used_nonce.clear();
             }
 
-            if self.nonce_seen.len() >= Self::NONCE_LIMIT_PER_EPOCH {
+            if self.used_nonce.len() >= Self::MAX_NONCE_PER_EPOCH {
                 // Epoch full.
                 return false;
             }
 
             // Mark the nonce as used.
-            if self.nonce_seen.insert(nonce, ()).is_some() {
-                // Nonce is used.
-                return false;
-            }
-
-            true
+            self.used_nonce.insert(nonce)
+            // false if Nonce is used.
         }
 
         pub fn verify(&mut self, oc: OracleCert, target: LyquidID) -> bool {
@@ -406,13 +414,9 @@ pub mod internal {
                 }
             };
 
-            if config.committee.is_empty() {
-                // Empty committee.
-                return false;
-            }
-
             // First, verify the validity of the oc.cert itself.
             if !oc.cert.verify(config) {
+                // Invalid call certificate.
                 return false;
             }
 
@@ -427,11 +431,11 @@ pub mod internal {
             }
 
             // Replay prevention: epoch monotonic + per-epoch nonce dedup.
-            self.record_nonce(oc.header.epoch, oc.header.nonce)
+            self.record_nonce(oc.header.epoch, oc.header.nonce.into())
         }
     }
 
-    impl BuiltinState {
+    impl BuiltinNetworkState {
         pub fn new() -> Self {
             Self {
                 oracle: super::network::new_hashmap(),
@@ -439,8 +443,10 @@ pub mod internal {
         }
 
         /// Get (and create if missing) the destination-chain oracle topic state for the given topic key.
-        pub fn oracle_verifier(&mut self, topic: [u8; 32]) -> &mut OracleVerifier {
-            self.oracle.entry(topic).or_insert_with(OracleVerifier::default)
+        pub fn oracle_verifier(&mut self, topic: &'static str) -> &mut OracleVerifier {
+            self.oracle
+                .entry(blake3::hash(topic.as_bytes()))
+                .or_insert_with(OracleVerifier::default)
         }
     }
 
@@ -510,14 +516,15 @@ pub mod lyquor_api {
         inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
         submit_call(params: lyquor_primitives::CallParams, signed: bool) -> Vec<u8>;
         sign(
-            msg: lyquor_primitives::Bytes,
+            msg: Bytes,
             cipher: lyquor_primitives::Cipher
         ) -> lyquor_primitives::Signature;
         verify(
-            msg: lyquor_primitives::Bytes,
+            msg: Bytes,
             sig: lyquor_primitives::Signature,
             signer: NodeID
         ) -> bool;
+        random_bytes(length: usize) -> Vec<u8>;
     );
 }
 
