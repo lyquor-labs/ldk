@@ -334,15 +334,15 @@ pub mod internal {
         fn update_config(&mut self, config: OracleConfig, config_hash: HashBytes) -> bool {
             if config.committee.is_empty() {
                 // No signers.
-                return false
+                return false;
             }
             if config.committee.len() >= 4096 {
                 // Too many signers.
-                return false
+                return false;
             }
             if config.threshold == 0 || config.threshold > config.committee.len() {
                 // Invalid threshold.
-                return false
+                return false;
             }
             self.config = config;
             self.config_hash = config_hash;
@@ -386,7 +386,7 @@ pub mod internal {
                 lyquor_primitives::OracleTarget::Lyquor(id) => {
                     if id != target {
                         // Target mismatch (possible Lyquid-level replay attempt).
-                        return false
+                        return false;
                     }
                 }
                 _ => return false,
@@ -400,7 +400,7 @@ pub mod internal {
                 None => {
                     if oc.header.config_hash != self.config_hash {
                         // Config mismatch.
-                        return false
+                        return false;
                     }
                     &self.config
                 }
@@ -408,12 +408,12 @@ pub mod internal {
 
             if config.committee.is_empty() {
                 // Empty committee.
-                return false
+                return false;
             }
 
             // First, verify the validity of the oc.cert itself.
             if !oc.cert.verify(config) {
-                return false
+                return false;
             }
 
             if let Some(config) = oc.new_config {
@@ -422,7 +422,7 @@ pub mod internal {
                 // validated). Let's first update the config because it is used for
                 // this call and future calls, until a later update.
                 if !self.update_config(config, oc.header.config_hash) {
-                    return false
+                    return false;
                 }
             }
 
