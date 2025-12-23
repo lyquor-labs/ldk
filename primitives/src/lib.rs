@@ -204,7 +204,7 @@ pub struct Certificate {
     pub signers: Vec<u16>,
     /// Vote signatures.
     pub signatures: Vec<Bytes>,
-    /// Canonical oracle digest that signers are expected to have signed.
+    /// Digest on which all signatures are signed.
     pub digest: HashBytes,
 }
 
@@ -305,10 +305,20 @@ pub struct OracleMessage {
 #[derive(Serialize, Deserialize)]
 pub struct OracleResponse {
     pub approval: bool,
-    /// Ed25519 signature over the canonical oracle message digest.
-    pub ed25519_sig: Signature,
-    /// Optional EVM-side ECDSA signature (r || s || v) over the same digest.
-    pub ecdsa_sig: Option<Bytes>,
+    pub sig: Signature,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct OraclePreimage {
+    pub header: OracleHeader,
+    pub params: CallParams,
+    pub approval: bool,
+}
+
+impl OraclePreimage {
+    pub fn to_hash(&self) -> Hash {
+        blake3::hash(&encode_object(self))
+    }
 }
 
 /// Oracle signature scheme used when requesting signatures from the host.
@@ -330,35 +340,40 @@ pub struct OracleCert {
     pub cert: Certificate,
 }
 
-/// Build the canonical Ed25519 oracle signing message: the 32-byte oracle
-/// digest followed by a single-byte approval flag (1 for approve, 0 for
-/// reject). This binds the signature to both the message and the oracle's
-/// vote.
-pub fn lvm_digest(msg_hash: &HashBytes, approval: bool) -> [u8; 33] {
-    let mut out = [0u8; 33];
-    out[..32].copy_from_slice(msg_hash.as_bytes());
-    out[32] = if approval { 1 } else { 0 };
-    out
+impl OracleCert {
+    pub fn verify(&self, config: &OracleConfig, config_hash: &Hash) -> bool {
+        let config = match &self.new_config {
+            Some(config) => {
+                // TODO: verify if hash of config matches oc.header.config_hash
+                config
+            }
+            None => {
+                if &*self.header.config_hash != config_hash {
+                    // Config mismatch.
+                    return false;
+                }
+                config
+            }
+        };
+
+        self.cert.verify(config)
+    }
 }
 
 impl Certificate {
     /// Map signers to committee indices to form bitmap, and serialize signatures.
-    pub fn new(digest: HashBytes, sigs: Vec<(OracleSigner, Signature, Option<Bytes>)>, config: &OracleConfig) -> Self {
-        // Build map NodeID -> index
-        let mut index_of: std::collections::HashMap<NodeID, usize> = std::collections::HashMap::new();
+    pub fn new(digest: HashBytes, sigs: Vec<(OracleSigner, Signature)>, config: &OracleConfig) -> Self {
+        // Build a look up table to find the signer's index.
+        let mut index_of = std::collections::HashMap::new();
         for (i, s) in config.committee.iter().enumerate() {
             index_of.insert(s.id, i);
         }
         let mut signers: Vec<u16> = Vec::new();
-        let mut signatures: Vec<Bytes> = Vec::new();
-        // fIXME: WHY throw away _ed_sig?
-        for (signer, _ed_sig, evm_sig) in sigs.into_iter() {
-            // FIXME: this part is a mess of these shaky ifs.
+        let mut signatures = Vec::new();
+        for (signer, sig) in sigs.into_iter() {
             if let Some(i) = index_of.get(&signer.id).copied() {
                 signers.push(i as u16);
-                if let Some(sig) = evm_sig {
-                    signatures.push(sig);
-                }
+                signatures.push(sig);
             }
         }
         Self {
@@ -368,17 +383,101 @@ impl Certificate {
         }
     }
 
-    /// Fast threshold check using bitmap and config threshold (f + 1).
-    pub fn meets_threshold(&self, config: &OracleConfig) -> bool {
-        // TODO: WIP
-        self.signers.len() >= config.threshold
+    pub fn verify(&self, config: &OracleConfig) -> bool {
+        if self.signers.len() != self.signatures.len() {
+            // Malformed certificate.
+            return false;
+        }
+
+        if self.signers.len() < config.threshold {
+            // Threshold not met.
+            return false
+        }
+
+        for (i, sig) in self.signers.iter().zip(self.signatures.iter().take(config.threshold)) {
+            let i = (*i) as usize;
+            let signer = if i < config.committee.len() {
+                &config.committee[i]
+            } else {
+                // Invalid signer index.
+                return false
+            };
+            let sig = match ed25519_compact::Signature::from_slice(sig) {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            if signer.key.0.verify(self.digest.as_bytes(), &sig).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+pub mod eth {
+    use alloy_sol_types::{SolType, sol};
+    sol! {
+        struct OracleHeader {
+            bytes32 proposer;
+            address target;
+            bytes32 configHash;
+            uint32 epoch;
+            bytes32 nonce;
+        }
+
+        struct OraclePreimage {
+            OracleHeader header;
+            string method; // Invoked method of the contract.
+            bytes input; // Raw input for the call.
+            bool approval; // Should always be true signed by multi-sigs that make up the final cert.
+        }
     }
 
-    /// Structural verification of the certificate against a given config.
-    pub fn verify(&self, config: &OracleConfig) -> bool {
-        // TODO: Mask out bits that are outside the current committee range.
-        // Need crypto verification here!
-        self.meets_threshold(config)
+    impl OraclePreimage {
+        pub fn to_hash(&self) -> super::Hash {
+            alloy_primitives::keccak256(&OraclePreimage::abi_encode(self)).0.into()
+        }
+    }
+
+    impl TryFrom<super::OracleHeader> for OracleHeader {
+        type Error = ();
+
+        fn try_from(oh: super::OracleHeader) -> Result<Self, ()> {
+            Ok(OracleHeader {
+                proposer: <[u8; 32]>::from(oh.proposer).into(),
+                target: match oh.target {
+                    super::OracleTarget::Lyquor(_) => return Err(()),
+                    super::OracleTarget::SequenceVM(t) => t,
+                },
+                configHash: <[u8; 32]>::from(oh.config_hash).into(),
+                epoch: oh.epoch,
+                nonce: <[u8; 32]>::from(oh.nonce).into(),
+            })
+        }
+    }
+
+    impl From<OracleHeader> for super::OracleHeader {
+        fn from(oh: OracleHeader) -> Self {
+            Self {
+                proposer: <[u8; 32]>::from(oh.proposer).into(),
+                target: super::OracleTarget::SequenceVM(oh.target),
+                config_hash: <[u8; 32]>::from(oh.configHash).into(),
+                epoch: oh.epoch,
+                nonce: <[u8; 32]>::from(oh.nonce).into(),
+            }
+        }
+    }
+
+    impl TryFrom<super::OraclePreimage> for OraclePreimage {
+        type Error = ();
+        fn try_from(om: super::OraclePreimage) -> Result<Self, ()> {
+            Ok(Self {
+                header: om.header.try_into()?,
+                method: om.params.method,
+                input: om.params.input.into(),
+                approval: om.approval,
+            })
+        }
     }
 }
 

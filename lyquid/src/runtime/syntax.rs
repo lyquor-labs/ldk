@@ -498,54 +498,69 @@ macro_rules! __lyquid_categorize_methods {
      {$($instance_funcs:tt)*}) => {
          $crate::__lyquid_categorize_methods!({
             instance(upc::prepare::oracle::committee::$name) fn validate(
-                &ctx, callee: Vec<NodeID>, header: $crate::runtime::oracle::OracleHeader, msg_hash: $crate::lyquor_primitives::HashBytes
+                &ctx, callee: Vec<NodeID>,
+                header: $crate::runtime::oracle::OracleHeader,
+                yay_hash: $crate::lyquor_primitives::HashBytes,
+                nay_hash: $crate::lyquor_primitives::HashBytes
             ) -> LyquidResult<Vec<NodeID>> {
-                let _ = ctx.cache.get_or_init(|| $crate::runtime::oracle::Aggregation::new(header, msg_hash.into()));
+                let _ = ctx.cache.get_or_init(|| $crate::runtime::oracle::Aggregation::new(
+                    header,
+                    yay_hash.into(),
+                    nay_hash.into()));
                 Ok(callee)
             }
-            instance(upc::request::oracle::committee::$name) fn validate(&mut ctx, msg: $crate::runtime::oracle::OracleMessage) -> LyquidResult<$crate::runtime::oracle::OracleResponse> {
+
+            instance(upc::response::oracle::committee::$name) fn validate(
+                &ctx,
+                resp: LyquidResult<oracle::OracleResponse>
+            ) -> LyquidResult<Option< Option<oracle::OracleCert> >> {
+                let cache = ctx.cache.get_or_init(|| -> lyquid::runtime::oracle::Aggregation {
+                    unreachable!("Oracle cache should have been set.")
+                });
+                if let Ok(resp) = resp {
+                    return Ok(cache.add_response(ctx.from, resp, &ctx.network.$name))
+                }
+                Ok(None)
+            }
+
+            instance(upc::request::oracle::committee::$name) fn validate(
+                &mut ctx,
+                msg: $crate::runtime::oracle::OracleMessage
+            ) -> LyquidResult<$crate::runtime::oracle::OracleResponse> {
                 if ctx.network.$name.config_hash() != &*msg.header.config_hash {
                     return Err(LyquidError::LyquidRuntime("Mismatch config hash".into()))
                 }
-                let msg_hash: $crate::Hash = match msg.header.target {
-                    $crate::runtime::oracle::OracleTarget::SequenceVM(_) => $crate::runtime::oracle::evm_digest(&msg.header, &msg.params),
-                    $crate::runtime::oracle::OracleTarget::Lyquor(_) => {
-                        $crate::lyquor_primitives::blake3::hash(
-                            &$crate::lyquor_primitives::encode_object(&msg)
-                        )
-                    }
-                };
                 let approval = {
-                    let $params = msg.params;
+                    let $params = msg.params.clone();
                     let $handle = &mut ctx;
                     $body
                 }?;
 
-                let ed25519_msg: $crate::lyquor_primitives::Bytes =
-                    $crate::lyquor_primitives::Bytes::copy_from_slice(
-                        &$crate::lyquor_primitives::lvm_digest(&msg_hash.into(), approval),
-                    );
-                let ed25519_sig = $crate::runtime::lyquor_api::sign(
-                    ed25519_msg,
-                    $crate::lyquor_primitives::Cipher::Ed25519,
-                )?;
-
-                let ecdsa_sig = match msg.header.target {
-                    $crate::runtime::oracle::OracleTarget::SequenceVM(_) => {
-                        let ecdsa_msg: $crate::lyquor_primitives::Bytes =
-                            $crate::lyquor_primitives::Bytes::copy_from_slice(msg_hash.as_bytes());
-                        let sig = $crate::runtime::lyquor_api::sign(
-                            ecdsa_msg,
-                            $crate::lyquor_primitives::Cipher::EcdsaSecp256k1,
-                        )?;
-                        if sig.is_empty() { None } else { Some(sig) }
-                    }
-                    $crate::runtime::oracle::OracleTarget::Lyquor(_) => None,
-                };
-                Ok($crate::runtime::oracle::OracleResponse {
+                // Derive digest from the actual header and params, so what we sign is exactly what
+                // validate() logic has checked.
+                use $crate::lyquor_primitives::{eth, Cipher};
+                use $crate::runtime::oracle::{OracleTarget, OraclePreimage, OracleResponse};
+                use $crate::alloy_dyn_abi::SolType;
+                let preimage = OraclePreimage {
+                    header: msg.header,
+                    params: msg.params,
                     approval,
-                    ed25519_sig,
-                    ecdsa_sig,
+                };
+                let (digest, cipher) = match msg.header.target {
+                    OracleTarget::SequenceVM(_) => {
+                        (<[u8; 32]>::from(eth::OraclePreimage::try_from(preimage).unwrap().to_hash()),
+                        Cipher::EcdsaSecp256k1)
+                    },
+                    OracleTarget::Lyquor(_) => {
+                        (<[u8; 32]>::from(preimage.to_hash()),
+                        Cipher::Ed25519)
+                    }
+                };
+
+                let sig = $crate::runtime::lyquor_api::sign(digest.to_vec().into(), cipher)?;
+                Ok(OracleResponse {
+                    approval,
+                    sig,
                 })
             } $($rest)*
          }, {$($network_funcs)*}, {$($instance_funcs)*});

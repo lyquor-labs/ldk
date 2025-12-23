@@ -389,7 +389,7 @@ pub mod internal {
         }
 
         pub fn verify(&mut self, oc: OracleCert, target: LyquidID) -> bool {
-            // Ensure the certificate targets this Lyquor instance
+            // Ensure the certificate targets this Lyquid
             match oc.header.target {
                 lyquor_primitives::OracleTarget::Lyquor(id) => {
                     if id != target {
@@ -400,22 +400,10 @@ pub mod internal {
                 _ => return false,
             }
 
-            let config = match &oc.new_config {
-                Some(config) => {
-                    // TODO: verify if hash of config matches oc.header.config_hash
-                    config
-                }
-                None => {
-                    if oc.header.config_hash != self.config_hash {
-                        // Config mismatch.
-                        return false;
-                    }
-                    &self.config
-                }
-            };
+            // TODO: Ensure the preimage matches the signed digest.
 
-            // First, verify the validity of the oc.cert itself.
-            if !oc.cert.verify(config) {
+            // Verify the validity of the OracleCert.
+            if !oc.verify(&self.config, &self.config_hash) {
                 // Invalid call certificate.
                 return false;
             }
@@ -430,7 +418,7 @@ pub mod internal {
                 }
             }
 
-            // Replay prevention: epoch monotonic + per-epoch nonce dedup.
+            // Prevent the call from being used again.
             self.record_nonce(oc.header.epoch, oc.header.nonce.into())
         }
     }
@@ -522,6 +510,7 @@ pub mod lyquor_api {
         verify(
             msg: Bytes,
             sig: lyquor_primitives::Signature,
+            cipher: lyquor_primitives::Cipher,
             signer: NodeID
         ) -> bool;
         random_bytes(length: usize) -> Vec<u8>;

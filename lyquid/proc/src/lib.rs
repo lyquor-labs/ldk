@@ -125,26 +125,6 @@ pub fn prefix_call(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     panic!("expected a function call");
 }
 
-fn oracle_codegen(name: &Ident, output: &mut TokenStream) {
-    output.extend(quote::quote! {
-        lyquid::method! {
-            upc(response::oracle::committee::#name) fn validate(&ctx, resp: LyquidResult<oracle::OracleResponse>) -> LyquidResult<Option< Option<oracle::OracleCert> >> {
-                let cache = ctx.cache.get_or_init(|| {
-                    let msg = lyquor_primitives::decode_by_fields!(&ctx.input, msg: oracle::OracleMessage)
-                        .expect("invalid oracle message in UPC input")
-                        .msg;
-                    let msg_hash: Hash = lyquor_primitives::blake3::hash(&lyquor_primitives::encode_object(&msg));
-                    oracle::Aggregation::new(msg.header, msg_hash)
-                });
-                if let Ok(resp) = resp {
-                    return Ok(cache.add_response(ctx.from, resp, &ctx.network.#name))
-                }
-                Ok(None)
-            }
-        }
-    });
-}
-
 #[proc_macro]
 pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut toplevel_tokens = TokenStream::from(item).into_iter(); // use proc_macro2 instead of proc_macro as it is more convenient
@@ -167,7 +147,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
     let mut struct_inits = HashMap::new(); // maps from categories to a token stream of field initializers
     let mut var_setup = TokenStream::new();
 
-    let mut extra = TokenStream::new();
+    //let mut extra = TokenStream::new();
     for def in toplevel_tokens {
         let mut def_iter = token_is_group(def)
             .expect("expect state variable definition")
@@ -185,7 +165,6 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
                 cat_str = "network".to_string();
                 type_ = quote::quote! { lyquid::runtime::network::Oracle };
                 init = quote::quote! { lyquid::runtime::network::Oracle::new(#name_str) };
-                oracle_codegen(&name, &mut extra);
             }
             _ => {
                 type_ = def_iter.next().expect("expect variable type").into();
@@ -290,8 +269,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
     quote::quote! {
         #structs
 
-        use lyquid::runtime::{oracle, Hash};
-        #extra
+        //#extra
 
         #[unsafe(no_mangle)]
         unsafe fn #init_func() {
