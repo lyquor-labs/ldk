@@ -257,9 +257,9 @@ impl<'de> Deserialize<'de> for PubKey {
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum OracleTarget {
     // Lyquor network fn
-    Lyquor(LyquidID),
+    LVM(LyquidID),
     // Native contract of the sequence backend (such as EVM)
-    SequenceVM(Address),
+    EVM(Address),
     // Detect sequence backend
     // TODO: add target chain ID
 }
@@ -290,6 +290,12 @@ pub struct OracleSigner {
 pub struct OracleConfig {
     pub committee: Vec<OracleSigner>,
     pub threshold: usize,
+}
+
+impl OracleConfig {
+    pub fn to_hash(&self) -> Hash {
+        blake3::hash(&encode_object(self))
+    }
 }
 
 /// UPC message sent to each signer. The signer will check config hash to see if it's consistent
@@ -344,7 +350,11 @@ impl OracleCert {
     pub fn verify(&self, config: &OracleConfig, config_hash: &Hash) -> bool {
         let config = match &self.new_config {
             Some(config) => {
-                // TODO: verify if hash of config matches oc.header.config_hash
+                let hash: HashBytes = config.to_hash().into();
+                if hash != self.header.config_hash {
+                    // Config mismatch.
+                    return false;
+                }
                 config
             }
             None => {
@@ -431,11 +441,22 @@ pub mod eth {
             bytes input; // Raw input for the call.
             bool approval; // Should always be true signed by multi-sigs that make up the final cert.
         }
+
+        struct OracleConfig {
+            address[] committee;
+            uint16 threshold;
+        }
     }
 
     impl OraclePreimage {
         pub fn to_hash(&self) -> super::Hash {
             alloy_primitives::keccak256(&OraclePreimage::abi_encode(self)).0.into()
+        }
+    }
+
+    impl OracleConfig {
+        pub fn to_hash(&self) -> super::Hash {
+            alloy_primitives::keccak256(&OracleConfig::abi_encode(self)).0.into()
         }
     }
 
@@ -446,8 +467,8 @@ pub mod eth {
             Ok(OracleHeader {
                 proposer: <[u8; 32]>::from(oh.proposer).into(),
                 target: match oh.target {
-                    super::OracleTarget::Lyquor(_) => return Err(()),
-                    super::OracleTarget::SequenceVM(t) => t,
+                    super::OracleTarget::LVM(_) => return Err(()),
+                    super::OracleTarget::EVM(t) => t,
                 },
                 configHash: <[u8; 32]>::from(oh.config_hash).into(),
                 epoch: oh.epoch,
@@ -460,7 +481,7 @@ pub mod eth {
         fn from(oh: OracleHeader) -> Self {
             Self {
                 proposer: <[u8; 32]>::from(oh.proposer).into(),
-                target: super::OracleTarget::SequenceVM(oh.target),
+                target: super::OracleTarget::EVM(oh.target),
                 config_hash: <[u8; 32]>::from(oh.configHash).into(),
                 epoch: oh.epoch,
                 nonce: <[u8; 32]>::from(oh.nonce).into(),

@@ -299,19 +299,25 @@ macro_rules! __lyquid_categorize_methods {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
-                oracle::certified::$oname (true) fn $fn(cert: $crate::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| {
-                    use crate::__lyquid;
-
-                    let input = $crate::lyquor_primitives::decode_by_fields!(&input_raw, $($name: $type),*).ok_or(LyquidError::LyquorInput)?;
-                    $(let $name = input.$name;)*
-                    let (caller, lyquid_id) = (ctx.caller, ctx.lyquid_id);
-                    let mut $handle = __lyquid::NetworkContext::new(ctx)?;
+                oracle::certified::$oname (true) fn $fn(oc: $crate::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| {
+                    let params = CallParams {
+                        origin: ctx.origin,
+                        caller: ctx.caller,
+                        group: stringify!($oname).to_string(),
+                        method: stringify!($fn).to_string(),
+                        input: input_raw.clone(),
+                        abi: $crate::lyquor_primitives::InputABI::Lyquor,
+                    };
+                    let me = ctx.lyquid_id;
+                    let mut $handle = crate::__lyquid::NetworkContext::new(ctx)?;
 
                     let topic = stringify!($oname);
-                    if !$handle.network.__internal.oracle_verifier(topic).verify(cert, lyquid_id) {
+                    if !$handle.network.__internal.oracle_dest(topic).verify(me, params, oc) {
                         return Err(LyquidError::InputCert)
                     }
 
+                    let input = $crate::lyquor_primitives::decode_by_fields!(&input_raw, $($name: $type),*).ok_or(LyquidError::LyquorInput)?;
+                    $(let $name = input.$name;)*
                     let result = $body; // execute the body of the function
                     drop($handle); // drop the state handle here to ensure the correct lifetime
                                    // for the handle when accessed in $body so the handle is not
@@ -527,9 +533,20 @@ macro_rules! __lyquid_categorize_methods {
                 &mut ctx,
                 msg: $crate::runtime::oracle::OracleMessage
             ) -> LyquidResult<$crate::runtime::oracle::OracleResponse> {
-                if ctx.network.$name.config_hash() != &*msg.header.config_hash {
+                use $crate::lyquor_primitives::{eth, Cipher};
+                use $crate::runtime::oracle::{OracleTarget, OraclePreimage, OracleResponse};
+                use $crate::alloy_dyn_abi::SolType;
+
+                let phash = ctx.network.$name.config_hash();
+                let config_hash = match msg.header.target {
+                    OracleTarget::LVM(_) => phash.lvm,
+                    OracleTarget::EVM(_) => phash.evm,
+                };
+
+                if config_hash != *msg.header.config_hash {
                     return Err(LyquidError::LyquidRuntime("Mismatch config hash".into()))
                 }
+
                 let approval = {
                     let $params = msg.params.clone();
                     let $handle = &mut ctx;
@@ -538,20 +555,17 @@ macro_rules! __lyquid_categorize_methods {
 
                 // Derive digest from the actual header and params, so what we sign is exactly what
                 // validate() logic has checked.
-                use $crate::lyquor_primitives::{eth, Cipher};
-                use $crate::runtime::oracle::{OracleTarget, OraclePreimage, OracleResponse};
-                use $crate::alloy_dyn_abi::SolType;
                 let preimage = OraclePreimage {
                     header: msg.header,
                     params: msg.params,
                     approval,
                 };
                 let (digest, cipher) = match msg.header.target {
-                    OracleTarget::SequenceVM(_) => {
+                    OracleTarget::EVM(_) => {
                         (<[u8; 32]>::from(eth::OraclePreimage::try_from(preimage).unwrap().to_hash()),
                         Cipher::EcdsaSecp256k1)
                     },
-                    OracleTarget::Lyquor(_) => {
+                    OracleTarget::LVM(_) => {
                         (<[u8; 32]>::from(preimage.to_hash()),
                         Cipher::Ed25519)
                     }

@@ -1,31 +1,49 @@
 use super::{LyquidError, LyquidResult, NodeID, lyquor_api};
-use lyquor_primitives::{
-    Address, Bytes, CallParams, Certificate, Hash, HashBytes, InputABI, OracleSigner, PubKey, Signature, encode_object,
-};
+use lyquor_primitives::{Address, Bytes, CallParams, Certificate, Hash, HashBytes, InputABI, OracleSigner, Signature};
 pub use lyquor_primitives::{
     OracleCert, OracleConfig, OracleHeader, OracleMessage, OraclePreimage, OracleResponse, OracleTarget, eth,
 };
 
+pub struct Digest {
+    pub lvm: Hash,
+    pub evm: Hash,
+}
+
+impl Digest {
+    const ZERO: Digest = Digest {
+        lvm: Hash::from_bytes([0; 32]),
+        evm: Hash::from_bytes([0; 32]),
+    };
+}
+
 pub struct Oracle {
     id: &'static str,
     threshold: usize,
-    committee: super::network::HashMap<NodeID, PubKey>,
-    config_hash: Hash,
+    committee: super::network::HashMap<NodeID, OracleSigner>,
+    config_hash: Digest,
     config_update: bool,
 }
 
 impl Oracle {
     fn updated_config(&mut self) {
-        let hash = lyquor_primitives::blake3::hash(&encode_object(&self.consolidate_config()));
-        self.config_hash = hash;
+        let config = self.consolidate_config();
+        self.config_hash = Digest {
+            lvm: config.to_hash(),
+            evm: lyquor_primitives::eth::OracleConfig {
+                committee: config
+                    .committee
+                    .into_iter()
+                    .map(|s| lyquor_api::eth_address_by_node(s.id).unwrap())
+                    .collect(),
+                threshold: config.threshold as u16,
+            }
+            .to_hash(),
+        };
         self.config_update = true;
     }
 
     fn consolidate_config(&self) -> OracleConfig {
-        let mut committee = Vec::new();
-        for (id, key) in self.committee.iter() {
-            committee.push(OracleSigner { id: *id, key: *key });
-        }
+        let committee: Vec<OracleSigner> = self.committee.values().cloned().collect();
         OracleConfig {
             committee,
             threshold: self.threshold,
@@ -37,15 +55,16 @@ impl Oracle {
             id,
             threshold: 0,
             committee: super::network::new_hashmap(),
-            config_hash: [0; 32].into(),
+            config_hash: Digest::ZERO,
             config_update: false,
         }
     }
 
     /// Add a node to the committee. If the node exists, returns false.
     pub fn add_node(&mut self, id: NodeID) -> bool {
-        let pk = id.as_ed25519_public_key();
-        if self.committee.insert(id, pk.into()).is_some() {
+        let key = id.as_ed25519_public_key().into();
+        let signer = OracleSigner { id, key };
+        if self.committee.insert(id, signer).is_some() {
             return false;
         }
         self.updated_config();
@@ -95,16 +114,17 @@ impl Oracle {
         let lyquid = ctx.get_lyquid_id();
 
         // The network fn call to be certified.
+        let (abi, config_hash) = match target {
+            OracleTarget::EVM(_) => (InputABI::Eth, self.config_hash.evm),
+            OracleTarget::LVM(_) => (InputABI::Lyquor, self.config_hash.lvm),
+        };
         let mut params = CallParams {
             origin,
             caller: origin, // TODO: use node/lyquid here?
             group: self.id.into(),
             method,
             input,
-            abi: match target {
-                OracleTarget::SequenceVM(_) => InputABI::Eth,
-                OracleTarget::Lyquor(_) => InputABI::Lyquor,
-            },
+            abi,
         };
 
         // Populate epoch from instance state and derive a nonce per call.
@@ -115,7 +135,7 @@ impl Oracle {
         let header = OracleHeader {
             proposer: node,
             target,
-            config_hash: self.config_hash.into(),
+            config_hash: config_hash.into(),
             epoch,
             nonce,
         };
@@ -134,7 +154,7 @@ impl Oracle {
 
         // Seal the yay/nay hash for the signature.
         let (yay_hash, nay_hash) = match target {
-            OracleTarget::SequenceVM(_) => (
+            OracleTarget::EVM(_) => (
                 lyquor_primitives::eth::OraclePreimage::try_from(yay_preimage)
                     .unwrap()
                     .to_hash(),
@@ -142,7 +162,7 @@ impl Oracle {
                     .unwrap()
                     .to_hash(),
             ),
-            OracleTarget::Lyquor(_) => (yay_preimage.to_hash(), nay_preimage.to_hash()),
+            OracleTarget::LVM(_) => (yay_preimage.to_hash(), nay_preimage.to_hash()),
         };
 
         let cert: Option<OracleCert> = lyquor_api::universal_procedural_call(
@@ -176,7 +196,7 @@ impl Oracle {
         self.committee.keys().cloned().collect()
     }
 
-    pub fn config_hash(&self) -> &Hash {
+    pub fn config_hash(&self) -> &Digest {
         &self.config_hash
     }
 }
@@ -221,8 +241,8 @@ impl Aggregation {
             .into(),
             resp.sig.clone(),
             match self.header.target {
-                OracleTarget::SequenceVM(_) => lyquor_primitives::Cipher::EcdsaSecp256k1,
-                OracleTarget::Lyquor(_) => lyquor_primitives::Cipher::Ed25519,
+                OracleTarget::EVM(_) => lyquor_primitives::Cipher::EcdsaSecp256k1,
+                OracleTarget::LVM(_) => lyquor_primitives::Cipher::Ed25519,
             },
             node,
         )
@@ -230,13 +250,8 @@ impl Aggregation {
         if ok && self.voted.insert(node) {
             match resp.approval {
                 true => {
-                    self.yea_sigs.push((
-                        OracleSigner {
-                            id: node,
-                            key: *oracle.committee.get(&node).unwrap(),
-                        },
-                        resp.sig.clone(),
-                    ));
+                    self.yea_sigs
+                        .push((*oracle.committee.get(&node).unwrap(), resp.sig.clone()));
                     self.yea += 1
                 }
                 false => self.nay += 1,
