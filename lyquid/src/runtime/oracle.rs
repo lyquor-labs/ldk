@@ -74,7 +74,7 @@ impl Oracle {
     pub fn add_node(&mut self, id: NodeID) -> bool {
         let pk = id.as_ed25519_public_key();
         if self.committee.insert(id, pk.into()).is_some() {
-            return false
+            return false;
         }
         self.updated_config();
         true
@@ -83,7 +83,7 @@ impl Oracle {
     /// Remove a node from the committee. If the node does not exist, returns false.
     pub fn remove_node(&mut self, id: &NodeID) -> bool {
         if self.committee.remove(id).is_none() {
-            return false
+            return false;
         }
         self.updated_config();
         true
@@ -97,7 +97,7 @@ impl Oracle {
     /// Update the threshold of the oracle.
     pub fn set_threshold(&mut self, new_thres: usize) -> bool {
         if new_thres == self.threshold {
-            return true
+            return true;
         }
         self.threshold = new_thres;
         self.updated_config();
