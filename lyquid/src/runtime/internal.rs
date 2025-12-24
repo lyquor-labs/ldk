@@ -1,7 +1,9 @@
 use super::*;
-use lyquor_primitives::{HashBytes, OracleConfig};
-pub struct HostInput(&'static [u8]);
+use oracle::OracleDest;
+
 pub use lyquid_proc::*;
+
+pub struct HostInput(&'static [u8]);
 
 impl Drop for HostInput {
     fn drop(&mut self) {
@@ -123,135 +125,6 @@ pub struct BuiltinNetworkState {
     oracle: super::network::HashMap<String, OracleDest>,
 }
 
-/// Per-topic destination-chain oracle state.
-pub struct OracleDest {
-    // The following states are used for certificate verification.
-    // Active oracle config for the topic.
-    config: OracleConfig,
-    // Hash of _config for the topic.
-    config_hash: HashBytes,
-    // The following variables are used to ensure a certified call is at most invoked once.
-    // Epoch number.
-    epoch: u32,
-    used_nonce: super::network::HashSet<Hash>,
-}
-
-impl Default for OracleDest {
-    fn default() -> Self {
-        Self {
-            config: OracleConfig {
-                threshold: 0,
-                committee: Vec::new(),
-            },
-            config_hash: [0; 32].into(),
-            epoch: 0,
-            used_nonce: super::network::new_hashset(),
-        }
-    }
-}
-
-impl OracleDest {
-    const MAX_NONCE_PER_EPOCH: usize = 1_000_000;
-
-    pub fn get_epoch(&self) -> u32 {
-        self.epoch
-    }
-
-    pub fn get_config_hash(&self) -> &HashBytes {
-        &self.config_hash
-    }
-
-    fn update_config(&mut self, config: OracleConfig, config_hash: HashBytes) -> bool {
-        if config.committee.is_empty() {
-            // No signers.
-            return false;
-        }
-        if config.committee.len() > u16::MAX as usize {
-            // Too many signers.
-            return false;
-        }
-        if config.threshold == 0 || config.threshold > config.committee.len() {
-            // Invalid threshold.
-            return false;
-        }
-        self.config = config;
-        self.config_hash = config_hash;
-        true
-    }
-
-    /// Record a nonce in the given epoch. Returns false if invalid.
-    fn record_nonce(&mut self, epoch: u32, nonce: Hash) -> bool {
-        if epoch < self.epoch {
-            // Stale epoch.
-            return false;
-        }
-
-        // Enter a new epoch if higher.
-        if epoch > self.epoch {
-            if self.used_nonce.len() < Self::MAX_NONCE_PER_EPOCH {
-                // Epoch advanced too early.
-                return false;
-            }
-            self.epoch = epoch;
-            self.used_nonce.clear();
-        }
-
-        if self.used_nonce.len() >= Self::MAX_NONCE_PER_EPOCH {
-            // Epoch full.
-            return false;
-        }
-
-        // Mark the nonce as used.
-        self.used_nonce.insert(nonce)
-        // false if Nonce is used.
-    }
-
-    pub fn verify(&mut self, me: LyquidID, params: lyquor_primitives::CallParams, oc: OracleCert) -> bool {
-        // Ensure the certificate targets this Lyquid
-        match oc.header.target {
-            lyquor_primitives::OracleTarget::LVM(id) => {
-                if id != me {
-                    // Target mismatch (possible Lyquid-level replay attempt).
-                    return false;
-                }
-            }
-            _ => return false,
-        }
-
-        // Ensure the preimage matches the signed digest.
-        let hash: HashBytes = lyquor_primitives::OraclePreimage {
-            header: oc.header,
-            params,
-            approval: true,
-        }
-        .to_hash()
-        .into();
-        if hash != oc.cert.digest {
-            // Mismatch digest.
-            return false;
-        }
-
-        // Verify the validity of the OracleCert.
-        if !oc.verify(&self.config, &self.config_hash) {
-            // Invalid call certificate.
-            return false;
-        }
-
-        if let Some(config) = oc.new_config {
-            // This certificate also piggybacks a config update (that's signed
-            // together with the call payload, and therefore has also been
-            // validated). Let's first update the config because it is used for
-            // this call and future calls, until a later update.
-            if !self.update_config(config, oc.header.config_hash) {
-                return false;
-            }
-        }
-
-        // Prevent the call from being used again.
-        self.record_nonce(oc.header.epoch, oc.header.nonce.into())
-    }
-}
-
 impl BuiltinNetworkState {
     pub fn new() -> Self {
         Self {
@@ -266,12 +139,10 @@ impl BuiltinNetworkState {
 }
 
 // NOTE: limit the implementor of this trait to this LDK crate using sealed trait pattern
+// The extra sealed mod is used as a visibility trick.
 pub(crate) mod sealed {
     pub trait Sealed {}
 }
 
-/// Contexts that impls this trait are those that support calling `Oracle::certify()`.
-pub trait OracleCertifyContext: sealed::Sealed {
-    fn get_lyquid_id(&self) -> LyquidID;
-    fn get_node_id(&self) -> NodeID;
-}
+impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for InstanceContextImpl<S, I> {}
+impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for ImmutableInstanceContextImpl<S, I> {}

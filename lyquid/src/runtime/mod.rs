@@ -14,7 +14,7 @@ pub mod oracle;
 #[doc(hidden)] pub mod syntax;
 pub mod upc;
 
-use internal::{OracleCertifyContext, StateAccessor, sealed};
+use internal::StateAccessor;
 
 const VOLATILE_SEGMENT_SIZE: usize = VOLATILE_MEMSIZE_IN_MB << 20;
 const NETWORK_SEGMENT_SIZE: usize = NETWORK_MEMSIZE_IN_MB << 20;
@@ -770,8 +770,6 @@ pub mod network {
     }
 
     gen_container_types!(Alloc);
-
-    pub use oracle::Oracle;
 }
 
 /// Instance persistent state memory allocator and standard containers.
@@ -987,16 +985,6 @@ where
     }
 }
 
-impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for InstanceContextImpl<S, I> {}
-impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for InstanceContextImpl<S, I> {
-    fn get_lyquid_id(&self) -> LyquidID {
-        return self.lyquid_id;
-    }
-    fn get_node_id(&self) -> NodeID {
-        return self.node_id;
-    }
-}
-
 /// Read-only wrapper for state variables.
 pub struct ImmutableInstanceContextImpl<S, I>
 where
@@ -1027,15 +1015,5 @@ where
             network: Immutable::new(S::new()?),
             instance: Immutable::new(I::new()?),
         })
-    }
-}
-
-impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for ImmutableInstanceContextImpl<S, I> {}
-impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for ImmutableInstanceContextImpl<S, I> {
-    fn get_lyquid_id(&self) -> LyquidID {
-        return self.lyquid_id;
-    }
-    fn get_node_id(&self) -> NodeID {
-        return self.node_id;
     }
 }

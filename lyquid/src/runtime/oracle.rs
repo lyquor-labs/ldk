@@ -1,8 +1,8 @@
-use super::{LyquidError, LyquidResult, NodeID, lyquor_api};
-use lyquor_primitives::{Address, Bytes, CallParams, Certificate, Hash, HashBytes, InputABI, OracleSigner, Signature};
-pub use lyquor_primitives::{
-    OracleCert, OracleConfig, OracleHeader, OracleMessage, OraclePreimage, OracleResponse, OracleTarget, eth,
+use super::{Deserialize, LyquidError, LyquidID, LyquidResult, NodeID, Serialize, StateAccessor, lyquor_api};
+pub use lyquor_primitives::oracle::{
+    Certificate, OracleCert, OracleConfig, OracleHeader, OraclePreimage, OracleSigner, OracleTarget, eth,
 };
+use lyquor_primitives::{Address, Bytes, CallParams, Hash, HashBytes, InputABI, Signature};
 
 pub struct Digest {
     pub lvm: Hash,
@@ -16,7 +16,26 @@ impl Digest {
     };
 }
 
-pub struct Oracle {
+/// UPC message sent to each validator.
+///
+/// The validator (signer) will check config hash to see if it's consistent with its oracle state
+/// as of the given network state version, and then run `validate`, a signature will be
+/// automatically signed, and respond to the caller with `validate()`'s result (true/false).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Request {
+    pub header: OracleHeader,
+    pub params: CallParams,
+}
+
+/// UPC message responded from each validator.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Response {
+    pub approval: bool,
+    pub sig: Signature,
+}
+
+/// Network state for the source (call generation) chain.
+pub struct OracleSrc {
     id: &'static str,
     threshold: usize,
     committee: super::network::HashMap<NodeID, OracleSigner>,
@@ -24,12 +43,12 @@ pub struct Oracle {
     config_update: bool,
 }
 
-impl Oracle {
+impl OracleSrc {
     fn updated_config(&mut self) {
         let config = self.consolidate_config();
         self.config_hash = Digest {
             lvm: config.to_hash(),
-            evm: lyquor_primitives::eth::OracleConfig {
+            evm: eth::OracleConfig {
                 committee: config
                     .committee
                     .into_iter()
@@ -86,41 +105,40 @@ impl Oracle {
     }
 
     /// Update the threshold of the oracle.
-    pub fn set_threshold(&mut self, new_thres: usize) -> bool {
+    pub fn set_threshold(&mut self, new_thres: usize) {
         if new_thres == self.threshold {
-            return true;
+            return;
         }
         self.threshold = new_thres;
         self.updated_config();
-        true
     }
 
     /// Generate a certificate that testifies the validity of an oracle call to a target network
     /// (sequence backend).
     pub fn certify(
-        &self, ctx: &impl super::internal::OracleCertifyContext, origin: Address, method: String, input: Bytes,
-        target: OracleTarget,
+        &self, ctx: &impl OracleCertifyContext, origin: Address, method: String, input: Bytes, target: OracleTarget,
     ) -> LyquidResult<Option<CallParams>> {
         if self.threshold == 0 || self.committee.len() < self.threshold || self.committee.len() > u16::MAX as usize {
             return Err(crate::LyquidError::LyquidRuntime(format!(
-                "Invalid oracle config: threshold={}, committee.len()={}.",
+                "Invalid OracleConfig(committee.len()={}, threshold={}).",
                 self.threshold,
                 self.committee.len()
             ))
             .into());
         }
 
-        let node = ctx.get_node_id();
+        let proposer = ctx.get_node_id();
         let lyquid = ctx.get_lyquid_id();
 
-        // The network fn call to be certified.
         let (abi, config_hash) = match target {
             OracleTarget::EVM(_) => (InputABI::Eth, self.config_hash.evm),
             OracleTarget::LVM(_) => (InputABI::Lyquor, self.config_hash.lvm),
         };
+
+        // The network fn call to be certified.
         let mut params = CallParams {
             origin,
-            caller: origin, // TODO: use node/lyquid here?
+            caller: origin, //lyquid.into(),
             group: self.id.into(),
             method,
             input,
@@ -129,11 +147,11 @@ impl Oracle {
 
         // Populate epoch from instance state and derive a nonce per call.
         let nonce = Hash::from_slice(&lyquor_api::random_bytes(32)?)
-            .map_err(|_| LyquidError::LyquidRuntime("Oracle: invalid random nonce from the host.".into()))?
+            .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to obtain random nonce.".into()))?
             .into();
-        let epoch: u32 = 0; // FIXME: use the cached epoch from instance state.
+        let epoch: u32 = 0; // TODO: use the cached epoch from instance state.
         let header = OracleHeader {
-            proposer: node,
+            proposer,
             target,
             config_hash: config_hash.into(),
             epoch,
@@ -155,12 +173,8 @@ impl Oracle {
         // Seal the yay/nay hash for the signature.
         let (yay_hash, nay_hash) = match target {
             OracleTarget::EVM(_) => (
-                lyquor_primitives::eth::OraclePreimage::try_from(yay_preimage)
-                    .unwrap()
-                    .to_hash(),
-                lyquor_primitives::eth::OraclePreimage::try_from(nay_preimage)
-                    .unwrap()
-                    .to_hash(),
+                eth::OraclePreimage::try_from(yay_preimage).unwrap().to_hash(),
+                eth::OraclePreimage::try_from(nay_preimage).unwrap().to_hash(),
             ),
             OracleTarget::LVM(_) => (yay_preimage.to_hash(), nay_preimage.to_hash()),
         };
@@ -169,13 +183,13 @@ impl Oracle {
             lyquid,
             Some(format!("oracle::committee::{}", self.id)),
             "validate".into(),
-            lyquor_primitives::encode_by_fields!(msg: OracleMessage = OracleMessage {
+            lyquor_primitives::encode_by_fields!(msg: Request = Request {
                 header,
                 params: params.clone(),
             }),
             Some(
                 lyquor_primitives::encode_by_fields!(
-                    // Use Oracle macro expected field "callee" for callee list and pass verification context.
+                    // Use oracle macro expected field "callee" for callee list and pass verification context.
                     callee: Vec<NodeID> = self.committee(),
                     header: OracleHeader = header,
                     yay_hash: HashBytes = yay_hash.into(),
@@ -201,16 +215,17 @@ impl Oracle {
     }
 }
 
+/// UPC cache state for aggregation.
 pub struct Aggregation {
     header: OracleHeader,
     yea_hash: Hash,
     nay_hash: Hash,
 
+    // Voting state
     voted: super::volatile::HashSet<NodeID>,
     yea_sigs: Vec<(OracleSigner, Signature)>,
     yea: usize,
     nay: usize,
-
     result: Option<Option<OracleCert>>,
 }
 
@@ -228,7 +243,7 @@ impl Aggregation {
         }
     }
 
-    pub fn add_response(&mut self, node: NodeID, resp: OracleResponse, oracle: &Oracle) -> Option<Option<OracleCert>> {
+    pub fn add_response(&mut self, node: NodeID, resp: Response, oracle: &OracleSrc) -> Option<Option<OracleCert>> {
         // Delegate signature verification to the host-side API. If verification fails or the
         // host API errors, treat this as a failed vote.
         let ok = super::lyquor_api::verify(
@@ -261,16 +276,183 @@ impl Aggregation {
         if self.result.is_none() {
             crate::println!("yea = {}, thres = {}", self.yea, oracle.threshold);
             if self.yea >= oracle.threshold {
-                let cfg = oracle.consolidate_config();
+                let config = oracle.consolidate_config();
                 self.result = Some(Some(OracleCert {
                     header: self.header,
-                    new_config: if oracle.config_update { Some(cfg.clone()) } else { None },
-                    cert: Certificate::new(self.yea_hash.into(), self.yea_sigs.clone(), &cfg),
+                    new_config: if oracle.config_update {
+                        Some(config.clone())
+                    } else {
+                        None
+                    },
+                    cert: Certificate::new(self.yea_hash.into(), self.yea_sigs.clone(), &config),
                 }))
             } else if oracle.committee.len() - self.nay < oracle.threshold {
                 self.result = Some(None)
             }
         }
         self.result.clone()
+    }
+}
+
+/// Per-topic destination-chain oracle state.
+pub struct OracleDest {
+    // The following states are used for certificate verification.
+    // Active oracle config for the topic.
+    config: OracleConfig,
+    // Hash of _config for the topic.
+    config_hash: HashBytes,
+    // The following variables are used to ensure a certified call is at most invoked once.
+    // Epoch number.
+    epoch: u32,
+    used_nonce: super::network::HashSet<Hash>,
+}
+
+impl Default for OracleDest {
+    fn default() -> Self {
+        Self {
+            config: OracleConfig {
+                threshold: 0,
+                committee: Vec::new(),
+            },
+            config_hash: [0; 32].into(),
+            epoch: 0,
+            used_nonce: super::network::new_hashset(),
+        }
+    }
+}
+
+/// Network state for the destination (call execution) chain.
+impl OracleDest {
+    const MAX_NONCE_PER_EPOCH: usize = 1_000_000;
+
+    pub fn get_epoch(&self) -> u32 {
+        self.epoch
+    }
+
+    pub fn get_config_hash(&self) -> &HashBytes {
+        &self.config_hash
+    }
+
+    fn update_config(&mut self, config: OracleConfig, config_hash: HashBytes) -> bool {
+        if config.committee.is_empty() {
+            // No signers.
+            return false;
+        }
+        if config.committee.len() > u16::MAX as usize {
+            // Too many signers.
+            return false;
+        }
+        if config.threshold == 0 || config.threshold > config.committee.len() {
+            // Invalid threshold.
+            return false;
+        }
+        self.config = config;
+        self.config_hash = config_hash;
+        true
+    }
+
+    /// Record a nonce in the given epoch. Returns false if invalid.
+    fn record_nonce(&mut self, epoch: u32, nonce: Hash) -> bool {
+        if epoch < self.epoch {
+            // Stale epoch.
+            return false;
+        }
+
+        // Enter a new epoch if higher.
+        if epoch > self.epoch {
+            if self.used_nonce.len() < Self::MAX_NONCE_PER_EPOCH {
+                // Epoch advanced too early.
+                return false;
+            }
+            self.epoch = epoch;
+            self.used_nonce.clear();
+        }
+
+        if self.used_nonce.len() >= Self::MAX_NONCE_PER_EPOCH {
+            // Epoch full.
+            return false;
+        }
+
+        // Mark the nonce as used.
+        self.used_nonce.insert(nonce)
+        // false if Nonce is used.
+    }
+
+    pub fn verify(&mut self, me: LyquidID, params: lyquor_primitives::CallParams, oc: OracleCert) -> bool {
+        // Ensure the certificate targets this Lyquid
+        match oc.header.target {
+            OracleTarget::LVM(id) => {
+                if id != me {
+                    // Target mismatch (possible Lyquid-level replay attempt).
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+
+        // Ensure the preimage matches the signed digest.
+        let hash: HashBytes = OraclePreimage {
+            header: oc.header,
+            params,
+            approval: true,
+        }
+        .to_hash()
+        .into();
+        if hash != oc.cert.digest {
+            // Mismatch digest.
+            return false;
+        }
+
+        // Verify the validity of the OracleCert.
+        if !oc.verify(&self.config, &self.config_hash) {
+            // Invalid call certificate.
+            return false;
+        }
+
+        if let Some(config) = oc.new_config {
+            // This certificate also piggybacks a config update (that's signed
+            // together with the call payload, and therefore has also been
+            // validated). Let's first update the config because it is used for
+            // this call and future calls, until a later update.
+            if !self.update_config(config, oc.header.config_hash) {
+                return false;
+            }
+        }
+
+        // Prevent the call from being used again.
+        self.record_nonce(oc.header.epoch, oc.header.nonce.into())
+    }
+}
+
+/// Contexts that impls this trait are those that support calling `OracleSrc::certify()`.
+pub trait OracleCertifyContext: crate::runtime::internal::sealed::Sealed {
+    fn get_lyquid_id(&self) -> LyquidID;
+    fn get_node_id(&self) -> NodeID;
+}
+
+impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for crate::runtime::InstanceContextImpl<S, I> {
+    fn get_lyquid_id(&self) -> LyquidID {
+        return self.lyquid_id;
+    }
+    fn get_node_id(&self) -> NodeID {
+        return self.node_id;
+    }
+}
+
+impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for crate::runtime::ImmutableInstanceContextImpl<S, I> {
+    fn get_lyquid_id(&self) -> LyquidID {
+        return self.lyquid_id;
+    }
+    fn get_node_id(&self) -> NodeID {
+        return self.node_id;
+    }
+}
+
+impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for crate::runtime::upc::RequestContextImpl<S, I> {
+    fn get_lyquid_id(&self) -> LyquidID {
+        return self.lyquid_id;
+    }
+    fn get_node_id(&self) -> NodeID {
+        return self.node_id;
     }
 }

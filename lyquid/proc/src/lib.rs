@@ -163,8 +163,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         match cat_str.as_str() {
             "oracle" => {
                 cat_str = "network".to_string();
-                type_ = quote::quote! { lyquid::runtime::network::Oracle };
-                init = quote::quote! { lyquid::runtime::network::Oracle::new(#name_str) };
+                type_ = quote::quote! { lyquid::runtime::oracle::OracleSrc };
+                init = quote::quote! { lyquid::runtime::oracle::OracleSrc::new(#name_str) };
             }
             _ => {
                 type_ = def_iter.next().expect("expect variable type").into();

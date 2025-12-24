@@ -299,7 +299,7 @@ macro_rules! __lyquid_categorize_methods {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
-                oracle::certified::$oname (true) fn $fn(oc: $crate::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| {
+                oracle::certified::$oname (true) fn $fn(oc: $crate::runtime::oracle::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| {
                     let params = CallParams {
                         origin: ctx.origin,
                         caller: ctx.caller,
@@ -518,10 +518,10 @@ macro_rules! __lyquid_categorize_methods {
 
             instance(upc::response::oracle::committee::$name) fn validate(
                 &ctx,
-                resp: LyquidResult<oracle::OracleResponse>
-            ) -> LyquidResult<Option< Option<oracle::OracleCert> >> {
+                resp: LyquidResult<$crate::runtime::oracle::Response>
+            ) -> LyquidResult<Option< Option<$crate::runtime::oracle::OracleCert> >> {
                 let cache = ctx.cache.get_or_init(|| -> lyquid::runtime::oracle::Aggregation {
-                    unreachable!("Oracle cache should have been set.")
+                    unreachable!("Oracle aggregation cache should have been set.")
                 });
                 if let Ok(resp) = resp {
                     return Ok(cache.add_response(ctx.from, resp, &ctx.network.$name))
@@ -531,10 +531,10 @@ macro_rules! __lyquid_categorize_methods {
 
             instance(upc::request::oracle::committee::$name) fn validate(
                 &mut ctx,
-                msg: $crate::runtime::oracle::OracleMessage
-            ) -> LyquidResult<$crate::runtime::oracle::OracleResponse> {
-                use $crate::lyquor_primitives::{eth, Cipher};
-                use $crate::runtime::oracle::{OracleTarget, OraclePreimage, OracleResponse};
+                msg: $crate::runtime::oracle::Request
+            ) -> LyquidResult<$crate::runtime::oracle::Response> {
+                use $crate::lyquor_primitives::Cipher;
+                use $crate::runtime::oracle::{OracleTarget, OraclePreimage, Response, eth};
                 use $crate::alloy_dyn_abi::SolType;
 
                 let phash = ctx.network.$name.config_hash();
@@ -572,7 +572,7 @@ macro_rules! __lyquid_categorize_methods {
                 };
 
                 let sig = $crate::runtime::lyquor_api::sign(digest.to_vec().into(), cipher)?;
-                Ok(OracleResponse {
+                Ok(Response {
                     approval,
                     sig,
                 })
