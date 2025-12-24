@@ -399,5 +399,5 @@ pub type Signature = Bytes;
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Cipher {
     Ed25519,
-    EcdsaSecp256k1,
+    Secp256k1,
 }

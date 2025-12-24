@@ -300,10 +300,11 @@ macro_rules! __lyquid_categorize_methods {
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
                 oracle::certified::$oname (true) fn $fn(oc: $crate::runtime::oracle::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| {
+                    let topic = stringify!($oname);
                     let params = CallParams {
                         origin: ctx.origin,
                         caller: ctx.caller,
-                        group: stringify!($oname).to_string(),
+                        group: topic.to_string(),
                         method: stringify!($fn).to_string(),
                         input: input_raw.clone(),
                         abi: $crate::lyquor_primitives::InputABI::Lyquor,
@@ -311,7 +312,6 @@ macro_rules! __lyquid_categorize_methods {
                     let me = ctx.lyquid_id;
                     let mut $handle = crate::__lyquid::NetworkContext::new(ctx)?;
 
-                    let topic = stringify!($oname);
                     if !$handle.network.__internal.oracle_dest(topic).verify(me, params, oc) {
                         return Err(LyquidError::InputCert)
                     }
@@ -509,7 +509,7 @@ macro_rules! __lyquid_categorize_methods {
                 yay_hash: $crate::lyquor_primitives::HashBytes,
                 nay_hash: $crate::lyquor_primitives::HashBytes
             ) -> LyquidResult<Vec<NodeID>> {
-                let _ = ctx.cache.get_or_init(|| $crate::runtime::oracle::Aggregation::new(
+                ctx.cache.set($crate::runtime::oracle::Aggregation::new(
                     header,
                     yay_hash.into(),
                     nay_hash.into()));
@@ -520,9 +520,8 @@ macro_rules! __lyquid_categorize_methods {
                 &ctx,
                 resp: LyquidResult<$crate::runtime::oracle::Response>
             ) -> LyquidResult<Option< Option<$crate::runtime::oracle::OracleCert> >> {
-                let cache = ctx.cache.get_or_init(|| -> lyquid::runtime::oracle::Aggregation {
-                    unreachable!("Oracle aggregation cache should have been set.")
-                });
+                let cache: &mut $crate::runtime::oracle::Aggregation =
+                    ctx.cache.get_mut().expect("Oracle: aggregation cache should have been set.");
                 if let Ok(resp) = resp {
                     return Ok(cache.add_response(ctx.from, resp, &ctx.network.$name))
                 }
@@ -563,7 +562,7 @@ macro_rules! __lyquid_categorize_methods {
                 let (digest, cipher) = match msg.header.target {
                     OracleTarget::EVM(_) => {
                         (<[u8; 32]>::from(eth::OraclePreimage::try_from(preimage).unwrap().to_hash()),
-                        Cipher::EcdsaSecp256k1)
+                        Cipher::Secp256k1)
                     },
                     OracleTarget::LVM(_) => {
                         (<[u8; 32]>::from(preimage.to_hash()),

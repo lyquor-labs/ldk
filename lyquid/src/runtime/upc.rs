@@ -118,6 +118,9 @@ pub struct Cache {
     inner: Option<Box<CacheMem>>,
 }
 
+// TODO: Is this thread-safe? (Or do we need to consider it?) Because instance functions can run in
+// parallel. However, UPC logic may confine the access of Cache so may not be any parallel possible
+// runs.
 impl Cache {
     #[doc(hidden)]
     pub fn new(cache_ptr: Option<CachePtr>) -> Self {
@@ -126,7 +129,34 @@ impl Cache {
         }
     }
 
-    pub fn get_or_init<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
+    // NOTE: Naming mimicks std::cell::OnceCell
+
+    pub fn set<T: 'static>(&mut self, data: T) {
+        self.inner = Some(Box::new(CacheMem(Box::new(data))));
+    }
+
+    pub fn get<T: 'static>(&self) -> Option<&T> {
+        self.inner.as_ref().and_then(|e| e.0.as_ref().downcast_ref())
+    }
+
+    pub fn get_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.inner.as_mut().and_then(|e| e.0.as_mut().downcast_mut())
+    }
+
+    pub fn get_or_init<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &T {
+        if self.inner.is_none() {
+            self.inner = Some(Box::new(CacheMem(Box::new(init()))));
+        }
+        self.inner
+            .as_ref()
+            .unwrap()
+            .0
+            .as_ref()
+            .downcast_ref()
+            .expect("UPC: incorrect cache type.")
+    }
+
+    pub fn get_mut_or_init<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
         if self.inner.is_none() {
             self.inner = Some(Box::new(CacheMem(Box::new(init()))));
         }
@@ -136,7 +166,7 @@ impl Cache {
             .0
             .as_mut()
             .downcast_mut()
-            .expect("cache error")
+            .expect("UPC: incorrect cache type.")
     }
 
     #[doc(hidden)]

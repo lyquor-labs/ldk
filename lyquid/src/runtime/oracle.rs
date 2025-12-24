@@ -256,7 +256,7 @@ impl Aggregation {
             .into(),
             resp.sig.clone(),
             match self.header.target {
-                OracleTarget::EVM(_) => lyquor_primitives::Cipher::EcdsaSecp256k1,
+                OracleTarget::EVM(_) => lyquor_primitives::Cipher::Secp256k1,
                 OracleTarget::LVM(_) => lyquor_primitives::Cipher::Ed25519,
             },
             node,
