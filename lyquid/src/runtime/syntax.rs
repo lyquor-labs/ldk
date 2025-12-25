@@ -506,13 +506,11 @@ macro_rules! __lyquid_categorize_methods {
             instance(upc::prepare::oracle::committee::$name) fn validate(
                 &ctx, callee: Vec<NodeID>,
                 header: $crate::runtime::oracle::OracleHeader,
-                yay_hash: $crate::lyquor_primitives::HashBytes,
-                nay_hash: $crate::lyquor_primitives::HashBytes
+                yay_msg: $crate::lyquor_primitives::Bytes,
+                nay_msg: $crate::lyquor_primitives::Bytes
             ) -> LyquidResult<Vec<NodeID>> {
                 ctx.cache.set($crate::runtime::oracle::Aggregation::new(
-                    header,
-                    yay_hash.into(),
-                    nay_hash.into()));
+                    header, yay_msg, nay_msg));
                 Ok(callee)
             }
 
@@ -552,25 +550,22 @@ macro_rules! __lyquid_categorize_methods {
                     $body
                 }?;
 
-                // Derive digest from the actual header and params, so what we sign is exactly what
-                // validate() logic has checked.
                 let preimage = OraclePreimage {
                     header: msg.header,
                     params: msg.params,
                     approval,
                 };
-                let (digest, cipher) = match msg.header.target {
+
+                let (m, cipher) = match msg.header.target {
                     OracleTarget::EVM(_) => {
-                        (<[u8; 32]>::from(eth::OraclePreimage::try_from(preimage).unwrap().to_hash()),
-                        Cipher::Secp256k1)
+                        (eth::OraclePreimage::try_from(preimage).unwrap().to_preimage(), Cipher::Secp256k1)
                     },
                     OracleTarget::LVM(_) => {
-                        (<[u8; 32]>::from(preimage.to_hash()),
-                        Cipher::Ed25519)
+                        (preimage.to_preimage(), Cipher::Ed25519)
                     }
                 };
 
-                let sig = $crate::runtime::lyquor_api::sign(digest.to_vec().into(), cipher)?;
+                let sig = $crate::runtime::lyquor_api::sign(m.into(), cipher)?;
                 Ok(Response {
                     approval,
                     sig,

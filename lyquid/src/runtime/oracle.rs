@@ -158,25 +158,24 @@ impl OracleSrc {
             nonce,
         };
 
-        let yay_preimage = OraclePreimage {
+        let yay = OraclePreimage {
             header,
             params: params.clone(),
             approval: true,
         };
 
-        let nay_preimage = OraclePreimage {
+        let nay = OraclePreimage {
             header,
             params: params.clone(),
             approval: false,
         };
 
-        // Seal the yay/nay hash for the signature.
-        let (yay_hash, nay_hash) = match target {
+        let (yay_msg, nay_msg) = match target {
             OracleTarget::EVM(_) => (
-                eth::OraclePreimage::try_from(yay_preimage).unwrap().to_hash(),
-                eth::OraclePreimage::try_from(nay_preimage).unwrap().to_hash(),
+                eth::OraclePreimage::try_from(yay).unwrap().to_preimage(),
+                eth::OraclePreimage::try_from(nay).unwrap().to_preimage(),
             ),
-            OracleTarget::LVM(_) => (yay_preimage.to_hash(), nay_preimage.to_hash()),
+            OracleTarget::LVM(_) => (yay.to_preimage(), nay.to_preimage()),
         };
 
         let cert: Option<OracleCert> = lyquor_api::universal_procedural_call(
@@ -192,8 +191,8 @@ impl OracleSrc {
                     // Use oracle macro expected field "callee" for callee list and pass verification context.
                     callee: Vec<NodeID> = self.committee(),
                     header: OracleHeader = header,
-                    yay_hash: HashBytes = yay_hash.into(),
-                    nay_hash: HashBytes = nay_hash.into()
+                    yay_msg: Bytes = yay_msg.into(),
+                    nay_msg: Bytes = nay_msg.into()
                 )
                 .into(),
             ),
@@ -218,8 +217,8 @@ impl OracleSrc {
 /// UPC cache state for aggregation.
 pub struct Aggregation {
     header: OracleHeader,
-    yea_hash: Hash,
-    nay_hash: Hash,
+    yea_msg: Bytes,
+    nay_msg: Bytes,
 
     // Voting state
     voted: super::volatile::HashSet<NodeID>,
@@ -230,11 +229,11 @@ pub struct Aggregation {
 }
 
 impl Aggregation {
-    pub fn new(header: OracleHeader, yea_hash: Hash, nay_hash: Hash) -> Self {
+    pub fn new(header: OracleHeader, yea_msg: Bytes, nay_msg: Bytes) -> Self {
         Self {
             header,
-            yea_hash,
-            nay_hash,
+            yea_msg,
+            nay_msg,
             voted: super::volatile::new_hashset(),
             yea_sigs: Vec::new(),
             yea: 0,
@@ -248,12 +247,10 @@ impl Aggregation {
         // host API errors, treat this as a failed vote.
         let ok = super::lyquor_api::verify(
             match resp.approval {
-                true => self.yea_hash,
-                false => self.nay_hash,
+                true => &self.yea_msg,
+                false => &self.nay_msg,
             }
-            .as_bytes()
-            .to_vec()
-            .into(),
+            .clone(),
             resp.sig.clone(),
             match self.header.target {
                 OracleTarget::EVM(_) => lyquor_primitives::Cipher::Secp256k1,
@@ -284,7 +281,7 @@ impl Aggregation {
                     } else {
                         None
                     },
-                    cert: Certificate::new(self.yea_hash.into(), self.yea_sigs.clone(), &config),
+                    cert: Certificate::new(self.yea_sigs.clone(), &config),
                 }))
             } else if oracle.committee.len() - self.nay < oracle.threshold {
                 self.result = Some(None)
@@ -391,20 +388,15 @@ impl OracleDest {
         }
 
         // Ensure the preimage matches the signed digest.
-        let hash: HashBytes = OraclePreimage {
+        let msg = OraclePreimage {
             header: oc.header,
             params,
             approval: true,
         }
-        .to_hash()
-        .into();
-        if hash != oc.cert.digest {
-            // Mismatch digest.
-            return false;
-        }
+        .to_preimage();
 
         // Verify the validity of the OracleCert.
-        if !oc.verify(&self.config, &self.config_hash) {
+        if !oc.verify(&msg, &self.config, &self.config_hash) {
             // Invalid call certificate.
             return false;
         }

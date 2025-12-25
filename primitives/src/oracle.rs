@@ -50,8 +50,12 @@ pub struct OraclePreimage {
 }
 
 impl OraclePreimage {
+    pub fn to_preimage(&self) -> Vec<u8> {
+        encode_object(self)
+    }
+
     pub fn to_hash(&self) -> Hash {
-        blake3::hash(&encode_object(self))
+        blake3::hash(&self.to_preimage())
     }
 }
 
@@ -67,7 +71,7 @@ pub struct OracleCert {
 }
 
 impl OracleCert {
-    pub fn verify<'a>(&'a self, mut config: &'a OracleConfig, config_hash: &Hash) -> bool {
+    pub fn verify<'a>(&'a self, msg: &[u8], mut config: &'a OracleConfig, config_hash: &Hash) -> bool {
         match &self.new_config {
             Some(new_config) => {
                 let hash: HashBytes = new_config.to_hash().into();
@@ -85,7 +89,7 @@ impl OracleCert {
             }
         }
 
-        self.cert.verify(config)
+        self.cert.verify(msg, config)
     }
 }
 
@@ -95,13 +99,11 @@ pub struct Certificate {
     pub signers: Vec<u16>,
     /// Vote signatures.
     pub signatures: Vec<Bytes>,
-    /// Digest on which all signatures are signed.
-    pub digest: HashBytes,
 }
 
 impl Certificate {
     /// Map signers to committee indices to form bitmap, and serialize signatures.
-    pub fn new(digest: HashBytes, sigs: Vec<(OracleSigner, Signature)>, config: &OracleConfig) -> Self {
+    pub fn new(sigs: Vec<(OracleSigner, Signature)>, config: &OracleConfig) -> Self {
         // Build a look up table to find the signer's index.
         let mut index_of = std::collections::HashMap::new();
         for (i, s) in config.committee.iter().enumerate() {
@@ -115,14 +117,10 @@ impl Certificate {
                 signatures.push(sig);
             }
         }
-        Self {
-            signers,
-            signatures,
-            digest,
-        }
+        Self { signers, signatures }
     }
 
-    pub fn verify(&self, config: &OracleConfig) -> bool {
+    pub fn verify(&self, msg: &[u8], config: &OracleConfig) -> bool {
         if self.signers.len() != self.signatures.len() {
             // Malformed certificate.
             return false;
@@ -145,7 +143,7 @@ impl Certificate {
                 Ok(s) => s,
                 Err(_) => return false,
             };
-            if signer.key.0.verify(self.digest.as_bytes(), &sig).is_err() {
+            if signer.key.0.verify(msg, &sig).is_err() {
                 return false;
             }
         }
@@ -184,8 +182,12 @@ pub mod eth {
     }
 
     impl OraclePreimage {
+        pub fn to_preimage(&self) -> Vec<u8> {
+            Self::abi_encode(self)
+        }
+
         pub fn to_hash(&self) -> super::Hash {
-            alloy_primitives::keccak256(&OraclePreimage::abi_encode(self)).0.into()
+            alloy_primitives::keccak256(&self.to_preimage()).0.into()
         }
     }
 
