@@ -4,8 +4,6 @@ pub extern crate serde;
 use std::fmt;
 use std::sync::Arc;
 
-use ed25519_compact::PublicKey;
-
 pub use alloy_primitives::hex;
 pub use alloy_primitives::{self, Address, B256, U32, U64, U128, U256, address, uint};
 pub use blake3;
@@ -196,52 +194,6 @@ impl fmt::Debug for CallParams {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PubKey(pub PublicKey);
-
-impl From<PublicKey> for PubKey {
-    fn from(pk: PublicKey) -> Self {
-        Self(pk)
-    }
-}
-
-impl From<PubKey> for PublicKey {
-    fn from(pk: PubKey) -> Self {
-        pk.0
-    }
-}
-
-impl std::ops::Deref for PubKey {
-    type Target = PublicKey;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Serialize for PubKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_bytes(self.0.as_ref())
-    }
-}
-
-impl<'de> Deserialize<'de> for PubKey {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bytes: Vec<u8> = Deserialize::deserialize(deserializer)?;
-        if bytes.len() != PublicKey::BYTES {
-            return Err(serde::de::Error::invalid_length(bytes.len(), &"32 bytes"));
-        }
-        let pk = PublicKey::from_slice(&bytes).map_err(|_| serde::de::Error::custom("invalid ed25519 public key"))?;
-        Ok(PubKey(pk))
-    }
-}
-
 pub const GROUP_DEFAULT: &str = "main";
 pub const GROUP_NODE: &str = "node";
 pub const GROUP_UPC_PREPARE: &str = "upc::prepare";
@@ -401,3 +353,6 @@ pub enum Cipher {
     Ed25519,
     Secp256k1,
 }
+
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct PublicKey(pub [u8; 32]);

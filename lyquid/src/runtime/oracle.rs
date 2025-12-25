@@ -1,6 +1,6 @@
 use super::{Deserialize, LyquidError, LyquidID, LyquidResult, NodeID, Serialize, StateAccessor, lyquor_api};
 pub use lyquor_primitives::oracle::{
-    Certificate, OracleCert, OracleConfig, OracleHeader, OraclePreimage, OracleSigner, OracleTarget, eth,
+    OracleCert, OracleConfig, OracleHeader, OraclePreimage, OracleSigner, OracleTarget, eth,
 };
 use lyquor_primitives::{Address, Bytes, CallParams, Hash, HashBytes, InputABI, Signature};
 
@@ -52,8 +52,8 @@ impl OracleSrc {
                 committee: config
                     .committee
                     .into_iter()
-                    .map(|s| lyquor_api::eth_address_by_node(s.id).unwrap())
-                    .collect(),
+                    .map(|s| lyquor_api::get_ed25519_address(s.key).unwrap().unwrap())
+                    .collect(), // FIMXE
                 threshold: config.threshold as u16,
             }
             .to_hash(),
@@ -81,7 +81,7 @@ impl OracleSrc {
 
     /// Add a node to the committee. If the node exists, returns false.
     pub fn add_node(&mut self, id: NodeID) -> bool {
-        let key = id.as_ed25519_public_key().into();
+        let key = lyquor_primitives::PublicKey(id.0);
         let signer = OracleSigner { id, key };
         if self.committee.insert(id, signer).is_some() {
             return false;
@@ -228,6 +228,51 @@ pub struct Aggregation {
     result: Option<Option<OracleCert>>,
 }
 
+fn verify_oracle_cert<'a>(oc: &'a OracleCert, msg: Bytes, mut config: &'a OracleConfig, config_hash: &Hash) -> bool {
+    match &oc.new_config {
+        Some(new_config) => {
+            let hash: HashBytes = new_config.to_hash().into();
+            if hash != oc.header.config_hash {
+                // Config mismatch.
+                return false;
+            }
+            config = new_config
+        }
+        None => {
+            if &*oc.header.config_hash != config_hash {
+                // Config mismatch.
+                return false;
+            }
+        }
+    }
+
+    if oc.signers.len() != oc.signatures.len() {
+        // Malformed certificate.
+        return false;
+    }
+
+    if oc.signers.len() < config.threshold {
+        // Threshold not met.
+        return false
+    }
+
+    for (idx, sig) in oc.signers.iter().zip(oc.signatures.iter().take(config.threshold)) {
+        let idx = (*idx) as usize;
+        let signer = if idx < config.committee.len() {
+            &config.committee[idx]
+        } else {
+            // Invalid signer index.
+            return false
+        };
+        if !super::lyquor_api::verify(msg.clone(), lyquor_primitives::Cipher::Ed25519, sig.clone(), signer.key)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+    }
+    true
+}
+
 impl Aggregation {
     pub fn new(header: OracleHeader, yea_msg: Bytes, nay_msg: Bytes) -> Self {
         Self {
@@ -245,20 +290,26 @@ impl Aggregation {
     pub fn add_response(&mut self, node: NodeID, resp: Response, oracle: &OracleSrc) -> Option<Option<OracleCert>> {
         // Delegate signature verification to the host-side API. If verification fails or the
         // host API errors, treat this as a failed vote.
-        let ok = super::lyquor_api::verify(
-            match resp.approval {
-                true => &self.yea_msg,
-                false => &self.nay_msg,
-            }
-            .clone(),
-            resp.sig.clone(),
-            match self.header.target {
-                OracleTarget::EVM(_) => lyquor_primitives::Cipher::Secp256k1,
-                OracleTarget::LVM(_) => lyquor_primitives::Cipher::Ed25519,
-            },
-            node,
-        )
-        .unwrap_or(false);
+        let ok = oracle
+            .committee
+            .get(&node)
+            .and_then(|s| {
+                super::lyquor_api::verify(
+                    match resp.approval {
+                        true => &self.yea_msg,
+                        false => &self.nay_msg,
+                    }
+                    .clone(),
+                    match self.header.target {
+                        OracleTarget::EVM(_) => lyquor_primitives::Cipher::Secp256k1,
+                        OracleTarget::LVM(_) => lyquor_primitives::Cipher::Ed25519,
+                    },
+                    resp.sig.clone(),
+                    s.key,
+                )
+                .ok()
+            })
+            .unwrap_or(false);
         if ok && self.voted.insert(node) {
             match resp.approval {
                 true => {
@@ -274,6 +325,21 @@ impl Aggregation {
             crate::println!("yea = {}, thres = {}", self.yea, oracle.threshold);
             if self.yea >= oracle.threshold {
                 let config = oracle.consolidate_config();
+
+                // Build a look up table to find the signer's index.
+                let mut index_of = std::collections::HashMap::new();
+                for (i, s) in config.committee.iter().enumerate() {
+                    index_of.insert(s.id, i);
+                }
+                let mut signers: Vec<u16> = Vec::new();
+                let mut signatures = Vec::new();
+                for (signer, sig) in self.yea_sigs.clone().into_iter() {
+                    if let Some(i) = index_of.get(&signer.id).copied() {
+                        signers.push(i as u16);
+                        signatures.push(sig);
+                    }
+                }
+
                 self.result = Some(Some(OracleCert {
                     header: self.header,
                     new_config: if oracle.config_update {
@@ -281,7 +347,8 @@ impl Aggregation {
                     } else {
                         None
                     },
-                    cert: Certificate::new(self.yea_sigs.clone(), &config),
+                    signers,
+                    signatures,
                 }))
             } else if oracle.committee.len() - self.nay < oracle.threshold {
                 self.result = Some(None)
@@ -393,10 +460,11 @@ impl OracleDest {
             params,
             approval: true,
         }
-        .to_preimage();
+        .to_preimage()
+        .into();
 
         // Verify the validity of the OracleCert.
-        if !oc.verify(&msg, &self.config, &self.config_hash) {
+        if !verify_oracle_cert(&oc, msg, &self.config, &self.config_hash) {
             // Invalid call certificate.
             return false;
         }

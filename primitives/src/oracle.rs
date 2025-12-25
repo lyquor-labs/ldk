@@ -27,7 +27,7 @@ pub struct OracleHeader {
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct OracleSigner {
     pub id: NodeID,
-    pub key: PubKey,
+    pub key: PublicKey,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -66,89 +66,10 @@ pub struct OracleCert {
     /// If Some, a new config is agreed upon for this and following certificates, and becomes
     /// effective until the next update.
     pub new_config: Option<OracleConfig>,
-    /// Certifies a threshold approval for a digest (Certificate.digest).
-    pub cert: Certificate,
-}
-
-impl OracleCert {
-    pub fn verify<'a>(&'a self, msg: &[u8], mut config: &'a OracleConfig, config_hash: &Hash) -> bool {
-        match &self.new_config {
-            Some(new_config) => {
-                let hash: HashBytes = new_config.to_hash().into();
-                if hash != self.header.config_hash {
-                    // Config mismatch.
-                    return false;
-                }
-                config = new_config
-            }
-            None => {
-                if &*self.header.config_hash != config_hash {
-                    // Config mismatch.
-                    return false;
-                }
-            }
-        }
-
-        self.cert.verify(msg, config)
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-pub struct Certificate {
     /// The index for each signer in the committee list of OracleConfig.
     pub signers: Vec<u16>,
     /// Vote signatures.
     pub signatures: Vec<Bytes>,
-}
-
-impl Certificate {
-    /// Map signers to committee indices to form bitmap, and serialize signatures.
-    pub fn new(sigs: Vec<(OracleSigner, Signature)>, config: &OracleConfig) -> Self {
-        // Build a look up table to find the signer's index.
-        let mut index_of = std::collections::HashMap::new();
-        for (i, s) in config.committee.iter().enumerate() {
-            index_of.insert(s.id, i);
-        }
-        let mut signers: Vec<u16> = Vec::new();
-        let mut signatures = Vec::new();
-        for (signer, sig) in sigs.into_iter() {
-            if let Some(i) = index_of.get(&signer.id).copied() {
-                signers.push(i as u16);
-                signatures.push(sig);
-            }
-        }
-        Self { signers, signatures }
-    }
-
-    pub fn verify(&self, msg: &[u8], config: &OracleConfig) -> bool {
-        if self.signers.len() != self.signatures.len() {
-            // Malformed certificate.
-            return false;
-        }
-
-        if self.signers.len() < config.threshold {
-            // Threshold not met.
-            return false
-        }
-
-        for (idx, sig) in self.signers.iter().zip(self.signatures.iter().take(config.threshold)) {
-            let idx = (*idx) as usize;
-            let signer = if idx < config.committee.len() {
-                &config.committee[idx]
-            } else {
-                // Invalid signer index.
-                return false
-            };
-            let sig = match ed25519_compact::Signature::from_slice(sig) {
-                Ok(s) => s,
-                Err(_) => return false,
-            };
-            if signer.key.0.verify(msg, &sig).is_err() {
-                return false;
-            }
-        }
-        true
-    }
 }
 
 pub mod eth {

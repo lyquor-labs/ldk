@@ -48,10 +48,6 @@ impl NodeID {
         u64::from_be_bytes(self.0[32 - 8..].try_into().unwrap())
     }
 
-    pub fn as_ed25519_public_key(&self) -> ed25519_compact::PublicKey {
-        ed25519_compact::PublicKey::from_slice(&self.0).unwrap()
-    }
-
     pub fn as_dns_label(&self) -> String {
         // Combine the ID and checksum into a single array
         let mut id: [u8; 35] = [0; 35];

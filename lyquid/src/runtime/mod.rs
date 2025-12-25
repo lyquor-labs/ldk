@@ -236,12 +236,12 @@ pub mod lyquor_api {
         ) -> lyquor_primitives::Signature;
         verify(
             msg: Bytes,
-            sig: lyquor_primitives::Signature,
             cipher: lyquor_primitives::Cipher,
-            signer: NodeID
+            sig: Bytes,
+            signer: lyquor_primitives::PublicKey
         ) -> bool;
         random_bytes(length: usize) -> Vec<u8>;
-        eth_address_by_node(node: NodeID) -> Address;
+        get_ed25519_address(pubkey: lyquor_primitives::PublicKey) -> Option<Address>;
     );
 }
 
