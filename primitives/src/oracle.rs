@@ -24,10 +24,10 @@ pub struct OracleHeader {
     pub nonce: HashBytes,
 }
 
-#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleSigner {
     pub id: NodeID,
-    pub key: PublicKey,
+    pub key: Bytes,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]

@@ -346,13 +346,9 @@ macro_rules! debug_struct_name {
     };
 }
 
-pub type Signature = Bytes;
 /// Signature scheme used when requesting signatures from the host.
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Cipher {
     Ed25519,
     Secp256k1,
 }
-
-#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PublicKey(pub [u8; 32]);

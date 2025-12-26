@@ -530,18 +530,10 @@ macro_rules! __lyquid_categorize_methods {
                 &mut ctx,
                 msg: $crate::runtime::oracle::Request
             ) -> LyquidResult<$crate::runtime::oracle::Response> {
-                use $crate::lyquor_primitives::Cipher;
-                use $crate::runtime::oracle::{OracleTarget, OraclePreimage, Response, eth};
-                use $crate::alloy_dyn_abi::SolType;
+                // TODO: check if msg.proposer matches the UPC sender.
 
-                let phash = ctx.network.$name.config_hash();
-                let config_hash = match msg.header.target {
-                    OracleTarget::LVM(_) => phash.lvm,
-                    OracleTarget::EVM(_) => phash.evm,
-                };
-
-                if config_hash != *msg.header.config_hash {
-                    return Err(LyquidError::LyquidRuntime("Mismatch config hash".into()))
+                if !ctx.network.$name.__pre_validation(&msg.header) {
+                    return Err(LyquidError::LyquidRuntime("Mismatch config".into()))
                 }
 
                 let approval = {
@@ -550,26 +542,7 @@ macro_rules! __lyquid_categorize_methods {
                     $body
                 }?;
 
-                let preimage = OraclePreimage {
-                    header: msg.header,
-                    params: msg.params,
-                    approval,
-                };
-
-                let (m, cipher) = match msg.header.target {
-                    OracleTarget::EVM(_) => {
-                        (eth::OraclePreimage::try_from(preimage).unwrap().to_preimage(), Cipher::Secp256k1)
-                    },
-                    OracleTarget::LVM(_) => {
-                        (preimage.to_preimage(), Cipher::Ed25519)
-                    }
-                };
-
-                let sig = $crate::runtime::lyquor_api::sign(m.into(), cipher)?;
-                Ok(Response {
-                    approval,
-                    sig,
-                })
+                ctx.network.$name.__post_validation(msg.header, msg.params, approval)
             } $($rest)*
          }, {$($network_funcs)*}, {$($instance_funcs)*});
      };

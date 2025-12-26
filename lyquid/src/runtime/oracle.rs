@@ -1,20 +1,7 @@
 use super::{Deserialize, LyquidError, LyquidID, LyquidResult, NodeID, Serialize, StateAccessor, lyquor_api};
-pub use lyquor_primitives::oracle::{
-    OracleCert, OracleConfig, OracleHeader, OraclePreimage, OracleSigner, OracleTarget, eth,
-};
-use lyquor_primitives::{Address, Bytes, CallParams, Hash, HashBytes, InputABI, Signature};
-
-pub struct Digest {
-    pub lvm: Hash,
-    pub evm: Hash,
-}
-
-impl Digest {
-    const ZERO: Digest = Digest {
-        lvm: Hash::from_bytes([0; 32]),
-        evm: Hash::from_bytes([0; 32]),
-    };
-}
+pub use lyquor_primitives::oracle::{OracleCert, OracleHeader, OracleTarget};
+use lyquor_primitives::oracle::{OracleConfig, OraclePreimage, OracleSigner, eth};
+use lyquor_primitives::{Address, Bytes, CallParams, Cipher, Hash, HashBytes, InputABI};
 
 /// UPC message sent to each validator.
 ///
@@ -31,38 +18,78 @@ pub struct Request {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Response {
     pub approval: bool,
-    pub sig: Signature,
+    pub sig: Bytes,
+}
+
+struct Signer {
+    id: NodeID,
+    lvm: [u8; 32], // ed25519 native key
+    evm: Address,  // Secp256k1 signer's address
+}
+
+impl Signer {
+    fn get_pubkey(&self, cipher: Cipher) -> Bytes {
+        match cipher {
+            Cipher::Ed25519 => Bytes::copy_from_slice(&self.lvm),
+            Cipher::Secp256k1 => Bytes::copy_from_slice(self.evm.as_ref()),
+        }
+    }
+
+    fn to_wire(&self, cipher: Cipher) -> OracleSigner {
+        OracleSigner {
+            id: self.id,
+            key: self.get_pubkey(cipher),
+        }
+    }
+}
+
+struct Digest {
+    lvm: Hash,
+    evm: Hash,
+}
+
+impl Digest {
+    const ZERO: Digest = Digest {
+        lvm: Hash::from_bytes([0; 32]),
+        evm: Hash::from_bytes([0; 32]),
+    };
 }
 
 /// Network state for the source (call generation) chain.
 pub struct OracleSrc {
     id: &'static str,
     threshold: usize,
-    committee: super::network::HashMap<NodeID, OracleSigner>,
+    committee: super::network::HashMap<NodeID, Signer>,
     config_hash: Digest,
     config_update: bool,
 }
 
 impl OracleSrc {
     fn updated_config(&mut self) {
-        let config = self.consolidate_config();
         self.config_hash = Digest {
-            lvm: config.to_hash(),
-            evm: eth::OracleConfig {
-                committee: config
-                    .committee
-                    .into_iter()
-                    .map(|s| lyquor_api::get_ed25519_address(s.key).unwrap().unwrap())
-                    .collect(), // FIMXE
-                threshold: config.threshold as u16,
+            lvm: self.consolidate_config(Cipher::Ed25519).to_hash(),
+            evm: {
+                let config = self.consolidate_config(Cipher::Secp256k1);
+                eth::OracleConfig {
+                    committee: config
+                        .committee
+                        .into_iter()
+                        .map(|s| Address::try_from(s.key.as_ref()).unwrap())
+                        .collect(),
+                    threshold: config.threshold as u16,
+                }
             }
             .to_hash(),
         };
         self.config_update = true;
     }
 
-    fn consolidate_config(&self) -> OracleConfig {
-        let committee: Vec<OracleSigner> = self.committee.values().cloned().collect();
+    // Consolidate the current config into the wire format (that can be hashed or used as part of
+    // the signed payload).
+    fn consolidate_config(&self, cipher: Cipher) -> OracleConfig {
+        // TODO: Sort by the node id.
+        let committee: Vec<OracleSigner> = self.committee.values().map(|s| s.to_wire(cipher)).collect();
+
         OracleConfig {
             committee,
             threshold: self.threshold,
@@ -81,8 +108,10 @@ impl OracleSrc {
 
     /// Add a node to the committee. If the node exists, returns false.
     pub fn add_node(&mut self, id: NodeID) -> bool {
-        let key = lyquor_primitives::PublicKey(id.0);
-        let signer = OracleSigner { id, key };
+        let lvm = id.0;
+        let evm = lyquor_api::get_ed25519_address(lvm).unwrap().unwrap();
+
+        let signer = Signer { id, lvm, evm };
         if self.committee.insert(id, signer).is_some() {
             return false;
         }
@@ -189,7 +218,7 @@ impl OracleSrc {
             Some(
                 lyquor_primitives::encode_by_fields!(
                     // Use oracle macro expected field "callee" for callee list and pass verification context.
-                    callee: Vec<NodeID> = self.committee(),
+                    callee: Vec<NodeID> = self.committee.keys().cloned().collect(),
                     header: OracleHeader = header,
                     yay_msg: Bytes = yay_msg.into(),
                     nay_msg: Bytes = nay_msg.into()
@@ -205,12 +234,33 @@ impl OracleSrc {
         }))
     }
 
-    pub fn committee(&self) -> Vec<NodeID> {
-        self.committee.keys().cloned().collect()
+    pub fn __pre_validation(&self, header: &OracleHeader) -> bool {
+        let hash = match header.target {
+            OracleTarget::LVM(_) => self.config_hash.lvm,
+            OracleTarget::EVM(_) => self.config_hash.evm,
+        };
+        hash == *header.config_hash
     }
 
-    pub fn config_hash(&self) -> &Digest {
-        &self.config_hash
+    pub fn __post_validation(
+        &self, header: OracleHeader, params: CallParams, approval: bool,
+    ) -> LyquidResult<Response> {
+        let preimage = OraclePreimage {
+            header,
+            params,
+            approval,
+        };
+
+        let (m, cipher) = match header.target {
+            OracleTarget::EVM(_) => (
+                eth::OraclePreimage::try_from(preimage).unwrap().to_preimage(),
+                Cipher::Secp256k1,
+            ),
+            OracleTarget::LVM(_) => (preimage.to_preimage(), Cipher::Ed25519),
+        };
+
+        let sig = lyquor_api::sign(m.into(), cipher)?;
+        Ok(Response { approval, sig })
     }
 }
 
@@ -222,7 +272,7 @@ pub struct Aggregation {
 
     // Voting state
     voted: super::volatile::HashSet<NodeID>,
-    yea_sigs: Vec<(OracleSigner, Signature)>,
+    yea_sigs: Vec<(OracleSigner, Bytes)>,
     yea: usize,
     nay: usize,
     result: Option<Option<OracleCert>>,
@@ -264,9 +314,7 @@ fn verify_oracle_cert<'a>(oc: &'a OracleCert, msg: Bytes, mut config: &'a Oracle
             // Invalid signer index.
             return false
         };
-        if !super::lyquor_api::verify(msg.clone(), lyquor_primitives::Cipher::Ed25519, sig.clone(), signer.key)
-            .unwrap_or(false)
-        {
+        if !super::lyquor_api::verify(msg.clone(), Cipher::Ed25519, sig.clone(), signer.key.clone()).unwrap_or(false) {
             return false;
         }
     }
@@ -290,6 +338,10 @@ impl Aggregation {
     pub fn add_response(&mut self, node: NodeID, resp: Response, oracle: &OracleSrc) -> Option<Option<OracleCert>> {
         // Delegate signature verification to the host-side API. If verification fails or the
         // host API errors, treat this as a failed vote.
+        let cipher = match self.header.target {
+            OracleTarget::EVM(_) => Cipher::Secp256k1,
+            OracleTarget::LVM(_) => Cipher::Ed25519,
+        };
         let ok = oracle
             .committee
             .get(&node)
@@ -300,12 +352,9 @@ impl Aggregation {
                         false => &self.nay_msg,
                     }
                     .clone(),
-                    match self.header.target {
-                        OracleTarget::EVM(_) => lyquor_primitives::Cipher::Secp256k1,
-                        OracleTarget::LVM(_) => lyquor_primitives::Cipher::Ed25519,
-                    },
+                    cipher,
                     resp.sig.clone(),
-                    s.key,
+                    s.get_pubkey(cipher),
                 )
                 .ok()
             })
@@ -313,8 +362,14 @@ impl Aggregation {
         if ok && self.voted.insert(node) {
             match resp.approval {
                 true => {
-                    self.yea_sigs
-                        .push((*oracle.committee.get(&node).unwrap(), resp.sig.clone()));
+                    let signer = oracle.committee.get(&node).unwrap();
+                    self.yea_sigs.push((
+                        OracleSigner {
+                            id: signer.id,
+                            key: signer.get_pubkey(cipher),
+                        },
+                        resp.sig.clone(),
+                    ));
                     self.yea += 1
                 }
                 false => self.nay += 1,
@@ -324,7 +379,7 @@ impl Aggregation {
         if self.result.is_none() {
             crate::println!("yea = {}, thres = {}", self.yea, oracle.threshold);
             if self.yea >= oracle.threshold {
-                let config = oracle.consolidate_config();
+                let config = oracle.consolidate_config(cipher);
 
                 // Build a look up table to find the signer's index.
                 let mut index_of = std::collections::HashMap::new();

@@ -230,18 +230,10 @@ pub mod lyquor_api {
         universal_procedural_call(target: LyquidID, group: Option<String>, method: String, input: Vec<u8>, client_params: Option<Bytes>) -> Vec<u8>;
         inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
         submit_call(params: lyquor_primitives::CallParams, signed: bool) -> Vec<u8>;
-        sign(
-            msg: Bytes,
-            cipher: lyquor_primitives::Cipher
-        ) -> lyquor_primitives::Signature;
-        verify(
-            msg: Bytes,
-            cipher: lyquor_primitives::Cipher,
-            sig: Bytes,
-            signer: lyquor_primitives::PublicKey
-        ) -> bool;
+        sign(msg: Bytes, cipher: lyquor_primitives::Cipher) -> Bytes;
+        verify(msg: Bytes, cipher: lyquor_primitives::Cipher, sig: Bytes, pubkey: Bytes) -> bool;
         random_bytes(length: usize) -> Vec<u8>;
-        get_ed25519_address(pubkey: lyquor_primitives::PublicKey) -> Option<Address>;
+        get_ed25519_address(pubkey: [u8; 32]) -> Option<Address>;
     );
 }
 
