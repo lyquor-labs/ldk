@@ -9,7 +9,7 @@ use super::Address;
 /// The ID of a node in the network.
 /// The ID is 35 bytes long, the first 32 bytes are the node's ed25519 public key,
 /// and the following 2 bytes are checksums, the last byte is the version number (0)
-#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeID(pub [u8; 32], pub [u8; 3]);
 
 impl NodeID {

@@ -102,6 +102,15 @@ pub mod eth {
         }
     }
 
+    impl Default for OracleConfig {
+        fn default() -> Self {
+            Self {
+                committee: Default::default(),
+                threshold: Default::default(),
+            }
+        }
+    }
+
     impl OraclePreimage {
         pub fn to_preimage(&self) -> Vec<u8> {
             Self::abi_encode(self)
@@ -137,6 +146,19 @@ pub mod eth {
                 config_hash: <[u8; 32]>::from(oh.configHash).into(),
                 epoch: oh.epoch,
                 nonce: <[u8; 32]>::from(oh.nonce).into(),
+            }
+        }
+    }
+
+    impl From<super::OracleConfig> for OracleConfig {
+        fn from(oc: super::OracleConfig) -> Self {
+            Self {
+                committee: oc
+                    .committee
+                    .into_iter()
+                    .map(|s| s.key.as_ref().try_into().unwrap())
+                    .collect(),
+                threshold: oc.threshold as u16,
             }
         }
     }

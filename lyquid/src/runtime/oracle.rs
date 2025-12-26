@@ -68,18 +68,7 @@ impl OracleSrc {
     fn updated_config(&mut self) {
         self.config_hash = Digest {
             lvm: self.consolidate_config(Cipher::Ed25519).to_hash(),
-            evm: {
-                let config = self.consolidate_config(Cipher::Secp256k1);
-                eth::OracleConfig {
-                    committee: config
-                        .committee
-                        .into_iter()
-                        .map(|s| Address::try_from(s.key.as_ref()).unwrap())
-                        .collect(),
-                    threshold: config.threshold as u16,
-                }
-            }
-            .to_hash(),
+            evm: eth::OracleConfig::from(self.consolidate_config(Cipher::Secp256k1)).to_hash(),
         };
         self.config_update = true;
     }
@@ -87,8 +76,8 @@ impl OracleSrc {
     // Consolidate the current config into the wire format (that can be hashed or used as part of
     // the signed payload).
     fn consolidate_config(&self, cipher: Cipher) -> OracleConfig {
-        // TODO: Sort by the node id.
-        let committee: Vec<OracleSigner> = self.committee.values().map(|s| s.to_wire(cipher)).collect();
+        let mut committee: Vec<OracleSigner> = self.committee.values().map(|s| s.to_wire(cipher)).collect();
+        committee.sort_by_key(|s| s.id);
 
         OracleConfig {
             committee,
