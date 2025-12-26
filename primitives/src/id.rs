@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::hex::{self, FromHex};
 use serde::{Deserialize, Serialize};
-use sha3::Digest;
+use sha2::Digest;
 
 use super::Address;
 
@@ -15,8 +15,8 @@ pub struct NodeID(pub [u8; 32], pub [u8; 3]);
 impl NodeID {
     pub fn new(id: [u8; 32]) -> Self {
         let mut checksum = [0; 3];
-        // Calculate SHA3-256 hash of the ID
-        let mut hash = sha3::Sha3_256::default();
+        // Calculate SHA-256 hash of the ID
+        let mut hash = sha2::Sha256::default();
         hash.update(&id);
         let hash = hash.finalize();
         // Take the first two bytes of the hash as the checksum
@@ -24,20 +24,6 @@ impl NodeID {
         checksum[1] = hash[1];
         checksum[2] = 0; // v0
         Self(id, checksum)
-    }
-}
-
-impl From<u64> for NodeID {
-    fn from(x: u64) -> NodeID {
-        let mut id = [0; 32];
-        id[32 - 8..].copy_from_slice(&x.to_be_bytes());
-        NodeID::new(id)
-    }
-}
-
-impl From<ed25519_compact::PublicKey> for NodeID {
-    fn from(pk: ed25519_compact::PublicKey) -> Self {
-        NodeID::new(*pk)
     }
 }
 
@@ -54,6 +40,14 @@ impl NodeID {
         id[..32].copy_from_slice(&self.0);
         id[32..].copy_from_slice(&self.1);
         base32::encode(Self::ALPHABET, &id)
+    }
+}
+
+impl From<u64> for NodeID {
+    fn from(x: u64) -> NodeID {
+        let mut id = [0; 32];
+        id[32 - 8..].copy_from_slice(&x.to_be_bytes());
+        NodeID::new(id)
     }
 }
 
@@ -306,18 +300,18 @@ mod tests {
     #[test]
     fn test_hex() {
         let kp = KeyPair::from_seed([42u8; 32].into());
-        let id = NodeID::from(kp.pk);
+        let id = NodeID::from(*kp.pk);
         let hex = hex::encode(*kp.pk);
         let decoded_id = NodeID::from_hex(&hex).unwrap();
         assert_eq!(id, decoded_id);
         assert_eq!(hex, "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61");
         assert_eq!(
             id.to_string(),
-            "Node-df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvqvfyya"
+            "Node-df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvq3maaa"
         );
         assert_eq!(
             id.as_dns_label(),
-            "df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvqvfyya"
+            "df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvq3maaa"
         );
     }
 
