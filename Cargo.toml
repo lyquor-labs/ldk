@@ -21,7 +21,7 @@ anyhow = "1.0"
 async-trait = "0.1"
 aws-lc-rs = "1.15"
 bytes = "1.11"
-derivative = "2.2.0"
+derive_more = { version = "2.1", features = ["debug"] }
 ed25519-compact = { version = "2", default-features = false }
 figment = { version = "0.10", features = ["toml", "json", "yaml"] }
 futures = "0.3"
