@@ -53,7 +53,6 @@ lyquor-vm = { path = "vm" }
 parking_lot = { version = "0.12" }
 rand = "0.9"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
-rustls-pemfile = { version = "2.2" }
 rustls-pki-types = { version = "1.13" }
 rustls-webpki = { version = "0.103.8", features = ["aws-lc-rs"] }
 schemars = "1.1"
