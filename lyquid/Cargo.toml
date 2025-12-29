@@ -10,8 +10,8 @@ description = "Lyquid Development Kit (LDK)."
 
 [dependencies]
 lyquid-proc = { version = "0.0.1", optional = true, path = "./proc" }
-lyquor-primitives = { version = "0.0.1", path = "../primitives" }
-serde = { version = "1.0", features = ["derive"], default-features = false }
+lyquor-primitives = { workspace = true }
+serde = { workspace = true }
 talc = { optional = true, version = "4.4.3", features = ["allocator"], default-features = false }
 #allocator-api2 = { optional = true, version = "0.2", features = ["serde"] }
 ahash = { optional = true, version = "0.8.12", features = ["no-rng"], default-features = false }
