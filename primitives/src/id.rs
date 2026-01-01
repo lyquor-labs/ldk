@@ -9,7 +9,7 @@ use super::Address;
 /// The ID of a node in the network.
 /// The ID is 35 bytes long, the first 32 bytes are the node's ed25519 public key,
 /// and the following 2 bytes are checksums, the last byte is the version number (0)
-#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeID(pub [u8; 32], pub [u8; 3]);
 
 impl NodeID {
@@ -98,9 +98,62 @@ impl FromHex for NodeID {
     }
 }
 
+impl std::str::FromStr for NodeID {
+    type Err = IDError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        const PREFIX: &str = "Node-";
+        if s.len() < PREFIX.len() || &s[..PREFIX.len()] != PREFIX {
+            return Err(IDError::Prefix);
+        }
+        let label = &s[PREFIX.len()..];
+        let bytes = base32::decode(NodeID::ALPHABET, label).ok_or(IDError::Base32)?;
+        if bytes.len() != 35 {
+            return Err(IDError::Length);
+        }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&bytes[..32]);
+        let mut checksum = [0u8; 3];
+        checksum.copy_from_slice(&bytes[32..]);
+        let provided = NodeID(id, checksum);
+        let computed = NodeID::new(id);
+        if provided != computed {
+            return Err(IDError::Checksum);
+        }
+        Ok(computed)
+    }
+}
+
 impl AsRef<[u8]> for NodeID {
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl Serialize for NodeID {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&self.to_string())
+        } else {
+            (self.0, self.1).serialize(serializer)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeID {
+    fn deserialize<D>(deserializer: D) -> Result<NodeID, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            let s: std::borrow::Cow<'de, str> = Deserialize::deserialize(deserializer)?;
+            s.parse().map_err(|e| serde::de::Error::custom(format!("{e:?}")))
+        } else {
+            let (id, checksum) = <([u8; 32], [u8; 3]) as Deserialize>::deserialize(deserializer)?;
+            Ok(NodeID(id, checksum))
+        }
     }
 }
 
@@ -129,7 +182,7 @@ impl<'de> Deserialize<'de> for LyquidID {
         D: serde::Deserializer<'de>,
     {
         if deserializer.is_human_readable() {
-            let s = <&str as Deserialize>::deserialize(deserializer)?;
+            let s: std::borrow::Cow<'de, str> = Deserialize::deserialize(deserializer)?;
             s.parse().map_err(|e| serde::de::Error::custom(format!("{e:?}")))
         } else {
             let arr = <[u8; 20] as Deserialize>::deserialize(deserializer)?;
@@ -223,6 +276,8 @@ impl FromHex for LyquidID {
 pub enum IDError {
     Prefix,
     CB58,
+    Base32,
+    Checksum,
     Length,
 }
 
@@ -309,6 +364,7 @@ mod tests {
             id.to_string(),
             "Node-df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvq3maaa"
         );
+        assert_eq!(id.to_string().parse::<NodeID>().unwrap(), id);
         assert_eq!(
             id.as_dns_label(),
             "df7wwi7bnsctfrvlza4pvtk6u6e34ddwwkjagnadtp5iwpjwrvq3maaa"
