@@ -98,7 +98,10 @@ impl OracleSrc {
     /// Add a node to the committee. If the node exists, returns false.
     pub fn add_node(&mut self, id: NodeID) -> bool {
         let lvm = id.0;
-        let evm = lyquor_api::get_ed25519_address(lvm).unwrap().unwrap();
+        let evm = lyquor_api::get_ed25519_address(lvm)
+            .ok()
+            .flatten()
+            .unwrap_or(Address::ZERO);
 
         let signer = Signer { id, lvm, evm };
         if self.committee.insert(id, signer).is_some() {

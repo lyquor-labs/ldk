@@ -1,7 +1,7 @@
 #![feature(allocator_api)]
 use lyquid::runtime::*;
-use serde::*;
 use lyquor_primitives::RegisterEvent;
+use serde::*;
 
 #[derive(Serialize, Clone, Debug)]
 struct DeployInfo {
@@ -12,6 +12,10 @@ struct LyquidMetadata {
     owner: Address,
     deploy_history: network::Vec<DeployInfo>,
     dependencies: network::Vec<LyquidID>,
+}
+
+struct NodeMetadata {
+    addr: Address,
 }
 
 #[derive(Serialize)]
@@ -25,23 +29,23 @@ lyquid::state! {
     network lyquid_registry: network::HashMap<LyquidID, LyquidMetadata> = network::new_hashmap();
     network owner_nonce: network::HashMap<Address, u64> = network::new_hashmap();
     network eth_addrs: network::HashMap<Address, LyquidID> = network::new_hashmap();
+    network node_registry: network::HashMap<NodeID, NodeMetadata> = network::new_hashmap();
 }
 
-fn next_lyquid_id(ctx: &mut __lyquid::NetworkContext, owner: Address, contract: Address, deps: Vec<LyquidID>) -> LyquidID {
+fn next_lyquid_id(
+    ctx: &mut __lyquid::NetworkContext, owner: Address, contract: Address, deps: Vec<LyquidID>,
+) -> LyquidID {
     let id = {
         let nonce = ctx.network.owner_nonce.entry(owner).or_insert(0);
         let id = LyquidID::from_owner_nonce(&owner, *nonce);
         *nonce += 1;
         id
     };
-    let metadata = ctx.network
-        .lyquid_registry
-        .entry(id)
-        .or_insert_with(|| LyquidMetadata {
-            owner,
-            deploy_history: network::new_vec(),
-            dependencies: network::new_vec(),
-        });
+    let metadata = ctx.network.lyquid_registry.entry(id).or_insert_with(|| LyquidMetadata {
+        owner,
+        deploy_history: network::new_vec(),
+        dependencies: network::new_vec(),
+    });
     metadata.deploy_history.push(DeployInfo { contract });
     // Store the dependencies for this lyquid
     for dep in deps {
@@ -50,7 +54,9 @@ fn next_lyquid_id(ctx: &mut __lyquid::NetworkContext, owner: Address, contract: 
     id
 }
 
-fn update_eth_addr(ctx: &mut __lyquid::NetworkContext, owner: Address, old: Address, new: Address, deps: Vec<LyquidID>) -> Option<LyquidID> {
+fn update_eth_addr(
+    ctx: &mut __lyquid::NetworkContext, owner: Address, old: Address, new: Address, deps: Vec<LyquidID>,
+) -> Option<LyquidID> {
     // otherwise we need to find the existing lyquid
     let id = *ctx.network.eth_addrs.get(&old)?;
     let metadata = ctx.network.lyquid_registry.get_mut(&id)?;
@@ -76,7 +82,7 @@ lyquid::method! {
     network fn register(&mut ctx, superseded: Address, deps: Vec<Address>) -> LyquidResult<bool> {
         let owner = ctx.origin;
         let contract = ctx.caller;
-        
+
         // Convert dependency addresses to LyquidIDs
         let deps: Vec<LyquidID> = deps.iter()
             .filter_map(|addr| ctx.network.eth_addrs.get(addr).copied())
@@ -92,6 +98,11 @@ lyquid::method! {
         lyquid::println!("register {id} (owner={owner}, contract={contract}, deps={:?})", deps);
         lyquid::log!(Register, &RegisterEvent { id, deps });
         ctx.network.eth_addrs.insert(contract, id);
+        Ok(true)
+    }
+
+    network fn set_ed25519_address(&mut ctx, id: NodeID, addr: Address) -> LyquidResult<bool> {
+        ctx.network.node_registry.entry(id).or_insert_with(|| NodeMetadata { addr: Address::ZERO}).addr = addr;
         Ok(true)
     }
 
