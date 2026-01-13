@@ -250,13 +250,11 @@ impl fmt::Debug for LyteLog {
 }
 
 pub fn decode_object<T: for<'a> Deserialize<'a>>(raw: &[u8]) -> Option<T> {
-    alkahest::deserialize::<alkahest::Bincode, T>(raw).ok()
+    postcard::from_bytes(raw).ok()
 }
 
 pub fn encode_object<T: Serialize + ?Sized>(obj: &T) -> Vec<u8> {
-    let mut raw = Vec::new();
-    alkahest::serialize_to_vec::<alkahest::Bincode, &T>(obj, &mut raw);
-    raw
+    postcard::to_stdvec(obj).expect("postcard serialization failed")
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
