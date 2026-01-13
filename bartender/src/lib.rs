@@ -101,9 +101,21 @@ lyquid::method! {
         Ok(true)
     }
 
-    network fn set_ed25519_address(&mut ctx, id: NodeID, addr: Address) -> LyquidResult<bool> {
-        ctx.network.node_registry.entry(id).or_insert_with(|| NodeMetadata { addr: Address::ZERO}).addr = addr;
+    network fn set_ed25519_address(&mut ctx, pubkey: [u8; 32], qx: U256, qy: U256, addr: Address) -> LyquidResult<bool> {
+        if !lyquor_api::check_ed25519_pubkey(pubkey, qx, qy)? {
+            // Mismatching pubkey/qx/qy info.
+            return Ok(false)
+        }
+        let id = pubkey.into();
+        lyquid::println!("set_ed25519_address {id} => {addr}");
+        ctx.network.node_registry.entry(id).or_insert_with(|| NodeMetadata { addr: Address::ZERO }).addr = addr;
         Ok(true)
+    }
+
+    instance fn get_ed25519_address(&ctx, id: NodeID) -> LyquidResult<Option<Address>> {
+        let ret = ctx.network.node_registry.get(&id).map(|r| r.addr);
+        lyquid::println!("get_ed25519_address {id} = {ret:?}");
+        Ok(ret)
     }
 
     instance fn get_lyquid_info(&ctx, id: LyquidID) -> LyquidResult<Option<LyquidMetadataOutput>> {

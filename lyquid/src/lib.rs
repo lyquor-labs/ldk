@@ -51,6 +51,8 @@ pub enum LyquidError {
     LyquidRuntime(String),
     #[error("Invalid certificate for the input.")]
     InputCert,
+    #[error("Oracle error: {0}")]
+    OracleError(String),
 }
 
 pub const ABI_ETH: u32 = 0x1;

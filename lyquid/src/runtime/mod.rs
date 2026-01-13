@@ -233,6 +233,7 @@ pub mod lyquor_api {
         sign(msg: Bytes, cipher: lyquor_primitives::Cipher) -> Bytes;
         verify(msg: Bytes, cipher: lyquor_primitives::Cipher, sig: Bytes, pubkey: Bytes) -> bool;
         random_bytes(length: usize) -> Vec<u8>;
+        check_ed25519_pubkey(pubkey: [u8; 32], qx: U256, qy: U256) -> bool;
         get_ed25519_address(pubkey: [u8; 32]) -> Option<Address>;
     );
 }
@@ -530,15 +531,15 @@ impl<T: EthABI> EthABI for Vec<T> {
 }
 
 impl<T: EthABI, const N: usize> EthABI for [T; N] {
-    fn type_string() -> Option<String> {
+    default fn type_string() -> Option<String> {
         T::type_string().map(|s| format!("{}[{N}]", s))
     }
 
-    fn is_scalar() -> bool {
+    default fn is_scalar() -> bool {
         false
     }
 
-    fn decode(val: DynSolValue) -> Option<Self> {
+    default fn decode(val: DynSolValue) -> Option<Self> {
         match val {
             DynSolValue::FixedArray(v) => v
                 .into_iter()
@@ -549,7 +550,7 @@ impl<T: EthABI, const N: usize> EthABI for [T; N] {
         }
     }
 
-    fn encode(self) -> DynSolValue {
+    default fn encode(self) -> DynSolValue {
         DynSolValue::FixedArray(self.into_iter().map(|e| e.encode()).collect())
     }
 }
@@ -636,6 +637,30 @@ impl EthABI for NodeID {
             DynSolValue::FixedBytes(v, 32) => {
                 let arr: [u8; 32] = v.as_slice().try_into().ok()?;
                 Some(NodeID::from(arr))
+            }
+            _ => None,
+        }
+    }
+
+    fn encode(self) -> DynSolValue {
+        DynSolValue::FixedBytes(<[u8; 32]>::from(self).into(), 32)
+    }
+}
+
+impl EthABI for [u8; 32] {
+    fn type_string() -> Option<String> {
+        Some("bytes32".into())
+    }
+
+    fn is_scalar() -> bool {
+        true
+    }
+
+    fn decode(val: DynSolValue) -> Option<Self> {
+        match val {
+            DynSolValue::FixedBytes(v, 32) => {
+                let arr: [u8; 32] = v.as_slice().try_into().ok()?;
+                Some(arr)
             }
             _ => None,
         }
