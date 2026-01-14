@@ -21,6 +21,7 @@ pub use lyquor_primitives::{
     GROUP_UPC_RESP, Hash, LyquidID, NodeID,
 };
 
+pub mod http;
 #[cfg(feature = "ldk")] pub mod runtime;
 
 #[cfg_attr(feature = "ldk", doc(hidden))]

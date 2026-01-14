@@ -233,6 +233,7 @@ pub mod lyquor_api {
         sign(msg: Bytes, cipher: lyquor_primitives::Cipher) -> Bytes;
         verify(msg: Bytes, cipher: lyquor_primitives::Cipher, sig: Bytes, pubkey: Bytes) -> bool;
         random_bytes(length: usize) -> Vec<u8>;
+        http_request(request: http::Request, options: Option<http::RequestOptions>) -> http::Response;
         check_ed25519_pubkey(pubkey: [u8; 32], qx: U256, qy: U256) -> bool;
         get_ed25519_address(pubkey: [u8; 32]) -> Option<Address>;
     );
