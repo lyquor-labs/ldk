@@ -545,10 +545,6 @@ macro_rules! __lyquid_categorize_methods {
                 ctx.network.$name.__post_propose(msg.header, msg.args, value)
             }
 
-            // Re-emit the original function with a sub-group to avoid recursive matching
-            // and keep it available for normal instance calls.
-            instance(oracle::committee::$name::raw) fn propose(&mut $handle, $($aname: $atype),*) -> LyquidResult<$rt> $body
-
             $($rest)*
          }, {$($network_funcs)*}, {$($instance_funcs)*});
      };
@@ -608,10 +604,6 @@ macro_rules! __lyquid_categorize_methods {
                 ctx.network.$name.__post_validation(msg.header, msg.params, approval)
             }
 
-            // Re-emit the original function with a sub-group to avoid recursive matching
-            // and keep it available for normal instance calls (validation phase).
-            instance(oracle::committee::$name::raw) fn validate(&mut $handle, $params: CallParams, $witness: $wty) -> LyquidResult<bool> $body
-
             $($rest)*
          }, {$($network_funcs)*}, {$($instance_funcs)*});
      };
@@ -661,10 +653,6 @@ macro_rules! __lyquid_categorize_methods {
 
                 ctx.network.$name.__post_validation(msg.header, msg.params, approval)
             }
-
-            // Re-emit the original function with a sub-group to avoid recursive matching
-            // and keep it available for normal instance calls (Phase 2 validation).
-            instance(oracle::committee::$name::raw) fn validate(&mut $handle, $params: CallParams) -> LyquidResult<bool> $body
 
             $($rest)*
          }, {$($network_funcs)*}, {$($instance_funcs)*});
@@ -751,12 +739,9 @@ macro_rules! decode_eth_params {
             use $crate::alloy_dyn_abi::{DynSolType, DynSolValue};
             use $crate::runtime::EthABI;
 
-            // Generate the tuple type string automatically from the Rust types
-            let mut types = Vec::new();
-            $(types.push((<$type as EthABI>::type_string()?, <$type as EthABI>::is_scalar()));)*
-            let type_str = format!("({})", types.into_iter().map(|(s, _)| s).collect::<Vec<_>>().join(","));
-
-            let sol_type = DynSolType::parse(&type_str).ok()?;
+            let sol_type = DynSolType::Tuple(vec![
+                $(<$type as EthABI>::sol_type()?,)*
+            ]);
             let decoded = sol_type.abi_decode_params($input).ok()?;
 
             let mut iter = match decoded {
