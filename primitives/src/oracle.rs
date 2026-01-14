@@ -8,6 +8,15 @@ pub enum OracleTarget {
     EVM(Address),
 }
 
+impl OracleTarget {
+    pub fn cipher(&self) -> Cipher {
+        match self {
+            Self::EVM(_) => Cipher::Secp256k1,
+            Self::LVM(_) => Cipher::Ed25519,
+        }
+    }
+}
+
 /// Contains all fields needed to define a call other than the call parameters.
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct OracleHeader {
@@ -24,9 +33,11 @@ pub struct OracleHeader {
     pub nonce: HashBytes,
 }
 
+pub type SignerID = u32;
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleSigner {
-    pub id: NodeID,
+    pub id: SignerID,
     pub key: Bytes,
 }
 
@@ -83,8 +94,8 @@ pub struct OracleCert {
     /// If Some, a new config is agreed upon for this and following certificates, and becomes
     /// effective until the next update.
     pub new_config: Option<OracleConfig>,
-    /// The index for each signer in the committee list of OracleConfig.
-    pub signers: Vec<u16>,
+    /// Signers for the signatures in order.
+    pub signers: Vec<SignerID>,
     /// Vote signatures.
     pub signatures: Vec<Bytes>,
 }
@@ -100,8 +111,13 @@ pub mod eth {
             bytes32 nonce;
         }
 
+        struct OracleSigner {
+            uint32 id;
+            address key;
+        }
+
         struct OracleConfig {
-            address[] committee;
+            OracleSigner[] committee;
             uint16 threshold;
         }
 
@@ -189,7 +205,10 @@ pub mod eth {
                 committee: oc
                     .committee
                     .into_iter()
-                    .map(|s| s.key.as_ref().try_into().unwrap())
+                    .map(|s| OracleSigner {
+                        id: s.id,
+                        key: s.key.as_ref().try_into().unwrap(),
+                    })
                     .collect(),
                 threshold: oc.threshold as u16,
             }

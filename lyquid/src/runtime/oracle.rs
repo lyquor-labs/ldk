@@ -1,6 +1,6 @@
 use super::{Deserialize, LyquidError, LyquidID, LyquidResult, NodeID, Serialize, StateAccessor, lyquor_api, network};
-pub use lyquor_primitives::oracle::{OracleCert, OracleHeader, OracleTarget};
-use lyquor_primitives::oracle::{OracleConfig, OraclePreimage, OracleSigner, ProposePreimage, eth};
+pub use lyquor_primitives::oracle::{OracleCert, OracleHeader, OracleTarget, SignerID};
+use lyquor_primitives::oracle::{OracleConfig as OracleConfigWire, OraclePreimage, OracleSigner, ProposePreimage, eth};
 use lyquor_primitives::{Address, Bytes, CallParams, Cipher, Hash, HashBytes, InputABI};
 
 /// Validate UPC message sent to each validator.
@@ -122,7 +122,9 @@ impl<T: Serialize + serde::de::DeserializeOwned> FromWitness for VerifiedWitness
 
         for att in w.attestations {
             let pk = oracle
-                .pubkey_for_cipher(&att.from, cipher)
+                .committee
+                .get(&att.from)
+                .map(|s| s.get_verifying_key(cipher))
                 .ok_or_else(|| LyquidError::OracleError(format!("Unknown node in witness: {}", att.from)))?;
 
             if !att.verify(w.header, &w.args, cipher, pk)? {
@@ -144,20 +146,21 @@ impl<T: Serialize + serde::de::DeserializeOwned> FromWitness for VerifiedWitness
 
 #[derive(Copy, Clone, Serialize, Deserialize)]
 struct Signer {
-    id: NodeID,
-    lvm: [u8; 32], // ed25519 native key
-    evm: Address,  // Secp256k1 signer's address
+    id: SignerID,
+    key_lvm: [u8; 32], // ed25519 native key
+    key_evm: Address,  // Secp256k1 signer's address
 }
 
 impl Signer {
-    /// Return the key/address that needs to be used for verification.
+    /// Return the key/address that is used for verification.
     fn get_verifying_key(&self, cipher: Cipher) -> Bytes {
         match cipher {
-            Cipher::Ed25519 => Bytes::copy_from_slice(&self.lvm),
-            Cipher::Secp256k1 => Bytes::copy_from_slice(self.evm.as_ref()),
+            Cipher::Ed25519 => Bytes::copy_from_slice(&self.key_lvm),
+            Cipher::Secp256k1 => Bytes::copy_from_slice(self.key_evm.as_ref()),
         }
     }
 
+    /// Get the wire format for a platform, determined by `cipher`.
     fn to_wire(&self, cipher: Cipher) -> OracleSigner {
         OracleSigner {
             id: self.id,
@@ -166,71 +169,51 @@ impl Signer {
     }
 }
 
-struct OracleConfigSrc {
-    committee: network::Vec<Signer>,
-    threshold: u16,
-}
-
-impl Default for OracleConfigSrc {
-    fn default() -> Self {
-        Self {
-            committee: network::new_vec(),
-            threshold: 0,
-        }
-    }
-}
-
-impl OracleConfigSrc {
-    fn to_wire(&self, cipher: Cipher) -> OracleConfig {
-        OracleConfig {
-            committee: self.committee.iter().map(|s| s.to_wire(cipher)).collect(),
-            threshold: self.threshold,
-        }
-    }
-}
-
-/// Network state for the source (call generation) chain.
+/// Per-topic network state for the source (certified call generation) chain.
 pub struct OracleSrc {
-    id: &'static str,
-    threshold: u16,
+    topic: &'static str,
     committee: network::HashMap<NodeID, Signer>,
-    config: OracleConfigSrc,
+    threshold: u16,
+    /// Next SignerID to be assigned to a new node.
+    ///
+    /// This 32-bit counter keeps increasing and only wraps around to 0 when it hits 2^32. This
+    /// guarantees that practically all nodes are given a unique 32-bit identifier, which shortens
+    /// the OracleCert size and also makes it pubkey-agnostic. The destination chain will keep the
+    /// pubkey/address for the committee, so that we can avoid repeating the pubkey by using such
+    /// an identifer.
+    next_signer_id: SignerID,
+    /// Digest of the oracle's configuration (committee and threshold) for LVM target.
     config_hash_lvm: Hash,
+    /// Digest of the oracle's configuration (committee and threshold) for EVM target.
     config_hash_evm: Hash,
-    // TODO: keep the incremental updates here since the old one so we don't have to carry the entire Config each time
+    // TODO: recored config deltas so OracleCert does not need to carry a full OracleConfigWire
+    // every time when there is a change to the configuration.
 }
 
 impl OracleSrc {
-    fn cipher_for_target(target: &OracleTarget) -> Cipher {
-        match target {
-            OracleTarget::EVM(_) => Cipher::Secp256k1,
-            OracleTarget::LVM(_) => Cipher::Ed25519,
+    fn get_oracle_config_wire(&self, cipher: Cipher) -> OracleConfigWire {
+        let mut committee: Vec<_> = self.committee.iter().map(|(_, s)| s.to_wire(cipher)).collect();
+        // The canonical representation of a committee set is sorted by nodes' IDs.
+        committee.sort_by_key(|s| s.id);
+        OracleConfigWire {
+            committee,
+            threshold: self.threshold,
         }
-    }
-
-    pub fn pubkey_for_cipher(&self, node: &NodeID, cipher: Cipher) -> Option<Bytes> {
-        self.committee.get(node).map(|s| s.get_verifying_key(cipher))
     }
 
     fn update_config(&mut self) {
-        // Consolidate the current config into the wire format (that can be hashed or used as part of
-        // the signed payload).
-        self.config.committee.clear();
-        for signer in self.committee.values() {
-            self.config.committee.push(*signer);
-        }
-        self.config.committee.sort_by_key(|s| s.id);
-        self.config.threshold = self.threshold;
-        self.config_hash_lvm = self.config.to_wire(Cipher::Ed25519).to_hash();
-        self.config_hash_evm = eth::OracleConfig::from(self.config.to_wire(Cipher::Secp256k1)).to_hash();
+        // TODO: use a Merkle tree based approach so calculating new config hash (root hash)
+        // doesn't have to serialize the entire config.
+        self.config_hash_lvm = self.get_oracle_config_wire(Cipher::Ed25519).to_hash();
+        self.config_hash_evm = eth::OracleConfig::from(self.get_oracle_config_wire(Cipher::Secp256k1)).to_hash();
     }
 
-    pub fn new(id: &'static str) -> Self {
+    pub fn new(topic: &'static str) -> Self {
         Self {
-            id,
-            threshold: 0,
+            topic,
             committee: network::new_hashmap(),
-            config: OracleConfigSrc::default(),
+            threshold: 0,
+            next_signer_id: 0,
             config_hash_lvm: Hash::from_bytes([0; 32]),
             config_hash_evm: Hash::from_bytes([0; 32]),
         }
@@ -238,13 +221,19 @@ impl OracleSrc {
 
     /// Add a node to the committee. If the node exists, returns false.
     pub fn add_node(&mut self, id: NodeID) -> bool {
-        let lvm = id.0;
-        let evm = lyquor_api::get_ed25519_address(lvm)
+        let key_lvm = id.0;
+        let key_evm = lyquor_api::get_ed25519_address(key_lvm)
             .ok()
             .flatten()
             .unwrap_or(Address::ZERO);
+        let sid = self.next_signer_id;
+        self.next_signer_id = self.next_signer_id.wrapping_add(1);
 
-        let signer = Signer { id, lvm, evm };
+        let signer = Signer {
+            id: sid,
+            key_lvm,
+            key_evm,
+        };
         if self.committee.insert(id, signer).is_some() {
             return false;
         }
@@ -275,8 +264,8 @@ impl OracleSrc {
         self.update_config();
     }
 
-    /// Generate a certificate that testifies the validity of an oracle call to a target network
-    /// (sequence backend).
+    /// Generate a certificate that testifies the validity of an arbitrary call under the oracle
+    /// topic to the target network (sequence backend).
     pub fn certify(
         &self, ctx: &impl OracleCertifyContext, origin: Address, method: String, input: Bytes, target: OracleTarget,
     ) -> LyquidResult<Option<CallParams>> {
@@ -301,7 +290,7 @@ impl OracleSrc {
             self.committee.len() < self.threshold as usize
         {
             return Err(crate::LyquidError::LyquidRuntime(format!(
-                "Invalid OracleConfig(committee.len()={}, threshold={}).",
+                "Invalid oracle configuration: committee.len()={}, threshold={}.",
                 self.threshold,
                 self.committee.len()
             ))
@@ -319,7 +308,7 @@ impl OracleSrc {
         let mut params = CallParams {
             origin,
             caller: origin,
-            group: self.id.into(),
+            group: self.topic.into(),
             method,
             input,
             abi,
@@ -337,17 +326,18 @@ impl OracleSrc {
             approval: false,
         };
 
-        let (yay_msg, nay_msg) = match header.target {
+        let (cipher, yay_msg, nay_msg) = match header.target {
             OracleTarget::EVM(_) => (
+                Cipher::Secp256k1,
                 eth::OraclePreimage::try_from(yay).unwrap().to_preimage(),
                 eth::OraclePreimage::try_from(nay).unwrap().to_preimage(),
             ),
-            OracleTarget::LVM(_) => (yay.to_preimage(), nay.to_preimage()),
+            OracleTarget::LVM(_) => (Cipher::Ed25519, yay.to_preimage(), nay.to_preimage()),
         };
 
         let cert: Option<OracleCert> = lyquor_api::universal_procedural_call(
             lyquid,
-            Some(format!("oracle::committee::{}", self.id)),
+            Some(format!("oracle::committee::{}", self.topic)),
             "validate".into(),
             lyquor_primitives::encode_by_fields!(msg: ValidateRequest = ValidateRequest {
                 header,
@@ -414,7 +404,7 @@ impl OracleSrc {
             self.committee.len() < self.threshold as usize
         {
             return Err(crate::LyquidError::LyquidRuntime(format!(
-                "Invalid OracleConfig(committee.len()={}, threshold={}).",
+                "Invalid oracle configuration: committee.len()={}, threshold={}.",
                 self.threshold,
                 self.committee.len()
             ))
@@ -428,7 +418,7 @@ impl OracleSrc {
         // Collect signed values.
         let attestations: Option<Vec<ProposeAttestation>> = lyquor_api::universal_procedural_call(
             lyquid,
-            Some(format!("oracle::committee::{}", self.id)),
+            Some(format!("oracle::committee::{}", self.topic)),
             "propose".into(),
             lyquor_primitives::encode_by_fields!(msg: ProposeRequest = ProposeRequest {
                 header,
@@ -476,6 +466,7 @@ impl OracleSrc {
             OracleTarget::LVM(_) => self.config_hash_lvm,
             OracleTarget::EVM(_) => self.config_hash_evm,
         };
+        // Verify if the configuration in the proposal is consistent with the network state.
         hash == *header.config_hash
     }
 
@@ -488,10 +479,12 @@ impl OracleSrc {
             approval,
         };
 
-        let cipher = OracleSrc::cipher_for_target(&header.target);
-        let m = match header.target {
-            OracleTarget::EVM(_) => eth::OraclePreimage::try_from(preimage).unwrap().to_preimage(),
-            OracleTarget::LVM(_) => preimage.to_preimage(),
+        let (cipher, m) = match header.target {
+            OracleTarget::EVM(_) => (
+                Cipher::Secp256k1,
+                eth::OraclePreimage::try_from(preimage).unwrap().to_preimage(),
+            ),
+            OracleTarget::LVM(_) => (Cipher::Ed25519, preimage.to_preimage()),
         };
 
         let sig = lyquor_api::sign(m.into(), cipher)?;
@@ -505,10 +498,12 @@ impl OracleSrc {
             value: value.clone(),
         };
 
-        let cipher = OracleSrc::cipher_for_target(&header.target);
-        let m = match header.target {
-            OracleTarget::EVM(_) => eth::ProposePreimage::try_from(preimage).unwrap().to_preimage(),
-            OracleTarget::LVM(_) => preimage.to_preimage(),
+        let (cipher, m) = match header.target {
+            OracleTarget::EVM(_) => (
+                Cipher::Secp256k1,
+                eth::ProposePreimage::try_from(preimage).unwrap().to_preimage(),
+            ),
+            OracleTarget::LVM(_) => (Cipher::Ed25519, preimage.to_preimage()),
         };
 
         let sig = lyquor_api::sign(m.into(), cipher)?;
@@ -522,9 +517,9 @@ pub struct Aggregation {
     yea_msg: Bytes,
     nay_msg: Bytes,
 
-    // Voting state
-    voted: super::volatile::HashSet<NodeID>,
-    yea_sigs: Vec<(OracleSigner, Bytes)>,
+    // Collected unique responders (regardless of validity) to detect early failure.
+    attempted: super::volatile::HashSet<NodeID>,
+    yea_sigs: Vec<(SignerID, Bytes)>,
     yea: u16,
     nay: u16,
     result: Option<Option<OracleCert>>,
@@ -554,42 +549,41 @@ impl ProposeAggregation {
     pub fn add_response(
         &mut self, node: NodeID, resp: ProposeResponse, oracle: &OracleSrc,
     ) -> Option<Option<Vec<ProposeAttestation>>> {
-        if self.result.is_some() || self.attempted.contains(&node) {
+        // A node can only respond once.
+        if self.result.is_some() || !self.attempted.insert(node) {
             return self.result.clone();
         }
 
-        let cipher = OracleSrc::cipher_for_target(&self.header.target);
-        let ok = oracle
-            .pubkey_for_cipher(&node, cipher)
-            .and_then(|pk| {
-                let preimage = ProposePreimage {
-                    header: self.header,
-                    args: self.args.clone(),
-                    value: resp.value.clone(),
-                };
-                let m = match self.header.target {
-                    OracleTarget::EVM(_) => eth::ProposePreimage::try_from(preimage).unwrap().to_preimage(),
-                    OracleTarget::LVM(_) => preimage.to_preimage(),
-                };
-                super::lyquor_api::verify(m.into(), cipher, resp.sig.clone(), pk).ok()
-            })
+        let signer = oracle.committee.get(&node)?;
+        let cipher = self.header.target.cipher();
+        let pk = signer.get_verifying_key(cipher);
+
+        let preimage = ProposePreimage {
+            header: self.header,
+            args: self.args.clone(),
+            value: resp.value.clone(),
+        };
+        let m = match self.header.target {
+            OracleTarget::EVM(_) => eth::ProposePreimage::try_from(preimage).unwrap().to_preimage(),
+            OracleTarget::LVM(_) => preimage.to_preimage(),
+        };
+
+        let ok = super::lyquor_api::verify(m.into(), cipher, resp.sig.clone(), pk)
+            .ok()
             .unwrap_or(false);
 
-        if self.attempted.insert(node) {
-            if ok {
-                self.attestations.push(ProposeAttestation {
-                    from: node,
-                    value: resp.value,
-                    sig: resp.sig,
-                });
-            }
+        if ok {
+            self.attestations.push(ProposeAttestation {
+                from: node,
+                value: resp.value,
+                sig: resp.sig,
+            });
         }
 
         if self.attestations.len() >= oracle.threshold as usize {
             self.result = Some(Some(self.attestations.clone()));
         } else if oracle.committee.len() - (self.attempted.len() - self.attestations.len()) < oracle.threshold as usize
         {
-            // Early failure: impossible to reach threshold with remaining nodes.
             self.result = Some(None);
         }
 
@@ -597,61 +591,57 @@ impl ProposeAggregation {
     }
 }
 
-fn verify_oracle_cert(oc: &OracleCert, msg: Bytes, config: &OracleConfigDest, config_hash: &Hash) -> bool {
+// TODO: use delta to update OracleConfigDest incrementally (instead of replacing it entirely).
+fn verify_oracle_cert(
+    oc: &OracleCert, msg: Bytes, config: &OracleConfigDest, config_hash: &Hash,
+) -> Result<Option<OracleConfigDest>, ()> {
     let mut config = config;
-    let _new_config;
+    let mut new_config = None;
     match &oc.new_config {
-        Some(new_config) => {
-            let hash: HashBytes = new_config.to_hash().into();
+        Some(cfg) => {
+            let hash: HashBytes = cfg.to_hash().into();
             if hash != oc.header.config_hash {
                 // Config mismatch.
-                return false;
+                return Err(());
             }
-            _new_config = (&*new_config).into();
-            config = &_new_config;
+            new_config = Some(OracleConfigDest::from_wire(cfg));
+            config = new_config.as_ref().unwrap();
         }
         None => {
             if &*oc.header.config_hash != config_hash {
                 // Config mismatch.
-                return false;
+                return Err(());
             }
         }
     }
 
     if oc.signers.len() != oc.signatures.len() {
         // Malformed certificate.
-        return false;
+        return Err(());
     }
 
     if oc.signers.len() < config.threshold as usize {
         // Threshold not met.
-        return false
+        return Err(());
     }
 
-    for (idx, sig) in oc
+    let cipher = oc.header.target.cipher();
+
+    for (id, sig) in oc
         .signers
         .iter()
         .zip(oc.signatures.iter().take(config.threshold as usize))
     {
-        let idx = (*idx) as usize;
-        let signer = if idx < config.committee.len() {
-            &config.committee[idx]
-        } else {
-            // Invalid signer index.
-            return false
+        let key = match config.committee.get(id) {
+            Some(k) => k.clone(),
+            None => return Err(()),
         };
-        if !super::lyquor_api::verify(
-            msg.clone(),
-            Cipher::Ed25519,
-            sig.clone(),
-            Bytes::copy_from_slice(&signer.1),
-        )
-        .unwrap_or(false)
-        {
-            return false;
+
+        if !super::lyquor_api::verify(msg.clone(), cipher, sig.clone(), Bytes::copy_from_slice(&key)).unwrap_or(false) {
+            return Err(());
         }
     }
-    true
+    Ok(new_config)
 }
 
 impl Aggregation {
@@ -660,7 +650,7 @@ impl Aggregation {
             header,
             yea_msg,
             nay_msg,
-            voted: super::volatile::new_hashset(),
+            attempted: super::volatile::new_hashset(),
             yea_sigs: Vec::new(),
             yea: 0,
             nay: 0,
@@ -671,94 +661,81 @@ impl Aggregation {
     pub fn add_response(
         &mut self, node: NodeID, resp: ValidateResponse, oracle: &OracleSrc,
     ) -> Option<Option<OracleCert>> {
-        if self.result.is_some() || self.voted.contains(&node) {
+        // A node can only vote once.
+        if self.result.is_some() || !self.attempted.insert(node) {
             return self.result.clone();
         }
 
-        // Delegate signature verification to the host-side API. If verification fails or the
-        // host API errors, treat this as a failed vote.
-        let cipher = OracleSrc::cipher_for_target(&self.header.target);
-        let ok = oracle
-            .pubkey_for_cipher(&node, cipher)
-            .and_then(|pk| {
-                super::lyquor_api::verify(
-                    if resp.approval { &self.yea_msg } else { &self.nay_msg }.clone(),
-                    cipher,
-                    resp.sig.clone(),
-                    pk,
-                )
-                .ok()
-            })
-            .unwrap_or(false);
+        let signer = oracle.committee.get(&node)?;
+        let cipher = self.header.target.cipher();
+        let pk = signer.get_verifying_key(cipher);
 
-        if self.voted.insert(node) {
-            if ok {
-                // A node can only vote once.
-                match resp.approval {
-                    true => {
-                        self.yea_sigs.push((
-                            OracleSigner {
-                                id: node,
-                                key: oracle.pubkey_for_cipher(&node, cipher).unwrap(),
-                            },
-                            resp.sig.clone(),
-                        ));
-                        self.yea += 1
-                    }
-                    false => self.nay += 1,
+        let ok = super::lyquor_api::verify(
+            if resp.approval { &self.yea_msg } else { &self.nay_msg }.clone(),
+            cipher,
+            resp.sig.clone(),
+            pk,
+        )
+        .ok()
+        .unwrap_or(false);
+
+        if ok {
+            match resp.approval {
+                true => {
+                    self.yea_sigs.push((signer.id, resp.sig.clone()));
+                    self.yea += 1
                 }
+                false => self.nay += 1,
             }
         }
 
         crate::println!("yea = {}, thres = {}", self.yea, oracle.threshold);
         if self.yea >= oracle.threshold {
-            let consolidated = &oracle.config;
-            // Build a look up table to find the signer's index.
-            let mut index_of = std::collections::HashMap::new();
-            for (i, s) in consolidated.committee.iter().enumerate() {
-                index_of.insert(s.id, i);
-            }
-            let mut signers: Vec<u16> = Vec::new();
+            let mut signers = Vec::new();
             let mut signatures = Vec::new();
-            for (signer, sig) in self.yea_sigs.clone().into_iter() {
-                if let Some(i) = index_of.get(&signer.id).copied() {
-                    signers.push(i as u16);
-                    signatures.push(sig);
-                }
+            for (id, sig) in self.yea_sigs.clone().into_iter() {
+                signers.push(id);
+                signatures.push(sig);
             }
-
             self.result = Some(Some(OracleCert {
                 header: self.header,
-                new_config: Some(consolidated.to_wire(cipher)), // TODO
+                // TODO: right now we just force every OracleCert to carry the current
+                // configuration, even if it's the same. We should consult the destination
+                // sequence backend (like we will do for epoch number) as a heuristic to avoid
+                // carying the configuration when there is no change. Moreover, this `Option`
+                // type should be replaced by the "delta" update approach.
+                new_config: Some(oracle.get_oracle_config_wire(cipher)),
                 signers,
                 signatures,
             }))
-        } else if oracle.committee.len() - (self.voted.len() - self.yea as usize) < oracle.threshold as usize {
+        } else if oracle.committee.len() - (self.attempted.len() - self.yea as usize) < oracle.threshold as usize {
+            // Early failure: impossible to reach threshold with remaining nodes.
             self.result = Some(None)
         }
         self.result.clone()
     }
 }
 
+/// Oracle configuration used by the destination.
 struct OracleConfigDest {
-    committee: network::Vec<(NodeID, network::Vec<u8>)>,
+    committee: network::HashMap<SignerID, network::Vec<u8>>,
     threshold: u16,
 }
 
 impl Default for OracleConfigDest {
     fn default() -> Self {
         Self {
-            committee: network::new_vec(),
+            committee: network::new_hashmap(),
             threshold: 0,
         }
     }
 }
 
-impl From<&OracleConfig> for OracleConfigDest {
-    fn from(oc: &OracleConfig) -> Self {
-        let mut committee = Vec::with_capacity_in(oc.committee.len(), network::Alloc);
+impl OracleConfigDest {
+    fn from_wire(oc: &OracleConfigWire) -> Self {
+        let mut committee = network::new_hashmap();
         for signer in oc.committee.iter() {
-            committee.push((signer.id, signer.key.to_vec_in(network::Alloc)));
+            committee.insert(signer.id, signer.key.to_vec_in(network::Alloc));
         }
         Self {
             committee,
@@ -767,7 +744,7 @@ impl From<&OracleConfig> for OracleConfigDest {
     }
 }
 
-/// Per-topic destination-chain oracle state.
+/// Per-topic network state for the destination (certified call execution) chain.
 pub struct OracleDest {
     // The following states are used for certificate verification.
     // Active oracle config for the topic.
@@ -803,7 +780,7 @@ impl OracleDest {
         &self.config_hash
     }
 
-    fn update_config(&mut self, config: OracleConfig, config_hash: HashBytes) -> bool {
+    fn update_config(&mut self, config: OracleConfigDest, config_hash: HashBytes) -> bool {
         if config.committee.is_empty() {
             // No signers.
             return false;
@@ -815,7 +792,7 @@ impl OracleDest {
             // Invalid config.
             return false;
         }
-        self.config = (&config).into();
+        self.config = config;
         self.config_hash = config_hash;
         true
     }
@@ -869,12 +846,15 @@ impl OracleDest {
         .into();
 
         // Verify the validity of the OracleCert.
-        if !verify_oracle_cert(&oc, msg, &self.config, &self.config_hash) {
-            // Invalid call certificate.
-            return false;
-        }
+        let new_config = match verify_oracle_cert(&oc, msg, &self.config, &self.config_hash) {
+            Ok(cfg) => cfg,
+            Err(_) => {
+                // Invalid call certificate.
+                return false;
+            }
+        };
 
-        if let Some(config) = oc.new_config {
+        if let Some(config) = new_config {
             // This certificate also piggybacks a config update (that's signed
             // together with the call payload, and therefore has also been
             // validated). Let's first update the config because it is used for
