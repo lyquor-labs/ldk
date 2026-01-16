@@ -78,6 +78,7 @@ thiserror = "2.0"
 tokio = { version = "1.47", features = ["full"] }
 tokio-rustls = { version = "0.26" }
 tokio-stream = "0.1.17"
+tokio-util = "0.7"
 tower = { version = "0.5" }
 tracing = { version = "0.1" }
 tracing-futures = "0.2.5"
