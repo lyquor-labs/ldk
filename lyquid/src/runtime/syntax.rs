@@ -290,15 +290,15 @@ macro_rules! method {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_categorize_methods {
-    ({network(oracle::certified::$oname:ident) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+    ({network(oracle::certified::$($group:tt)*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},
      {$($internal_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
-                oracle::certified::$oname (true) fn $fn(oc: $crate::runtime::oracle::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
-                    let topic = stringify!($oname);
+                oracle::certified::$($group)* (true) fn $fn(oc: $crate::runtime::oracle::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                    let topic = stringify!($($group)*);
                     let params = CallParams {
                         origin: ctx.origin,
                         caller: ctx.caller,
@@ -517,13 +517,13 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
 
-    ({instance(oracle::committee::$name:ident) fn aggregate(&$handle:ident) -> LyquidResult<Option<CertifiedCallParams>> $body:block $($rest:tt)*},
+    ({instance(oracle::two_phase::$name:ident) fn aggregate(&$handle:ident) -> LyquidResult<Option<CertifiedCallParams>> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},
      {$($internal_funcs:tt)*}) => {
          $crate::__lyquid_categorize_methods!({$($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*},
          {$($internal_funcs)*
-             #[$crate::runtime::internal::prefix_item("__lyquid_method_instance", (oracle::committee::$name))]
+             #[$crate::runtime::internal::prefix_item("__lyquid_method_instance", (oracle::two_phase::$name))]
              #[unsafe(no_mangle)]
              pub fn aggregate(ctx: $crate::runtime::oracle::ProposalAggregationContext) -> LyquidResult<Option<CertifiedCallParams>> {
                  // TODO: impl ProposalAggregationContext properly, like those in upc.rs.
@@ -533,12 +533,12 @@ macro_rules! __lyquid_categorize_methods {
          });
     };
 
-    ({instance(oracle::committee::$name:ident) fn propose(&mut $handle:ident, $($params:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+    ({instance(oracle::two_phase::$name:ident$($group:tt)*) fn propose(&mut $handle:ident, $($params:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},
      {$($internal_funcs:tt)*}) => {
          $crate::__lyquid_categorize_methods!({
-            instance(upc::prepare::oracle::committee::$name) fn propose(
+            instance(upc::prepare::oracle::two_phase::$name$($group)*) fn propose(
                 &ctx,
                 callee: Vec<NodeID>,
                 init: $crate::lyquor_primitives::Bytes
@@ -547,7 +547,7 @@ macro_rules! __lyquid_categorize_methods {
                 Ok(callee)
             }
 
-            instance(upc::response::oracle::committee::$name) fn propose(
+            instance(upc::response::oracle::two_phase::$name$($group)*) fn propose(
                 &ctx,
                 resp: LyquidResult<$crate::runtime::oracle::ProposeResponse>
             ) -> LyquidResult<Option< Option<$crate::runtime::oracle::Proposal> >> {
@@ -558,13 +558,13 @@ macro_rules! __lyquid_categorize_methods {
                         ctx.from,
                         resp,
                         &ctx.network.$name,
-                        prefix_call!(("__lyquid_method_instance", (oracle::committee::$name)), aggregate),
+                        prefix_call!(("__lyquid_method_instance", (oracle::two_phase::$name)), aggregate),
                         ctx.lyquid_id))
                 }
                 Ok(None)
             }
 
-            instance(upc::request::oracle::committee::$name) fn propose(
+            instance(upc::request::oracle::two_phase::$name$($group)*) fn propose(
                 &mut ctx,
                 msg: $crate::runtime::oracle::ProposeRequest
             ) -> LyquidResult<$crate::runtime::oracle::ProposeResponse> {
@@ -577,21 +577,47 @@ macro_rules! __lyquid_categorize_methods {
                 ctx.network.$name.__post_propose(msg.init, result)
             }
 
-            instance(oracle::committee::$name) fn validate(&mut ctx, params: CallParams, extra: Bytes) -> LyquidResult<bool> {
-                // TODO: Verify params + extra here.
-                Ok(true)
+            instance(oracle::single_phase::$name::two_phase$($group)*) fn validate(&mut ctx, params: CallParams, extra: Bytes) -> LyquidResult<bool> {
+                let extra = match $crate::lyquor_primitives::decode_by_fields!(&extra,
+                    init: Bytes,
+                    inputs: Vec<$crate::runtime::oracle::ProposalInput>
+                ) {
+                    Some(extra) => extra,
+                    None => return Ok(false),
+                };
+                for input in &extra.inputs {
+                    if !input.verify(extra.init.clone(), ctx.network.$name)? {
+                        return Ok(false)
+                    }
+                }
+
+                let agg_ctx = $crate::runtime::oracle::ProposalAggregationContext {
+                    init: &extra.init,
+                    inputs: &extra.inputs,
+                    lyquid_id: ctx.lyquid_id,
+                };
+
+                let output = prefix_call!(("__lyquid_method_instance", (oracle::two_phase::$name)), aggregate(agg_ctx))?;
+                let _params = match output {
+                    Some(o) => o,
+                    None => return Ok(false),
+                };
+                Ok(params.origin == _params.origin &&
+                    params.caller == _params.origin &&
+                    params.method == _params.method &&
+                    params.input == _params.input)
             }
 
             $($rest)*
          }, {$($network_funcs)*}, {$($instance_funcs)*}, {$($internal_funcs)*});
      };
 
-    ({instance(oracle::committee::$name:ident) fn validate(&mut $handle:ident, $params:ident: CallParams, $extra:ident: Bytes) -> LyquidResult<bool> $body:block $($rest:tt)*},
+    ({instance(oracle::single_phase::$name:ident$($group:tt)*) fn validate(&mut $handle:ident, $params:ident: CallParams, $extra:ident: Bytes) -> LyquidResult<bool> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},
      {$($internal_funcs:tt)*}) => {
          $crate::__lyquid_categorize_methods!({
-            instance(upc::prepare::oracle::committee::$name) fn validate(
+            instance(upc::prepare::oracle::single_phase::$name$($group)*) fn validate(
                 &ctx, callee: Vec<NodeID>,
                 header: $crate::runtime::oracle::OracleHeader,
                 yay_msg: $crate::lyquor_primitives::Bytes,
@@ -602,7 +628,7 @@ macro_rules! __lyquid_categorize_methods {
                 Ok(callee)
             }
 
-            instance(upc::response::oracle::committee::$name) fn validate(
+            instance(upc::response::oracle::single_phase::$name$($group)*) fn validate(
                 &ctx,
                 resp: LyquidResult<$crate::runtime::oracle::ValidateResponse>
             ) -> LyquidResult<Option< Option<$crate::runtime::oracle::OracleCert> >> {
@@ -614,7 +640,7 @@ macro_rules! __lyquid_categorize_methods {
                 Ok(None)
             }
 
-            instance(upc::request::oracle::committee::$name) fn validate(
+            instance(upc::request::oracle::single_phase::$name$($group)*) fn validate(
                 &mut ctx,
                 msg: $crate::runtime::oracle::ValidateRequest
             ) -> LyquidResult<$crate::runtime::oracle::ValidateResponse> {

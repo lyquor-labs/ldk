@@ -1,59 +1,68 @@
 use super::{Deserialize, LyquidError, LyquidID, LyquidResult, NodeID, Serialize, StateAccessor, lyquor_api, network};
 pub use lyquor_primitives::oracle::{OracleCert, OracleHeader, OracleTarget, SignerID};
-use lyquor_primitives::oracle::{OracleConfig as OracleConfigWire, OraclePreimage, OracleSigner, eth};
+use lyquor_primitives::oracle::{OracleConfig as OracleConfigWire, OracleSigner, ValidatePreimage, eth};
 use lyquor_primitives::{Address, Bytes, CallParams, Cipher, Hash, HashBytes, InputABI};
 
-/// Validate UPC message sent to each validator.
-///
-/// The validator (signer) will check config hash to see if it's consistent with its oracle state
-/// as of the given network state version, and then run `validate`.
-///
-/// The `witness` field carries evidence from the proposal phase, typically containing
-/// the set of signed inputs from committee members. This allows the validator to verify that the
-/// proposed value was correctly aggregated from these inputs before signing its approval.
-///
-/// If validation succeeds, a signature will be
-/// automatically signed, and the validator willrespond to the caller with `validate()`'s result (true/false).
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ValidateRequest {
-    pub header: OracleHeader,
-    /// Certified call parameters to be sequenced.
-    pub params: CallParams,
-    /// Some extra data interpreted by the validate() function that do NOT need to be sequenced.
-    pub extra: Bytes,
-}
-
-/// UPC message responded from each validator after validation.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ValidateResponse {
-    pub approval: bool,
-    pub sig: Bytes,
-}
-
-/// Propose UPC message sent to each committee member to collect its input value.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ProposeRequest {
-    /// Initial arguments passed to each node for deriving their input.
-    pub init: Bytes,
-}
-
-/// Propose UPC response from each committee member.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ProposeResponse {
-    /// The produced input value.
-    pub input: Bytes,
-    /// Signature of ProposalInputPreimage.
-    pub sig: Bytes,
-}
-
-/// Output derived from the proposal's input, which carries the necessary data for a sequenced
-/// call.
+/// Necessary info required for a certified call to be sequenced.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CertifiedCallParams {
     pub origin: Address,
     pub method: String,
     pub input: Bytes,
     pub target: OracleTarget,
+}
+
+/// UPC message sent to each validator for proposal validation.
+///
+/// The validator (signer) will check config hash to see if it's consistent with its oracle
+/// configuration state as of the given network state version, and then run the user-defined
+/// `validate` function to sign for its approval/disapproval.
+///
+/// The `params` field carries the part that needs to be sequenced.
+/// The `extra` field carries the supplementary information given to each validator for its local
+/// validation consideration, as needed by the LDK user.
+///
+/// By making a [ValidateResponse], the validator gives its attestation for both the header and the
+/// params that will be sequenced, and also implicitly with the help of the extra information. A
+/// signature will be automatically signed, and the validator will respond to the proposer with
+/// `validate()`'s result (true/false).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ValidateRequest {
+    /// Metadata for the Oracle's setup.
+    pub header: OracleHeader,
+    /// Certified call parameters to be sequenced.
+    pub params: CallParams,
+    /// Supplementary data interpreted by the validate() function, which do NOT need to be sequenced.
+    pub extra: Bytes,
+}
+
+/// UPC message responded from each validator after validation.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ValidateResponse {
+    /// If the validator approves (`true`) or disapproves (`false`) the proposal.
+    pub approval: bool,
+    /// [ValidatePreimage] signature.
+    pub sig: Bytes,
+}
+
+/// UPC message sent to solicit each node's input value for proposal aggregation.
+///
+/// Each node that participates in this input collection phase will derive the its input from the
+/// given initial value (`init`) by the proposer, followed by signing the initial value together
+/// with its input.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProposeRequest {
+    /// Initial arguments passed to each node for deriving their input.
+    pub init: Bytes,
+}
+
+/// UPC message responded from each node for its input for aggregation.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProposeResponse {
+    /// The produced input value.
+    pub input: Bytes,
+    /// [ProposePreimage] signature.
+    pub sig: Bytes,
 }
 
 /// Input proposed by a node.
@@ -64,15 +73,37 @@ pub struct ProposalInput {
     pub sig: Bytes,
 }
 
+impl ProposalInput {
+    pub fn verify(&self, init: Bytes, oracle: &OracleSrc) -> LyquidResult<bool> {
+        let signer = match oracle.committee.get(&self.from) {
+            Some(s) => s,
+            None => return Ok(false),
+        };
+        let key = signer.get_verifying_key(Cipher::Ed25519);
+        ProposePreimage {
+            init,
+            input: self.input.clone(),
+        }
+        .verify(self.sig.clone(), key)
+    }
+}
+
+/// Preimage to be signed during the Propose phase. This is private because it is only required
+/// during off-chain computation.
 #[derive(Serialize, Deserialize)]
-struct ProposalInputPreimage {
-    init: Bytes, // the init value is part of it to avoid equivocation of the proposer.
+struct ProposePreimage {
+    /// The initial value given by the proposer, signed together to avoid equivocation by the
+    // proposer.
+    init: Bytes,
+    /// The input value responded by the solicited node.
     input: Bytes,
 }
 
-impl ProposalInputPreimage {
+impl ProposePreimage {
+    const PREFIX: &'static [u8] = b"lyquor_propose_preimage_v1\0";
+
     fn to_preimage(&self) -> Vec<u8> {
-        lyquor_primitives::encode_object(self)
+        lyquor_primitives::encode_object_with_prefix(Self::PREFIX, self)
     }
 
     fn verify(&self, sig: Bytes, pk: Bytes) -> LyquidResult<bool> {
@@ -81,9 +112,12 @@ impl ProposalInputPreimage {
     }
 }
 
-/// Proposal payload used in validation (second) phase (carried in CallParams.input of
-/// ValidateRequest). During validation, each node will check the validity of inputs,
-/// and whether output = f(inputs).
+/// Proposal used in validation (second) phase.
+///
+/// During validation, each node will check the validity of inputs, and whether output = aggregate(inputs).
+/// The `output` field will be used to form the `params` field of [ValidateResponse].
+/// The `inputs` field will be given to the `extra` field of [ValidateResponse] to be used by the
+/// LDK-generated validation code (see [super::syntax]).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Proposal {
     inputs: Vec<ProposalInput>,
@@ -215,10 +249,11 @@ impl OracleSrc {
         return self.threshold
     }
 
-    /// Generate a certificate that testifies the validity of an arbitrary call under the oracle
-    /// topic to the target network (sequence backend).
+    /// Generate a self-certified call bundle under the oracle topic to be sequenced by the target
+    /// network (sequence backend).
     pub fn certify(
         &self, ctx: &impl OracleCertifyContext, params: CertifiedCallParams, extra: Bytes,
+        group_suffix: Option<&'static str>,
     ) -> LyquidResult<Option<CallParams>> {
         if self.threshold == 0 ||
             self.committee.len() > u16::MAX as usize ||
@@ -249,23 +284,29 @@ impl OracleSrc {
             nonce,
         };
 
+        let mut group: String = self.topic.into();
+        if let Some(suffix) = group_suffix {
+            use std::fmt::Write;
+            write!(group, "::{suffix}")
+                .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to write buffer.".into()))?;
+        }
         // The network fn call to be certified.
         let mut params = CallParams {
             origin: params.origin,
             caller: params.origin,
-            group: self.topic.into(),
+            group,
             method: params.method,
             input: params.input,
             abi,
         };
 
-        let yay = OraclePreimage {
+        let yay = ValidatePreimage {
             header,
             params: params.clone(),
             approval: true,
         };
 
-        let nay = OraclePreimage {
+        let nay = ValidatePreimage {
             header,
             params: params.clone(),
             approval: false,
@@ -273,15 +314,15 @@ impl OracleSrc {
 
         let (yay_msg, nay_msg) = match header.target {
             OracleTarget::EVM(_) => (
-                eth::OraclePreimage::try_from(yay).unwrap().to_preimage(),
-                eth::OraclePreimage::try_from(nay).unwrap().to_preimage(),
+                eth::ValidatePreimage::try_from(yay).unwrap().to_preimage(),
+                eth::ValidatePreimage::try_from(nay).unwrap().to_preimage(),
             ),
             OracleTarget::LVM(_) => (yay.to_preimage(), nay.to_preimage()),
         };
 
         let cert: Option<OracleCert> = lyquor_api::universal_procedural_call(
             ctx.get_lyquid_id(),
-            Some(format!("oracle::committee::{}", self.topic)),
+            Some(format!("oracle::single_phase::{}", params.group)),
             "validate".into(),
             lyquor_primitives::encode_by_fields!(msg: ValidateRequest = ValidateRequest {
                 header,
@@ -307,16 +348,18 @@ impl OracleSrc {
         }))
     }
 
-    /// Derive a sequence proposal from the knowledge of a set of nodes, and then certify it
-    /// through the committee.
+    /// Generate a self-certified call bundle under the oracle topic to be sequenced by the target
+    /// network (sequence backend). The proposal is first aggregated from the inputs of some nodes,
+    /// and then certified through the committee.
     ///
     /// This is a two-phase process.
     ///
-    /// 1. The proposer (the node who initiates the whole thing) uses a UPC with an initial value.
-    /// The callee nodes get that initial value and responds with their proposed inputs
-    /// respectively. The LDK user-defined aggregate() function deterministically defines both the
-    /// computation to aggregate the inputs into an output (CallParams), and when it is ok to stop
-    /// waiting for more inputs.
+    /// 1. **Propose**: The proposer (the node who initiates the whole process) uses a UPC with an
+    ///    initial value to solicit some nodes for their proposed inputs respectively. The
+    ///    user-defined `aggregate(...)` function deterministically aggregates the inputs (a list
+    ///    of [ProposalInput]) into an output ([CertifiedCallParams]), and also decides when it is
+    ///    ok to stop waiting for more inputs.
+    ///
     ///                            ------> <Node A>
     ///                           /        ...
     /// <proposer>---init----------------> <Node B>
@@ -327,13 +370,17 @@ impl OracleSrc {
     /// <proposer> <----input_B----------< <Node B>
     ///             \---input_C----------< <Node C>
     ///
-    /// <proposer>: output = Aggregate({input_A, input_B, input_C})
+    /// <proposer>: output = aggregate({input_A, input_B, input_C})
     ///
-    /// 2. Then, the proposer uses a second UPC (through `validate()`-style oracle) to form a
-    /// certified call to be sequenced by the sequence backend.
+    /// 2. **Validate**: The proposer then uses a second UPC (through [Self::ceritfy]) to form a
+    ///    certified call to be sequenced by the sequence backend.
+    ///
+    /// Use [Self::certify] directly if the initial aggregation phase is not needed (e.g., to just
+    /// ceritify some network state which is the consistent across all nodes from one chain to
+    /// another).
     ///
     pub fn propose_and_certify(
-        &self, ctx: &impl OracleCertifyContext, init: Bytes,
+        &self, ctx: &impl OracleCertifyContext, init: Bytes, group_suffix: Option<&'static str>,
     ) -> LyquidResult<Option<CallParams>> {
         if self.threshold == 0 ||
             self.committee.len() > u16::MAX as usize ||
@@ -348,9 +395,15 @@ impl OracleSrc {
         }
 
         let lyquid = ctx.get_lyquid_id();
+        let mut group: String = self.topic.into();
+        if let Some(suffix) = group_suffix {
+            use std::fmt::Write;
+            write!(group, "::{suffix}")
+                .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to write buffer.".into()))?;
+        }
         let proposal: Option<Proposal> = lyquor_api::universal_procedural_call(
             lyquid,
-            Some(format!("oracle::committee::{}", self.topic)),
+            Some(format!("oracle::two_phase::{group}")),
             "propose".into(),
             lyquor_primitives::encode_by_fields!(msg: ProposeRequest = ProposeRequest {
                 init: init.clone(),
@@ -358,7 +411,7 @@ impl OracleSrc {
             Some(
                 lyquor_primitives::encode_by_fields!(
                     callee: Vec<NodeID> = self.committee.keys().cloned().collect(),
-                    init: Bytes = init
+                    init: Bytes = init.clone()
                 )
                 .into(),
             ),
@@ -366,7 +419,16 @@ impl OracleSrc {
         .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))?;
 
         match proposal {
-            Some(p) => self.certify(ctx, p.output, lyquor_primitives::encode_object(&p.inputs).into()),
+            Some(p) => self.certify(
+                ctx,
+                p.output,
+                lyquor_primitives::encode_by_fields!(
+                    init: Bytes = init,
+                    inputs: Vec<ProposalInput> = p.inputs
+                )
+                .into(),
+                Some("two_phase"),
+            ),
             None => Ok(None),
         }
     }
@@ -383,7 +445,7 @@ impl OracleSrc {
     pub fn __post_validation(
         &self, header: OracleHeader, params: CallParams, approval: bool,
     ) -> LyquidResult<ValidateResponse> {
-        let preimage = OraclePreimage {
+        let preimage = ValidatePreimage {
             header,
             params,
             approval,
@@ -392,7 +454,7 @@ impl OracleSrc {
         let (cipher, m) = match header.target {
             OracleTarget::EVM(_) => (
                 Cipher::Secp256k1,
-                eth::OraclePreimage::try_from(preimage).unwrap().to_preimage(),
+                eth::ValidatePreimage::try_from(preimage).unwrap().to_preimage(),
             ),
             OracleTarget::LVM(_) => (Cipher::Ed25519, preimage.to_preimage()),
         };
@@ -402,7 +464,7 @@ impl OracleSrc {
     }
 
     pub fn __post_propose(&self, init: Bytes, input: Bytes) -> LyquidResult<ProposeResponse> {
-        let preimage = ProposalInputPreimage {
+        let preimage = ProposePreimage {
             init,
             input: input.clone(),
         };
@@ -411,7 +473,7 @@ impl OracleSrc {
     }
 }
 
-/// UPC cache state for aggregation.
+/// UPC cache state for validate phase aggregation.
 pub struct ValidateAggregation {
     header: OracleHeader,
     yea_msg: Bytes,
@@ -454,7 +516,7 @@ impl ProposalAggregation {
         let signer = oracle.committee.get(&node)?;
         let key = signer.get_verifying_key(Cipher::Ed25519);
 
-        let preimage = ProposalInputPreimage {
+        let preimage = ProposePreimage {
             init: self.init.clone(),
             input: resp.input.clone(),
         };
@@ -488,59 +550,6 @@ impl ProposalAggregation {
 
         self.output.clone()
     }
-}
-
-// TODO: use delta to update OracleConfigDest incrementally (instead of replacing it entirely).
-fn verify_oracle_cert(
-    oc: &OracleCert, msg: Bytes, config: &OracleConfigDest, config_hash: &Hash,
-) -> Result<Option<OracleConfigDest>, ()> {
-    let mut config = config;
-    let mut new_config = None;
-    match &oc.new_config {
-        Some(cfg) => {
-            let hash: HashBytes = cfg.to_hash().into();
-            if hash != oc.header.config_hash {
-                // Config mismatch.
-                return Err(());
-            }
-            new_config = Some(OracleConfigDest::from_wire(cfg));
-            config = new_config.as_ref().unwrap();
-        }
-        None => {
-            if &*oc.header.config_hash != config_hash {
-                // Config mismatch.
-                return Err(());
-            }
-        }
-    }
-
-    if oc.signers.len() != oc.signatures.len() {
-        // Malformed certificate.
-        return Err(());
-    }
-
-    if oc.signers.len() < config.threshold as usize {
-        // Threshold not met.
-        return Err(());
-    }
-
-    let cipher = oc.header.target.cipher();
-
-    for (id, sig) in oc
-        .signers
-        .iter()
-        .zip(oc.signatures.iter().take(config.threshold as usize))
-    {
-        let key = match config.committee.get(id) {
-            Some(k) => k.clone(),
-            None => return Err(()),
-        };
-
-        if !super::lyquor_api::verify(msg.clone(), cipher, sig.clone(), Bytes::copy_from_slice(&key)).unwrap_or(false) {
-            return Err(());
-        }
-    }
-    Ok(new_config)
 }
 
 impl ValidateAggregation {
@@ -613,6 +622,59 @@ impl ValidateAggregation {
         }
         self.result.clone()
     }
+}
+
+// TODO: use delta to update OracleConfigDest incrementally (instead of replacing it entirely).
+fn verify_oracle_cert(
+    oc: &OracleCert, msg: Bytes, config: &OracleConfigDest, config_hash: &Hash,
+) -> Result<Option<OracleConfigDest>, ()> {
+    let mut config = config;
+    let mut new_config = None;
+    match &oc.new_config {
+        Some(cfg) => {
+            let hash: HashBytes = cfg.to_hash().into();
+            if hash != oc.header.config_hash {
+                // Config mismatch.
+                return Err(());
+            }
+            new_config = Some(OracleConfigDest::from_wire(cfg));
+            config = new_config.as_ref().unwrap();
+        }
+        None => {
+            if &*oc.header.config_hash != config_hash {
+                // Config mismatch.
+                return Err(());
+            }
+        }
+    }
+
+    if oc.signers.len() != oc.signatures.len() {
+        // Malformed certificate.
+        return Err(());
+    }
+
+    if oc.signers.len() < config.threshold as usize {
+        // Threshold not met.
+        return Err(());
+    }
+
+    let cipher = oc.header.target.cipher();
+
+    for (id, sig) in oc
+        .signers
+        .iter()
+        .zip(oc.signatures.iter().take(config.threshold as usize))
+    {
+        let key = match config.committee.get(id) {
+            Some(k) => k.clone(),
+            None => return Err(()),
+        };
+
+        if !super::lyquor_api::verify(msg.clone(), cipher, sig.clone(), Bytes::copy_from_slice(&key)).unwrap_or(false) {
+            return Err(());
+        }
+    }
+    Ok(new_config)
 }
 
 /// Oracle configuration used by the destination.
@@ -736,7 +798,7 @@ impl OracleDest {
         }
 
         // Ensure the preimage matches the signed digest.
-        let msg = OraclePreimage {
+        let msg = ValidatePreimage {
             header: oc.header,
             params,
             approval: true,

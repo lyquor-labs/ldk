@@ -257,6 +257,13 @@ pub fn encode_object<T: Serialize + ?Sized>(obj: &T) -> Vec<u8> {
     postcard::to_stdvec(obj).expect("postcard serialization failed")
 }
 
+pub fn encode_object_with_prefix<T: Serialize + ?Sized>(prefix: &[u8], obj: &T) -> Vec<u8> {
+    let mut vec = Vec::with_capacity(prefix.len() + core::mem::size_of_val(obj));
+    vec.extend_from_slice(prefix);
+    postcard::to_io(obj, &mut vec).expect("postcard serialization failed");
+    vec
+}
+
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum StateCategory {
     Network,

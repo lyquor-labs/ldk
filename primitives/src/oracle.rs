@@ -54,15 +54,17 @@ impl OracleConfig {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct OraclePreimage {
+pub struct ValidatePreimage {
     pub header: OracleHeader,
     pub params: CallParams,
     pub approval: bool,
 }
 
-impl OraclePreimage {
+impl ValidatePreimage {
+    const PREFIX: &'static [u8] = b"lyquor_validate_preimage_v1\0";
+
     pub fn to_preimage(&self) -> Vec<u8> {
-        encode_object(self)
+        encode_object_with_prefix(Self::PREFIX, self)
     }
 
     pub fn to_hash(&self) -> Hash {
@@ -104,7 +106,7 @@ pub mod eth {
             uint16 threshold;
         }
 
-        struct OraclePreimage {
+        struct ValidatePreimage {
             OracleHeader header;
             string method; // Invoked method of the contract.
             bytes input; // Raw input for the call.
@@ -127,9 +129,13 @@ pub mod eth {
         }
     }
 
-    impl OraclePreimage {
+    impl ValidatePreimage {
+        const PREFIX: &'static [u8] = b"lyquor_validate_preimage_v1\0";
+
         pub fn to_preimage(&self) -> Vec<u8> {
-            Self::abi_encode(self)
+            let mut buf = Vec::from(Self::PREFIX);
+            buf.extend_from_slice(&Self::abi_encode(self));
+            buf
         }
 
         pub fn to_hash(&self) -> super::Hash {
@@ -182,9 +188,9 @@ pub mod eth {
         }
     }
 
-    impl TryFrom<super::OraclePreimage> for OraclePreimage {
+    impl TryFrom<super::ValidatePreimage> for ValidatePreimage {
         type Error = ();
-        fn try_from(om: super::OraclePreimage) -> Result<Self, ()> {
+        fn try_from(om: super::ValidatePreimage) -> Result<Self, ()> {
             Ok(Self {
                 header: om.header.try_into()?,
                 method: om.params.method,
