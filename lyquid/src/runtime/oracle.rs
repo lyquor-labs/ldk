@@ -1,6 +1,6 @@
 use super::{Deserialize, LyquidError, LyquidID, LyquidResult, NodeID, Serialize, StateAccessor, lyquor_api, network};
 pub use lyquor_primitives::oracle::{OracleCert, OracleHeader, OracleTarget, SignerID};
-use lyquor_primitives::oracle::{OracleConfig as OracleConfigWire, OraclePreimage, OracleSigner, ProposePreimage, eth};
+use lyquor_primitives::oracle::{OracleConfig as OracleConfigWire, OraclePreimage, OracleSigner, eth};
 use lyquor_primitives::{Address, Bytes, CallParams, Cipher, Hash, HashBytes, InputABI};
 
 /// Validate UPC message sent to each validator.
@@ -17,9 +17,10 @@ use lyquor_primitives::{Address, Bytes, CallParams, Cipher, Hash, HashBytes, Inp
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ValidateRequest {
     pub header: OracleHeader,
+    /// Certified call parameters to be sequenced.
     pub params: CallParams,
-    /// Empty if there is no witness payload (no proposal step).
-    pub witness: Bytes,
+    /// Some extra data interpreted by the validate() function that do NOT need to be sequenced.
+    pub extra: Bytes,
 }
 
 /// UPC message responded from each validator after validation.
@@ -32,116 +33,61 @@ pub struct ValidateResponse {
 /// Propose UPC message sent to each committee member to collect its input value.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProposeRequest {
-    pub header: OracleHeader,
-    /// User-provided arguments (opaque bytes) for `propose(...)`.
-    pub args: Bytes,
+    /// Initial arguments passed to each node for deriving their input.
+    pub init: Bytes,
 }
 
 /// Propose UPC response from each committee member.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProposeResponse {
-    /// The produced input value (opaque bytes), to be aggregated by proposer.
-    pub value: Bytes,
-    /// Signature over `(header, args, value)`.
+    /// The produced input value.
+    pub input: Bytes,
+    /// Signature of ProposalInputPreimage.
     pub sig: Bytes,
 }
 
-/// Collected evidence from a node in proposal phase.
+/// Output derived from the proposal's input, which carries the necessary data for a sequenced
+/// call.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct ProposeAttestation<T = Bytes> {
+pub struct CertifiedCallParams {
+    pub origin: Address,
+    pub method: String,
+    pub input: Bytes,
+    pub target: OracleTarget,
+}
+
+/// Input proposed by a node.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ProposalInput {
     pub from: NodeID,
-    pub value: T,
+    pub input: Bytes,
     pub sig: Bytes,
 }
 
-/// Witness payload forwarded to phase `validate(...)` so validators can check the proposed
-/// aggregation inputs.
+#[derive(Serialize, Deserialize)]
+struct ProposalInputPreimage {
+    init: Bytes, // the init value is part of it to avoid equivocation of the proposer.
+    input: Bytes,
+}
+
+impl ProposalInputPreimage {
+    fn to_preimage(&self) -> Vec<u8> {
+        lyquor_primitives::encode_object(self)
+    }
+
+    fn verify(&self, sig: Bytes, pk: Bytes) -> LyquidResult<bool> {
+        let m = self.to_preimage();
+        lyquor_api::verify(m.into(), Cipher::Ed25519, sig, pk)
+    }
+}
+
+/// Proposal payload used in validation (second) phase (carried in CallParams.input of
+/// ValidateRequest). During validation, each node will check the validity of inputs,
+/// and whether output = f(inputs).
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ProposeWitness<T = Bytes> {
-    pub header: OracleHeader,
-    pub args: Bytes,
-    pub attestations: Vec<ProposeAttestation<T>>,
-}
-
-impl<T: Serialize> ProposeAttestation<T> {
-    pub fn verify(&self, header: OracleHeader, args: &Bytes, cipher: Cipher, pk: Bytes) -> LyquidResult<bool> {
-        let value_bytes = lyquor_primitives::encode_object(&self.value);
-        let preimage = ProposePreimage {
-            header,
-            args: args.clone(),
-            value: value_bytes.into(),
-        };
-
-        let m = match header.target {
-            OracleTarget::EVM(_) => eth::ProposePreimage::try_from(preimage).unwrap().to_preimage(),
-            OracleTarget::LVM(_) => preimage.to_preimage(),
-        };
-
-        lyquor_api::verify(m.into(), cipher, self.sig.clone(), pk)
-    }
-}
-
-/// A witness that has been cryptographically verified by the platform.
-/// Contains only the inputs from authorized committee members with valid signatures.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifiedWitness<T> {
-    pub header: OracleHeader,
-    pub args: Bytes,
-    /// Only contains values whose signatures have been verified against the committee.
-    pub values: Vec<T>,
-}
-
-/// Trait to allow automatic decoding and verification of oracle witnesses.
-pub trait FromWitness: Sized {
-    fn from_witness(b: Bytes, oracle: &OracleSrc, cipher: Cipher) -> LyquidResult<Self>;
-}
-
-impl FromWitness for Bytes {
-    fn from_witness(b: Bytes, _oracle: &OracleSrc, _cipher: Cipher) -> LyquidResult<Self> {
-        Ok(b)
-    }
-}
-
-impl<T: Serialize + serde::de::DeserializeOwned> FromWitness for VerifiedWitness<T> {
-    fn from_witness(b: Bytes, oracle: &OracleSrc, cipher: Cipher) -> LyquidResult<Self> {
-        if b.is_empty() {
-            return Ok(VerifiedWitness {
-                header: OracleHeader {
-                    proposer: NodeID::new([0; 32]),
-                    target: OracleTarget::LVM(LyquidID::from_owner_nonce(&Address::ZERO, 0)),
-                    config_hash: HashBytes::new([0; 32].into()),
-                    epoch: 0,
-                    nonce: HashBytes::new([0; 32].into()),
-                },
-                args: Bytes::new(),
-                values: Vec::new(),
-            });
-        }
-        let w: ProposeWitness<T> = lyquor_primitives::decode_object(&b).ok_or(LyquidError::LyquorInput)?;
-        let mut verified_values = Vec::new();
-
-        for att in w.attestations {
-            let pk = oracle
-                .committee
-                .get(&att.from)
-                .map(|s| s.get_verifying_key(cipher))
-                .ok_or_else(|| LyquidError::OracleError(format!("Unknown node in witness: {}", att.from)))?;
-
-            if !att.verify(w.header, &w.args, cipher, pk)? {
-                return Err(LyquidError::OracleError(format!(
-                    "Invalid signature in witness from node: {}",
-                    att.from
-                )));
-            }
-            verified_values.push(att.value);
-        }
-
-        Ok(VerifiedWitness {
-            header: w.header,
-            args: w.args,
-            values: verified_values,
-        })
-    }
+pub struct Proposal {
+    inputs: Vec<ProposalInput>,
+    output: CertifiedCallParams,
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize)]
@@ -264,26 +210,15 @@ impl OracleSrc {
         self.update_config();
     }
 
+    /// Get threshold of the committee.
+    pub fn get_threshold(&self) -> u16 {
+        return self.threshold
+    }
+
     /// Generate a certificate that testifies the validity of an arbitrary call under the oracle
     /// topic to the target network (sequence backend).
     pub fn certify(
-        &self, ctx: &impl OracleCertifyContext, origin: Address, method: String, input: Bytes, target: OracleTarget,
-    ) -> LyquidResult<Option<CallParams>> {
-        self.certify_with_witness(ctx, origin, method, input, target, Bytes::new())
-    }
-
-    /// Same as `certify`, but also forwards an opaque witness to validators.
-    pub fn certify_with_witness(
-        &self, ctx: &impl OracleCertifyContext, origin: Address, method: String, input: Bytes, target: OracleTarget,
-        witness: Bytes,
-    ) -> LyquidResult<Option<CallParams>> {
-        let header = self.build_header(ctx, target)?;
-        self.certify_with_header_and_witness(ctx, origin, method, input, header, witness)
-    }
-
-    fn certify_with_header_and_witness(
-        &self, ctx: &impl OracleCertifyContext, origin: Address, method: String, input: Bytes, header: OracleHeader,
-        witness: Bytes,
+        &self, ctx: &impl OracleCertifyContext, params: CertifiedCallParams, extra: Bytes,
     ) -> LyquidResult<Option<CallParams>> {
         if self.threshold == 0 ||
             self.committee.len() > u16::MAX as usize ||
@@ -297,20 +232,30 @@ impl OracleSrc {
             .into());
         }
 
-        let lyquid = ctx.get_lyquid_id();
-
-        let abi = match header.target {
-            OracleTarget::EVM(_) => InputABI::Eth,
-            OracleTarget::LVM(_) => InputABI::Lyquor,
+        let (config_hash, abi) = match params.target {
+            OracleTarget::EVM(_) => (self.config_hash_evm, InputABI::Eth),
+            OracleTarget::LVM(_) => (self.config_hash_lvm, InputABI::Lyquor),
+        };
+        // Populate epoch from instance state and derive a nonce per call.
+        let nonce = Hash::from_slice(&lyquor_api::random_bytes(32)?)
+            .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to obtain random nonce.".into()))?
+            .into();
+        let epoch: u32 = 0; // TODO: use the cached epoch from instance state.
+        let header = OracleHeader {
+            proposer: ctx.get_node_id(),
+            target: params.target,
+            config_hash: config_hash.into(),
+            epoch,
+            nonce,
         };
 
         // The network fn call to be certified.
         let mut params = CallParams {
-            origin,
-            caller: origin,
+            origin: params.origin,
+            caller: params.origin,
             group: self.topic.into(),
-            method,
-            input,
+            method: params.method,
+            input: params.input,
             abi,
         };
 
@@ -326,23 +271,22 @@ impl OracleSrc {
             approval: false,
         };
 
-        let (cipher, yay_msg, nay_msg) = match header.target {
+        let (yay_msg, nay_msg) = match header.target {
             OracleTarget::EVM(_) => (
-                Cipher::Secp256k1,
                 eth::OraclePreimage::try_from(yay).unwrap().to_preimage(),
                 eth::OraclePreimage::try_from(nay).unwrap().to_preimage(),
             ),
-            OracleTarget::LVM(_) => (Cipher::Ed25519, yay.to_preimage(), nay.to_preimage()),
+            OracleTarget::LVM(_) => (yay.to_preimage(), nay.to_preimage()),
         };
 
         let cert: Option<OracleCert> = lyquor_api::universal_procedural_call(
-            lyquid,
+            ctx.get_lyquid_id(),
             Some(format!("oracle::committee::{}", self.topic)),
             "validate".into(),
             lyquor_primitives::encode_by_fields!(msg: ValidateRequest = ValidateRequest {
                 header,
                 params: params.clone(),
-                witness,
+                extra,
             }),
             Some(
                 lyquor_primitives::encode_by_fields!(
@@ -363,42 +307,34 @@ impl OracleSrc {
         }))
     }
 
-    fn build_header(&self, ctx: &impl OracleCertifyContext, target: OracleTarget) -> LyquidResult<OracleHeader> {
-        let proposer = ctx.get_node_id();
-        let config_hash = match target {
-            OracleTarget::EVM(_) => self.config_hash_evm,
-            OracleTarget::LVM(_) => self.config_hash_lvm,
-        };
-
-        // Populate epoch from instance state and derive a nonce per call.
-        let nonce = Hash::from_slice(&lyquor_api::random_bytes(32)?)
-            .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to obtain random nonce.".into()))?
-            .into();
-        let epoch: u32 = 0; // TODO: use the cached epoch from instance state.
-
-        Ok(OracleHeader {
-            proposer,
-            target,
-            config_hash: config_hash.into(),
-            epoch,
-            nonce,
-        })
-    }
-
-    /// Two-phase oracle flow:
-    /// 1) Collect signed inputs from committee via UPC `propose`.
-    /// 2) Aggregate them, then run normal `validate` voting with witness.
+    /// Derive a sequence proposal from the knowledge of a set of nodes, and then certify it
+    /// through the committee.
     ///
-    /// `args` is forwarded to committee `propose(...)` (encoded by fields by the caller).
-    /// `aggregate` is executed on proposer to build the final call input bytes.
-    pub fn propose_and_certify<F, T>(
-        &self, ctx: &impl OracleCertifyContext, origin: Address, method: String, target: OracleTarget, args: Bytes,
-        aggregate: F,
-    ) -> LyquidResult<Option<CallParams>>
-    where
-        T: Serialize + serde::de::DeserializeOwned,
-        F: FnOnce(&[ProposeAttestation<T>]) -> LyquidResult<Bytes>,
-    {
+    /// This is a two-phase process.
+    ///
+    /// 1. The proposer (the node who initiates the whole thing) uses a UPC with an initial value.
+    /// The callee nodes get that initial value and responds with their proposed inputs
+    /// respectively. The LDK user-defined aggregate() function deterministically defines both the
+    /// computation to aggregate the inputs into an output (CallParams), and when it is ok to stop
+    /// waiting for more inputs.
+    ///                            ------> <Node A>
+    ///                           /        ...
+    /// <proposer>---init----------------> <Node B>
+    ///                           \------> <Node C>
+    ///
+    ///              ---input_A----------< <Node A>
+    ///             /                      ...
+    /// <proposer> <----input_B----------< <Node B>
+    ///             \---input_C----------< <Node C>
+    ///
+    /// <proposer>: output = Aggregate({input_A, input_B, input_C})
+    ///
+    /// 2. Then, the proposer uses a second UPC (through `validate()`-style oracle) to form a
+    /// certified call to be sequenced by the sequence backend.
+    ///
+    pub fn propose_and_certify(
+        &self, ctx: &impl OracleCertifyContext, init: Bytes,
+    ) -> LyquidResult<Option<CallParams>> {
         if self.threshold == 0 ||
             self.committee.len() > u16::MAX as usize ||
             self.committee.len() < self.threshold as usize
@@ -412,53 +348,27 @@ impl OracleSrc {
         }
 
         let lyquid = ctx.get_lyquid_id();
-        let header = self.build_header(ctx, target)?;
-        let args_for_witness = args.clone();
-
-        // Collect signed values.
-        let attestations: Option<Vec<ProposeAttestation>> = lyquor_api::universal_procedural_call(
+        let proposal: Option<Proposal> = lyquor_api::universal_procedural_call(
             lyquid,
             Some(format!("oracle::committee::{}", self.topic)),
             "propose".into(),
             lyquor_primitives::encode_by_fields!(msg: ProposeRequest = ProposeRequest {
-                header,
-                args: args.clone(),
+                init: init.clone(),
             }),
             Some(
                 lyquor_primitives::encode_by_fields!(
                     callee: Vec<NodeID> = self.committee.keys().cloned().collect(),
-                    header: OracleHeader = header,
-                    args: Bytes = args
+                    init: Bytes = init
                 )
                 .into(),
             ),
         )
         .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))?;
 
-        let Some(attestations) = attestations else {
-            return Ok(None);
-        };
-
-        // Convert to typed attestations for the user-provided aggregate function.
-        let typed_atts = attestations
-            .iter()
-            .map(|a| {
-                Ok(ProposeAttestation {
-                    from: a.from,
-                    value: lyquor_primitives::decode_object(&a.value).ok_or(LyquidError::LyquorInput)?,
-                    sig: a.sig.clone(),
-                })
-            })
-            .collect::<LyquidResult<Vec<ProposeAttestation<T>>>>()?;
-
-        // Build final call input and forward witness.
-        let input = aggregate(&typed_atts)?;
-        let witness = Bytes::from(lyquor_primitives::encode_object(&ProposeWitness {
-            header,
-            args: args_for_witness,
-            attestations: typed_atts,
-        }));
-        self.certify_with_header_and_witness(ctx, origin, method, input, header, witness)
+        match proposal {
+            Some(p) => self.certify(ctx, p.output, lyquor_primitives::encode_object(&p.inputs).into()),
+            None => Ok(None),
+        }
     }
 
     pub fn __pre_validation(&self, header: &OracleHeader) -> bool {
@@ -491,34 +401,23 @@ impl OracleSrc {
         Ok(ValidateResponse { approval, sig })
     }
 
-    pub fn __post_propose(&self, header: OracleHeader, args: Bytes, value: Bytes) -> LyquidResult<ProposeResponse> {
-        let preimage = ProposePreimage {
-            header,
-            args,
-            value: value.clone(),
+    pub fn __post_propose(&self, init: Bytes, input: Bytes) -> LyquidResult<ProposeResponse> {
+        let preimage = ProposalInputPreimage {
+            init,
+            input: input.clone(),
         };
-
-        let (cipher, m) = match header.target {
-            OracleTarget::EVM(_) => (
-                Cipher::Secp256k1,
-                eth::ProposePreimage::try_from(preimage).unwrap().to_preimage(),
-            ),
-            OracleTarget::LVM(_) => (Cipher::Ed25519, preimage.to_preimage()),
-        };
-
-        let sig = lyquor_api::sign(m.into(), cipher)?;
-        Ok(ProposeResponse { value, sig })
+        let sig = lyquor_api::sign(preimage.to_preimage().into(), Cipher::Ed25519)?;
+        Ok(ProposeResponse { input, sig })
     }
 }
 
 /// UPC cache state for aggregation.
-pub struct Aggregation {
+pub struct ValidateAggregation {
     header: OracleHeader,
     yea_msg: Bytes,
     nay_msg: Bytes,
 
-    // Collected unique responders (regardless of validity) to detect early failure.
-    attempted: super::volatile::HashSet<NodeID>,
+    collected: super::volatile::HashSet<NodeID>,
     yea_sigs: Vec<(SignerID, Bytes)>,
     yea: u16,
     nay: u16,
@@ -526,68 +425,68 @@ pub struct Aggregation {
 }
 
 /// UPC cache state for propose phrase aggregation.
-pub struct ProposeAggregation {
-    header: OracleHeader,
-    args: Bytes,
-    // Collected unique responders (regardless of validity) to detect early failure.
-    attempted: super::volatile::HashSet<NodeID>,
-    attestations: Vec<ProposeAttestation>,
-    result: Option<Option<Vec<ProposeAttestation>>>,
+pub struct ProposalAggregation {
+    init: Bytes,
+    collected: super::volatile::HashSet<NodeID>,
+    inputs: Vec<ProposalInput>,
+    output: Option<Option<Proposal>>,
 }
 
-impl ProposeAggregation {
-    pub fn new(header: OracleHeader, args: Bytes) -> Self {
+impl ProposalAggregation {
+    pub fn new(init: Bytes) -> Self {
         Self {
-            header,
-            args,
-            attempted: super::volatile::new_hashset(),
-            attestations: Vec::new(),
-            result: None,
+            init,
+            collected: super::volatile::new_hashset(),
+            inputs: Vec::new(),
+            output: None,
         }
     }
 
     pub fn add_response(
         &mut self, node: NodeID, resp: ProposeResponse, oracle: &OracleSrc,
-    ) -> Option<Option<Vec<ProposeAttestation>>> {
+        agg: fn(ProposalAggregationContext) -> LyquidResult<Option<CertifiedCallParams>>, lyquid_id: LyquidID,
+    ) -> Option<Option<Proposal>> {
         // A node can only respond once.
-        if self.result.is_some() || !self.attempted.insert(node) {
-            return self.result.clone();
+        if self.output.is_some() || !self.collected.insert(node) {
+            return self.output.clone();
         }
 
         let signer = oracle.committee.get(&node)?;
-        let cipher = self.header.target.cipher();
-        let pk = signer.get_verifying_key(cipher);
+        let key = signer.get_verifying_key(Cipher::Ed25519);
 
-        let preimage = ProposePreimage {
-            header: self.header,
-            args: self.args.clone(),
-            value: resp.value.clone(),
+        let preimage = ProposalInputPreimage {
+            init: self.init.clone(),
+            input: resp.input.clone(),
         };
-        let m = match self.header.target {
-            OracleTarget::EVM(_) => eth::ProposePreimage::try_from(preimage).unwrap().to_preimage(),
-            OracleTarget::LVM(_) => preimage.to_preimage(),
-        };
-
-        let ok = super::lyquor_api::verify(m.into(), cipher, resp.sig.clone(), pk)
-            .ok()
-            .unwrap_or(false);
+        let ok = preimage.verify(resp.sig.clone(), key).ok().unwrap_or(false);
 
         if ok {
-            self.attestations.push(ProposeAttestation {
+            self.inputs.push(ProposalInput {
                 from: node,
-                value: resp.value,
+                input: resp.input,
                 sig: resp.sig,
             });
         }
 
-        if self.attestations.len() >= oracle.threshold as usize {
-            self.result = Some(Some(self.attestations.clone()));
-        } else if oracle.committee.len() - (self.attempted.len() - self.attestations.len()) < oracle.threshold as usize
-        {
-            self.result = Some(None);
+        // Let the LDK user's compute logic decide when there is enough of inputs.
+        // We ignore the error from agg(), treating it as "not ready" or "failure" which implies not setting the output yet.
+        // Or should we panic? Usually runtime errors in user logic should bubble up, but here we are in a state update
+        // triggered by response. Since return type is Option<Option<Proposal>>, we can't easily propagate error.
+        // For now let's treat error as None (no output).
+        if let Ok(Some(output)) = agg(ProposalAggregationContext {
+            init: &self.init,
+            inputs: &self.inputs,
+            lyquid_id,
+        }) {
+            self.output = Some(Some(Proposal {
+                inputs: self.inputs.clone(),
+                output,
+            }));
+        } else if oracle.committee.len() - (self.collected.len() - self.inputs.len()) < oracle.threshold as usize {
+            self.output = Some(None);
         }
 
-        self.result.clone()
+        self.output.clone()
     }
 }
 
@@ -644,13 +543,13 @@ fn verify_oracle_cert(
     Ok(new_config)
 }
 
-impl Aggregation {
+impl ValidateAggregation {
     pub fn new(header: OracleHeader, yea_msg: Bytes, nay_msg: Bytes) -> Self {
         Self {
             header,
             yea_msg,
             nay_msg,
-            attempted: super::volatile::new_hashset(),
+            collected: super::volatile::new_hashset(),
             yea_sigs: Vec::new(),
             yea: 0,
             nay: 0,
@@ -662,19 +561,19 @@ impl Aggregation {
         &mut self, node: NodeID, resp: ValidateResponse, oracle: &OracleSrc,
     ) -> Option<Option<OracleCert>> {
         // A node can only vote once.
-        if self.result.is_some() || !self.attempted.insert(node) {
+        if self.result.is_some() || !self.collected.insert(node) {
             return self.result.clone();
         }
 
         let signer = oracle.committee.get(&node)?;
         let cipher = self.header.target.cipher();
-        let pk = signer.get_verifying_key(cipher);
+        let key = signer.get_verifying_key(cipher);
 
         let ok = super::lyquor_api::verify(
             if resp.approval { &self.yea_msg } else { &self.nay_msg }.clone(),
             cipher,
             resp.sig.clone(),
-            pk,
+            key,
         )
         .ok()
         .unwrap_or(false);
@@ -708,7 +607,7 @@ impl Aggregation {
                 signers,
                 signatures,
             }))
-        } else if oracle.committee.len() - (self.attempted.len() - self.yea as usize) < oracle.threshold as usize {
+        } else if oracle.committee.len() - (self.collected.len() - self.yea as usize) < oracle.threshold as usize {
             // Early failure: impossible to reach threshold with remaining nodes.
             self.result = Some(None)
         }
@@ -900,4 +799,10 @@ impl<S: StateAccessor, I: StateAccessor> OracleCertifyContext for crate::runtime
     fn get_node_id(&self) -> NodeID {
         return self.node_id;
     }
+}
+
+pub struct ProposalAggregationContext<'a> {
+    pub init: &'a [u8],
+    pub inputs: &'a [ProposalInput],
+    pub lyquid_id: LyquidID,
 }

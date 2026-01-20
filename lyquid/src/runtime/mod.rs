@@ -11,6 +11,7 @@ pub use super::*;
 mod allocator;
 #[doc(hidden)] pub mod internal;
 pub mod oracle;
+pub use oracle::CertifiedCallParams;
 #[doc(hidden)] pub mod syntax;
 pub mod upc;
 

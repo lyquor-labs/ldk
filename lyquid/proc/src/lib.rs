@@ -97,7 +97,7 @@ pub fn prefix_call(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     struct Input {
         attr: TokenStream,
         _comma: syn::Token![,],
-        call: syn::Expr,
+        expr: syn::Expr,
     }
 
     impl syn::parse::Parse for Input {
@@ -107,22 +107,34 @@ pub fn prefix_call(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             Ok(Self {
                 attr: content.parse()?,
                 _comma: input.parse()?,
-                call: input.parse()?,
+                expr: input.parse()?,
             })
         }
     }
 
-    let Input { attr, call, .. } = syn::parse_macro_input!(input as Input);
+    let Input { attr, expr, .. } = syn::parse_macro_input!(input as Input);
 
-    if let syn::Expr::Call(mut call) = call {
-        if let syn::Expr::Path(ref mut func_path) = *call.func {
-            if let Some(ident) = func_path.path.get_ident() {
-                func_path.path.segments[0].ident = add_prefix(attr, ident.clone());
+    match expr {
+        syn::Expr::Call(mut call) => {
+            if let syn::Expr::Path(ref mut func_path) = *call.func {
+                if let Some(ident) = func_path.path.get_ident() {
+                    func_path.path.segments[0].ident = add_prefix(attr, ident.clone());
+                }
+                quote::quote!(#call).into()
+            } else {
+                panic!("expected a simple function call");
             }
-            return quote::quote!(#call).into();
         }
+        syn::Expr::Path(path_expr) => {
+            if let Some(ident) = path_expr.path.get_ident() {
+                let new_ident = add_prefix(attr, ident.clone());
+                quote::quote!(#new_ident).into()
+            } else {
+                quote::quote!(#path_expr).into()
+            }
+        }
+        _ => panic!("expected a function call or an identifier"),
     }
-    panic!("expected a function call");
 }
 
 #[proc_macro]

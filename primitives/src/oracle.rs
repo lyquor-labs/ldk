@@ -70,23 +70,6 @@ impl OraclePreimage {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ProposePreimage {
-    pub header: OracleHeader,
-    pub args: Bytes,
-    pub value: Bytes,
-}
-
-impl ProposePreimage {
-    pub fn to_preimage(&self) -> Vec<u8> {
-        encode_object(self)
-    }
-
-    pub fn to_hash(&self) -> Hash {
-        blake3::hash(&self.to_preimage())
-    }
-}
-
 /// Oracle certificate that could be sequenced.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleCert {
@@ -127,12 +110,6 @@ pub mod eth {
             bytes input; // Raw input for the call.
             bool approval; // Should always be true signed by multi-sigs that make up the final cert.
         }
-
-        struct ProposePreimage {
-            OracleHeader header;
-            bytes args;
-            bytes value;
-        }
     }
 
     impl OracleConfig {
@@ -151,16 +128,6 @@ pub mod eth {
     }
 
     impl OraclePreimage {
-        pub fn to_preimage(&self) -> Vec<u8> {
-            Self::abi_encode(self)
-        }
-
-        pub fn to_hash(&self) -> super::Hash {
-            alloy_primitives::keccak256(&self.to_preimage()).0.into()
-        }
-    }
-
-    impl ProposePreimage {
         pub fn to_preimage(&self) -> Vec<u8> {
             Self::abi_encode(self)
         }
@@ -223,17 +190,6 @@ pub mod eth {
                 method: om.params.method,
                 input: om.params.input.into(),
                 approval: om.approval,
-            })
-        }
-    }
-
-    impl TryFrom<super::ProposePreimage> for ProposePreimage {
-        type Error = ();
-        fn try_from(pm: super::ProposePreimage) -> Result<Self, ()> {
-            Ok(Self {
-                header: pm.header.try_into()?,
-                args: pm.args.into(),
-                value: pm.value.into(),
             })
         }
     }
