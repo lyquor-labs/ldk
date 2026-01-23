@@ -664,6 +664,102 @@ macro_rules! __lyquid_categorize_methods {
          }, {$($network_funcs)*}, {$($instance_funcs)*}, {$($internal_funcs)*});
      };
 
+    // Timer function syntax: instance(timer::poll, interval=X, input=(...)) fn ... (interval in milliseconds)
+    ({instance(timer::$group:ident, interval=$interval:expr, input=($($input:tt)*)) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*},
+     {$($internal_funcs:tt)*}) => {
+        $crate::__lyquid_categorize_methods!(
+            {$($rest)*},
+            {$($network_funcs)*},
+            {$($instance_funcs)*
+                timer::$group (true, $interval, ($($input)*)) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                    use crate::__lyquid;
+                    let mut $handle = __lyquid::InstanceContext::new(ctx)?;
+                    let result = $body;
+                    drop($handle);
+                    result
+                }}
+            },
+            {$($internal_funcs)*}
+        );
+    };
+    ({instance(timer::$group:ident, interval=$interval:expr, input=($($input:tt)*)) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*},
+     {$($internal_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(timer::$group, interval=$interval, input=($($input)*)) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}, {$($internal_funcs)*}); };
+    ({instance(timer::$group:ident, interval=$interval:expr, input=($($input:tt)*)) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*},
+     {$($internal_funcs:tt)*}) => {
+        $crate::__lyquid_categorize_methods!(
+            {$($rest)*},
+            {$($network_funcs)*},
+            {$($instance_funcs)*
+                timer::$group (false, $interval, ($($input)*)) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                    use crate::__lyquid;
+                    let $handle = __lyquid::ImmutableInstanceContext::new(ctx)?;
+                    let result = $body;
+                    drop($handle);
+                    result
+                }}
+            },
+            {$($internal_funcs)*}
+        );
+    };
+    ({instance(timer::$group:ident, interval=$interval:expr, input=($($input:tt)*)) fn $fn:ident(&$handle:ident) $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*},
+     {$($internal_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(timer::$group, interval=$interval, input=($($input)*)) fn $fn(&$handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}, {$($internal_funcs)*}); };
+
+    // Timer function syntax: instance(timer::poll, interval=X) fn ... (interval in milliseconds)
+    ({instance(timer::$group:ident, interval=$interval:expr) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*},
+     {$($internal_funcs:tt)*}) => {
+        $crate::__lyquid_categorize_methods!(
+            {$($rest)*},
+            {$($network_funcs)*},
+            {$($instance_funcs)*
+                timer::$group (true, $interval) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                    use crate::__lyquid;
+                    let mut $handle = __lyquid::InstanceContext::new(ctx)?;
+                    let result = $body;
+                    drop($handle);
+                    result
+                }}
+            },
+            {$($internal_funcs)*}
+        );
+    };
+    ({instance(timer::$group:ident, interval=$interval:expr) fn $fn:ident(&mut $handle:ident) $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*},
+     {$($internal_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(timer::$group, interval=$interval) fn $fn(&mut $handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}, {$($internal_funcs)*}); };
+    ({instance(timer::$group:ident, interval=$interval:expr) fn $fn:ident(&$handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*},
+     {$($internal_funcs:tt)*}) => {
+        $crate::__lyquid_categorize_methods!(
+            {$($rest)*},
+            {$($network_funcs)*},
+            {$($instance_funcs)*
+                timer::$group (false, $interval) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                    use crate::__lyquid;
+                    let $handle = __lyquid::ImmutableInstanceContext::new(ctx)?;
+                    let result = $body;
+                    drop($handle);
+                    result
+                }}
+            },
+            {$($internal_funcs)*}
+        );
+    };
+    ({instance(timer::$group:ident, interval=$interval:expr) fn $fn:ident(&$handle:ident) $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*},
+     {$($internal_funcs:tt)*}) => { $crate::__lyquid_categorize_methods!({instance(timer::$group, interval=$interval) fn $fn(&$handle,) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}, {$($internal_funcs)*}); };
+
     ({instance($($group:ident)::*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},
@@ -747,6 +843,7 @@ macro_rules! __lyquid_method_alias {
     ("__lyquid_method_network" $($group:ident)::* (true) $fn:ident) => {};
     ("__lyquid_method_instance" $($group:ident)::* (false) $fn:ident) => {};
     ("__lyquid_method_instance" $($group:ident)::* (true) $fn:ident) => {};
+    ("__lyquid_method_instance" timer::$group:ident ($mutable:ident) $fn:ident) => {};
 }
 
 // TODO: move this macro to primitives crate instead
@@ -789,6 +886,202 @@ macro_rules! encode_eth_params {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_wrap_methods {
+    // Timer function pattern with input: timer::$group ($mutable, $interval, ($input...))
+    ($prefix:tt, timer::$group:ident ($mutable:ident, $interval:expr, ($($input:tt)*)) fn $fn:ident($($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*) => {
+        #[$crate::runtime::internal::prefix_item($prefix, (timer::$group))]
+        mod $fn {
+            use super::*;
+            use $crate::alloy_dyn_abi::{DynSolType, DynSolValue};
+            use $crate::runtime::*;
+            use $crate::runtime::internal::*;
+            use $crate::lyquor_primitives::{encode_object, decode_object, decode_by_fields, encode_by_fields};
+
+            #[inline(always)]
+            fn gen_type_string(form: u8) -> Option<String> {
+                // assemble eth abi string for each parameter
+                gen_eth_type_string::<$rt>(form,
+                    [$((<$type as EthABI>::type_string(), <$type as EthABI>::is_scalar())),*].into_iter())
+            }
+
+            #[prefix_item($prefix, "info", (timer::$group))]
+            #[unsafe(no_mangle)]
+            fn $fn(base: u32, len: u32, _: u32) -> u64 {
+                let raw = unsafe { HostInput::new(base, len) };
+                let flag: Option<u8> = decode_object(&raw);
+                drop(raw);
+                output_to_host(&encode_object(&flag.and_then(|f| {
+                    // declaration form (with "memory", "calldata", etc)
+                    let eth_decl = gen_type_string(0x1 + f);
+                    // canonical form (good for selector calculation after stripping off whitespaces)
+                    let eth_canonical = gen_type_string(0x0);
+                    Some(FuncInfo {
+                        eth: eth_decl.and_then(|decl|
+                                               eth_canonical.map(|canonical| FuncEthInfo {decl, canonical})),
+                        mutable: $mutable,
+                        timer_interval: Some($interval), // interval in milliseconds
+                        timer_input: Some(encode_by_fields!($($input)*)),
+                    })
+                })))
+            }
+
+            #[prefix_item($prefix, (timer::$group))]
+            #[unsafe(no_mangle)]
+            fn $fn(base: u32, len: u32, abi: u32) -> u64 {
+                let raw = unsafe { HostInput::new(base, len) };
+                let output = if abi == ABI_ETH {
+                    let result = (|| -> Result<$rt, LyquidError> {
+                        let (input, ctx) = (|| {
+                            <$rt as EthABI>::type_string()?;
+                            let ctx: $crate::CallContext = decode_object(&raw)?;
+
+                            // We cache the Solidity type decoder so Eth ABI string will only be generated once
+                            static SOL_TYPE_CACHED: std::sync::OnceLock<Option<DynSolType>> = std::sync::OnceLock::new();
+                            let sol_type = SOL_TYPE_CACHED.get_or_init(|| {
+                                gen_type_string(0).and_then(|s| DynSolType::parse(&s).ok())
+                            }).as_ref()?;
+
+                            // decode to a list of DynSolValue
+                            let mut iter = match sol_type.abi_decode_params(&ctx.input).ok()? {
+                                DynSolValue::Tuple(v) => v.into_iter(),
+                                _ => return None,
+                            };
+                            struct Parameters {$($name: $type),*}
+                            // then let each type use its trait method to decode further
+                            Some((Parameters {
+                                $($name: <$type as EthABI>::decode(iter.next()?)?),*
+                            }, ctx))
+                        })().ok_or(LyquidError::LyquorInput)?;
+                        drop(raw);
+                        // set up the context so the function developer feels as if these parameters in
+                        // the input are real
+                        $(let $name = input.$name;)*
+                        // execute the function body
+                        ($body)(ctx)
+                    })().map(|rt| rt.encode().abi_encode());
+                    encode_object(&result)
+                } else {
+                    let result = (|| -> Result<$rt, LyquidError> {
+                        let (input, ctx) = (|| {
+                            let ctx: $crate::CallContext = decode_object(&raw)?;
+                            Some((decode_by_fields!(&ctx.input, $($name: $type),*)?, ctx))
+                        })().ok_or(LyquidError::LyquorInput)?;
+                        drop(raw);
+                        // set up the context so the function developer feels as if these parameters in
+                        // the input are real
+                        $(let $name = input.$name;)*
+                        // execute the function body
+                        ($body)(ctx)
+                    })();
+                    encode_object(&result)
+                };
+                // TODO: possible improvement to not copy this already WASM-allocated vector? But
+                // need to make sure it can be properly deallocated.
+                output_to_host(&output)
+            }
+
+            $crate::__lyquid_method_alias!($prefix timer::$group ($mutable) $fn);
+        }
+
+        $crate::__lyquid_wrap_methods!($prefix, $($rest)*);
+    };
+    // Timer function pattern: timer::$group ($mutable, $interval) fn ... (interval in milliseconds)
+    ($prefix:tt, timer::$group:ident ($mutable:ident, $interval:expr) fn $fn:ident($($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*) => {
+        #[$crate::runtime::internal::prefix_item($prefix, (timer::$group))]
+        mod $fn {
+            use super::*;
+            use $crate::alloy_dyn_abi::{DynSolType, DynSolValue};
+            use $crate::runtime::*;
+            use $crate::runtime::internal::*;
+            use $crate::lyquor_primitives::{encode_object, decode_object, decode_by_fields, encode_by_fields};
+
+            #[inline(always)]
+            fn gen_type_string(form: u8) -> Option<String> {
+                // assemble eth abi string for each parameter
+                gen_eth_type_string::<$rt>(form,
+                    [$((<$type as EthABI>::type_string(), <$type as EthABI>::is_scalar())),*].into_iter())
+            }
+
+            #[prefix_item($prefix, "info", (timer::$group))]
+            #[unsafe(no_mangle)]
+            fn $fn(base: u32, len: u32, _: u32) -> u64 {
+                let raw = unsafe { HostInput::new(base, len) };
+                let flag: Option<u8> = decode_object(&raw);
+                drop(raw);
+                output_to_host(&encode_object(&flag.and_then(|f| {
+                    // declaration form (with "memory", "calldata", etc)
+                    let eth_decl = gen_type_string(0x1 + f);
+                    // canonical form (good for selector calculation after stripping off whitespaces)
+                    let eth_canonical = gen_type_string(0x0);
+                    Some(FuncInfo {
+                        eth: eth_decl.and_then(|decl|
+                                               eth_canonical.map(|canonical| FuncEthInfo {decl, canonical})),
+                        mutable: $mutable,
+                        timer_interval: Some($interval), // interval in milliseconds
+                        timer_input: None,
+                    })
+                })))
+            }
+
+            #[prefix_item($prefix, (timer::$group))]
+            #[unsafe(no_mangle)]
+            fn $fn(base: u32, len: u32, abi: u32) -> u64 {
+                let raw = unsafe { HostInput::new(base, len) };
+                let output = if abi == ABI_ETH {
+                    let result = (|| -> Result<$rt, LyquidError> {
+                        let (input, ctx) = (|| {
+                            <$rt as EthABI>::type_string()?;
+                            let ctx: $crate::CallContext = decode_object(&raw)?;
+
+                            // We cache the Solidity type decoder so Eth ABI string will only be generated once
+                            static SOL_TYPE_CACHED: std::sync::OnceLock<Option<DynSolType>> = std::sync::OnceLock::new();
+                            let sol_type = SOL_TYPE_CACHED.get_or_init(|| {
+                                gen_type_string(0).and_then(|s| DynSolType::parse(&s).ok())
+                            }).as_ref()?;
+
+                            // decode to a list of DynSolValue
+                            let mut iter = match sol_type.abi_decode_params(&ctx.input).ok()? {
+                                DynSolValue::Tuple(v) => v.into_iter(),
+                                _ => return None,
+                            };
+                            struct Parameters {$($name: $type),*}
+                            // then let each type use its trait method to decode further
+                            Some((Parameters {
+                                $($name: <$type as EthABI>::decode(iter.next()?)?),*
+                            }, ctx))
+                        })().ok_or(LyquidError::LyquorInput)?;
+                        drop(raw);
+                        // set up the context so the function developer feels as if these parameters in
+                        // the input are real
+                        $(let $name = input.$name;)*
+                        // execute the function body
+                        ($body)(ctx)
+                    })().map(|rt| rt.encode().abi_encode());
+                    encode_object(&result)
+                } else {
+                    let result = (|| -> Result<$rt, LyquidError> {
+                        let (input, ctx) = (|| {
+                            let ctx: $crate::CallContext = decode_object(&raw)?;
+                            Some((decode_by_fields!(&ctx.input, $($name: $type),*)?, ctx))
+                        })().ok_or(LyquidError::LyquorInput)?;
+                        drop(raw);
+                        // set up the context so the function developer feels as if these parameters in
+                        // the input are real
+                        $(let $name = input.$name;)*
+                        // execute the function body
+                        ($body)(ctx)
+                    })();
+                    encode_object(&result)
+                };
+                // TODO: possible improvement to not copy this already WASM-allocated vector? But
+                // need to make sure it can be properly deallocated.
+                output_to_host(&output)
+            }
+
+            $crate::__lyquid_method_alias!($prefix timer::$group ($mutable) $fn);
+        }
+
+        $crate::__lyquid_wrap_methods!($prefix, $($rest)*);
+    };
     ($prefix:tt, $($group:ident)::* ($mutable:ident) fn $fn:ident($($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*) => {
         #[$crate::runtime::internal::prefix_item($prefix, ($($group)::*))]
         mod $fn {
@@ -820,6 +1113,8 @@ macro_rules! __lyquid_wrap_methods {
                         eth: eth_decl.and_then(|decl|
                                                eth_canonical.map(|canonical| FuncEthInfo {decl, canonical})),
                         mutable: $mutable,
+                        timer_interval: None,
+                        timer_input: None,
                     })
                 })))
             }

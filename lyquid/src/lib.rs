@@ -105,6 +105,8 @@ pub struct FuncEthInfo {
 pub struct FuncInfo {
     pub eth: Option<FuncEthInfo>,
     pub mutable: bool, // &mut ctx or &ctx
+    pub timer_interval: Option<u64>,
+    pub timer_input: Option<Vec<u8>>,
 }
 
 pub mod upc {
