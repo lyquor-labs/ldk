@@ -328,18 +328,44 @@ macro_rules! upc {
 }
 
 pub trait EthABI {
-    fn type_string() -> Option<String>;
     fn sol_type() -> Option<DynSolType>;
-    fn is_scalar() -> bool;
     fn decode(val: DynSolValue) -> Option<Self>
     where
         Self: Sized;
     fn encode(self) -> DynSolValue;
+    fn return_type_encode(self) -> Vec<u8>;
+    fn return_type_string() -> Option<String>;
+}
+
+pub(crate) fn sol_type_name_with_location_keyword(t: &DynSolType, loc: Option<&'static str>) -> String {
+    let flag = match t {
+        // Value types do not need location keyword.
+        DynSolType::Uint(_) |
+        DynSolType::Int(_) |
+        DynSolType::Bool |
+        DynSolType::Address |
+        DynSolType::FixedBytes(_) |
+        DynSolType::Function => false,
+
+        // Reference types need location keywoard.
+        DynSolType::Array(_) |
+        DynSolType::FixedArray(_, _) |
+        DynSolType::Tuple(_) |
+        DynSolType::String |
+        DynSolType::Bytes => true,
+    };
+
+    if flag {
+        if let Some(loc) = loc {
+            return format!("{} {loc}", t.sol_type_name())
+        }
+    }
+    t.sol_type_name().to_string()
 }
 
 impl<T> EthABI for T {
-    default fn type_string() -> Option<String> {
-        None
+    default fn return_type_string() -> Option<String> {
+        Self::sol_type().map(|t| sol_type_name_with_location_keyword(&t, Some("memory")))
     }
 
     default fn sol_type() -> Option<DynSolType> {
@@ -350,20 +376,16 @@ impl<T> EthABI for T {
         None
     }
 
-    default fn is_scalar() -> bool {
-        true
-    }
-
     default fn encode(self) -> DynSolValue {
         unreachable!()
+    }
+
+    default fn return_type_encode(self) -> Vec<u8> {
+        self.encode().abi_encode()
     }
 }
 
 impl EthABI for U256 {
-    fn type_string() -> Option<String> {
-        Some("uint256".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Uint(256))
     }
@@ -381,10 +403,6 @@ impl EthABI for U256 {
 }
 
 impl EthABI for U128 {
-    fn type_string() -> Option<String> {
-        Some("uint128".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Uint(128))
     }
@@ -402,10 +420,6 @@ impl EthABI for U128 {
 }
 
 impl EthABI for U64 {
-    fn type_string() -> Option<String> {
-        Some("uint64".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Uint(64))
     }
@@ -423,10 +437,6 @@ impl EthABI for U64 {
 }
 
 impl EthABI for u64 {
-    fn type_string() -> Option<String> {
-        Some("uint64".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Uint(64))
     }
@@ -444,10 +454,6 @@ impl EthABI for u64 {
 }
 
 impl EthABI for u32 {
-    fn type_string() -> Option<String> {
-        Some("uint32".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Uint(32))
     }
@@ -465,10 +471,6 @@ impl EthABI for u32 {
 }
 
 impl EthABI for u16 {
-    fn type_string() -> Option<String> {
-        Some("uint16".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Uint(16))
     }
@@ -486,10 +488,6 @@ impl EthABI for u16 {
 }
 
 impl EthABI for u8 {
-    fn type_string() -> Option<String> {
-        Some("uint8".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Uint(8))
     }
@@ -507,10 +505,6 @@ impl EthABI for u8 {
 }
 
 impl EthABI for bool {
-    fn type_string() -> Option<String> {
-        Some("bool".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Bool)
     }
@@ -528,16 +522,8 @@ impl EthABI for bool {
 }
 
 impl EthABI for Bytes {
-    fn type_string() -> Option<String> {
-        Some("bytes".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Bytes)
-    }
-
-    fn is_scalar() -> bool {
-        false
     }
 
     fn decode(val: DynSolValue) -> Option<Self> {
@@ -553,16 +539,8 @@ impl EthABI for Bytes {
 }
 
 impl<T: EthABI> EthABI for Vec<T> {
-    fn type_string() -> Option<String> {
-        T::type_string().map(|s| format!("{}[]", s))
-    }
-
     fn sol_type() -> Option<DynSolType> {
         T::sol_type().map(|s| DynSolType::Array(Box::new(s)))
-    }
-
-    fn is_scalar() -> bool {
-        false
     }
 
     fn decode(val: DynSolValue) -> Option<Self> {
@@ -578,16 +556,8 @@ impl<T: EthABI> EthABI for Vec<T> {
 }
 
 impl<T: EthABI, const N: usize> EthABI for [T; N] {
-    default fn type_string() -> Option<String> {
-        T::type_string().map(|s| format!("{}[{N}]", s))
-    }
-
     default fn sol_type() -> Option<DynSolType> {
         T::sol_type().map(|s| DynSolType::FixedArray(Box::new(s), N))
-    }
-
-    default fn is_scalar() -> bool {
-        false
     }
 
     default fn decode(val: DynSolValue) -> Option<Self> {
@@ -606,17 +576,66 @@ impl<T: EthABI, const N: usize> EthABI for [T; N] {
     }
 }
 
-impl EthABI for String {
-    fn type_string() -> Option<String> {
-        Some("string".into())
+impl<A: EthABI, B: EthABI> EthABI for (A, B) {
+    fn return_type_string() -> Option<String> {
+        if let (Some(a), Some(b)) = (A::return_type_string(), B::return_type_string()) {
+            Some(format!("{a}, {b}"))
+        } else {
+            None
+        }
     }
 
+    fn return_type_encode(self) -> Vec<u8> {
+        DynSolValue::Tuple(vec![self.0.encode(), self.1.encode()])
+            .abi_encode_sequence()
+            .unwrap()
+    }
+}
+
+impl<A: EthABI, B: EthABI, C: EthABI> EthABI for (A, B, C) {
+    fn return_type_string() -> Option<String> {
+        if let (Some(a), Some(b), Some(c)) = (
+            A::return_type_string(),
+            B::return_type_string(),
+            C::return_type_string(),
+        ) {
+            Some(format!("{a}, {b}, {c}"))
+        } else {
+            None
+        }
+    }
+
+    fn return_type_encode(self) -> Vec<u8> {
+        DynSolValue::Tuple(vec![self.0.encode(), self.1.encode(), self.2.encode()])
+            .abi_encode_sequence()
+            .unwrap()
+    }
+}
+
+impl<A: EthABI, B: EthABI, C: EthABI, D: EthABI> EthABI for (A, B, C, D) {
+    fn return_type_string() -> Option<String> {
+        if let (Some(a), Some(b), Some(c), Some(d)) = (
+            A::return_type_string(),
+            B::return_type_string(),
+            C::return_type_string(),
+            D::return_type_string(),
+        ) {
+            Some(format!("{a}, {b}, {c}, {d}"))
+        } else {
+            None
+        }
+    }
+
+    fn return_type_encode(self) -> Vec<u8> {
+        DynSolValue::Tuple(vec![self.0.encode(), self.1.encode(), self.2.encode(), self.3.encode()])
+            .abi_encode_sequence()
+            .unwrap()
+    }
+}
+
+impl EthABI for String {
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::String)
-    }
-
-    fn is_scalar() -> bool {
-        false
     }
 
     fn decode(val: DynSolValue) -> Option<Self> {
@@ -632,10 +651,6 @@ impl EthABI for String {
 }
 
 impl EthABI for Address {
-    fn type_string() -> Option<String> {
-        Some("address".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Address)
     }
@@ -653,10 +668,6 @@ impl EthABI for Address {
 }
 
 impl EthABI for LyquidID {
-    fn type_string() -> Option<String> {
-        Some("address".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Address)
     }
@@ -674,10 +685,6 @@ impl EthABI for LyquidID {
 }
 
 impl EthABI for RequiredLyquid {
-    fn type_string() -> Option<String> {
-        Some("address".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::Address)
     }
@@ -695,10 +702,6 @@ impl EthABI for RequiredLyquid {
 }
 
 impl EthABI for NodeID {
-    fn type_string() -> Option<String> {
-        Some("bytes32".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::FixedBytes(32))
     }
@@ -719,16 +722,8 @@ impl EthABI for NodeID {
 }
 
 impl EthABI for [u8; 32] {
-    fn type_string() -> Option<String> {
-        Some("bytes32".into())
-    }
-
     fn sol_type() -> Option<DynSolType> {
         Some(DynSolType::FixedBytes(32))
-    }
-
-    fn is_scalar() -> bool {
-        true
     }
 
     fn decode(val: DynSolValue) -> Option<Self> {

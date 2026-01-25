@@ -899,8 +899,7 @@ macro_rules! __lyquid_wrap_methods {
             #[inline(always)]
             fn gen_type_string(form: u8) -> Option<String> {
                 // assemble eth abi string for each parameter
-                gen_eth_type_string::<$rt>(form,
-                    [$((<$type as EthABI>::type_string(), <$type as EthABI>::is_scalar())),*].into_iter())
+                eth_func_type_string::<$rt>(form, [$(<$type as EthABI>::sol_type()),*].into_iter())
             }
 
             #[prefix_item($prefix, "info", (timer::$group))]
@@ -931,7 +930,7 @@ macro_rules! __lyquid_wrap_methods {
                 let output = if abi == ABI_ETH {
                     let result = (|| -> Result<$rt, LyquidError> {
                         let (input, ctx) = (|| {
-                            <$rt as EthABI>::type_string()?;
+                            <$rt as EthABI>::return_type_string()?;
                             let ctx: $crate::CallContext = decode_object(&raw)?;
 
                             // We cache the Solidity type decoder so Eth ABI string will only be generated once
@@ -957,7 +956,7 @@ macro_rules! __lyquid_wrap_methods {
                         $(let $name = input.$name;)*
                         // execute the function body
                         ($body)(ctx)
-                    })().map(|rt| rt.encode().abi_encode());
+                    })().map(|rt| rt.return_type_encode());
                     encode_object(&result)
                 } else {
                     let result = (|| -> Result<$rt, LyquidError> {
@@ -997,8 +996,7 @@ macro_rules! __lyquid_wrap_methods {
             #[inline(always)]
             fn gen_type_string(form: u8) -> Option<String> {
                 // assemble eth abi string for each parameter
-                gen_eth_type_string::<$rt>(form,
-                    [$((<$type as EthABI>::type_string(), <$type as EthABI>::is_scalar())),*].into_iter())
+                eth_func_type_string::<$rt>(form, [$(<$type as EthABI>::sol_type()),*].into_iter())
             }
 
             #[prefix_item($prefix, "info", (timer::$group))]
@@ -1029,7 +1027,7 @@ macro_rules! __lyquid_wrap_methods {
                 let output = if abi == ABI_ETH {
                     let result = (|| -> Result<$rt, LyquidError> {
                         let (input, ctx) = (|| {
-                            <$rt as EthABI>::type_string()?;
+                            <$rt as EthABI>::return_type_string()?;
                             let ctx: $crate::CallContext = decode_object(&raw)?;
 
                             // We cache the Solidity type decoder so Eth ABI string will only be generated once
@@ -1055,7 +1053,7 @@ macro_rules! __lyquid_wrap_methods {
                         $(let $name = input.$name;)*
                         // execute the function body
                         ($body)(ctx)
-                    })().map(|rt| rt.encode().abi_encode());
+                    })().map(|rt| rt.return_type_encode());
                     encode_object(&result)
                 } else {
                     let result = (|| -> Result<$rt, LyquidError> {
@@ -1094,8 +1092,7 @@ macro_rules! __lyquid_wrap_methods {
             #[inline(always)]
             fn gen_type_string(form: u8) -> Option<String> {
                 // assemble eth abi string for each parameter
-                gen_eth_type_string::<$rt>(form,
-                    [$((<$type as EthABI>::type_string(), <$type as EthABI>::is_scalar())),*].into_iter())
+                eth_func_type_string::<$rt>(form, [$(<$type as EthABI>::sol_type()),*].into_iter())
             }
 
             #[prefix_item($prefix, "info", ($($group)::*))]
@@ -1126,7 +1123,7 @@ macro_rules! __lyquid_wrap_methods {
                 let output = if abi == ABI_ETH {
                     let result = (|| -> Result<$rt, LyquidError> {
                         let (input, ctx) = (|| {
-                            <$rt as EthABI>::type_string()?;
+                            <$rt as EthABI>::return_type_string()?;
                             let ctx: $crate::CallContext = decode_object(&raw)?;
 
                             // We cache the Solidity type decoder so Eth ABI string will only be generated once
@@ -1152,7 +1149,7 @@ macro_rules! __lyquid_wrap_methods {
                         $(let $name = input.$name;)*
                         // execute the function body
                         ($body)(ctx)
-                    })().map(|rt| rt.encode().abi_encode());
+                    })().map(|rt| rt.return_type_encode());
                     encode_object(&result)
                 } else {
                     let result = (|| -> Result<$rt, LyquidError> {

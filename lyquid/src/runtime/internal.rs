@@ -84,39 +84,23 @@ impl PrefixedAccess<Vec<u8>> {
     }
 }
 
-pub fn gen_eth_type_string<T: EthABI>(form: u8, types: impl Iterator<Item = (Option<String>, bool)>) -> Option<String> {
+pub fn eth_func_type_string<T: EthABI>(form: u8, params: impl Iterator<Item = Option<DynSolType>>) -> Option<String> {
+    let loc = match form {
+        0 => None,
+        1 => Some("calldata"),
+        _ => Some("memory"),
+    };
+
     // assemble eth abi string for each parameter
-    let type_parts = types
-        .map(|(s, scalar)| {
-            s.map(|mut s| {
-                if !scalar {
-                    match form {
-                        0x0 => (),
-                        0x1 => s.push_str(" calldata"),
-                        _ => s.push_str(" memory"),
-                    }
-                }
-                s
-            })
-        })
+    let params = params
+        .map(|t| t.map(|t| sol_type_name_with_location_keyword(&t, loc)))
         .collect::<Option<Vec<String>>>()?;
     match form {
-        0x0 => Some(format!("({})", type_parts.join(","))),
+        0x0 => Some(format!("({})", params.join(","))),
         _ => {
             // also check if the output impl EthABI
-            let rt_part = match T::type_string() {
-                Some(mut s) => {
-                    if !T::is_scalar() {
-                        match form {
-                            0x0 => (),
-                            _ => s.push_str(" memory"),
-                        }
-                    }
-                    s
-                }
-                None => String::new(),
-            };
-            Some(format!("({}) returns ({})", type_parts.join(", "), rt_part))
+            let ret = T::return_type_string()?;
+            Some(format!("({}) returns ({})", params.join(", "), ret))
         }
     }
 }
