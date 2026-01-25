@@ -20,7 +20,6 @@ alloy-sol-types = { version = "1.5" }
 anyhow = "1.0"
 assert_cmd = "2.1"
 async-trait = "0.1"
-aws-lc-rs = { version = "1.15", default-features = false }
 axum = { version = "0.8" }
 bytes = "1.11"
 clap = { version = "4.5.53" }
@@ -84,7 +83,6 @@ tower = { version = "0.5" }
 tracing = { version = "0.1" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-trait-variant = "0.1"
 typed-builder = "0.23"
 x509-parser = "0.18.0"
 
