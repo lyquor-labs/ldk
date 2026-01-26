@@ -30,9 +30,7 @@ pub struct Header {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     pub method: Method,
-    pub scheme: Option<Scheme>,
-    pub authority: Option<String>,
-    pub path_with_query: Option<String>,
+    pub url: String,
     pub headers: Vec<Header>,
     pub body: Option<Vec<u8>>,
 }
