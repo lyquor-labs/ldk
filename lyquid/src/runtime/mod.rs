@@ -307,14 +307,14 @@ macro_rules! submit_certified_call {
 /// Trigger a timer function with a given mode, e.g interval.
 #[macro_export]
 macro_rules! trigger {
-    ($($group:ident)::+ $method:ident($($param:ident: $param_type:ty $(= $default:expr)?),*), $mode:expr) => {{
+    ($($group:ident)::+ $method:ident($($param:ident: $param_type:ty $(= $default:expr)?),*), $mode:expr) => (
         $crate::runtime::lyquor_api::trigger(
             stringify!($($group)::+).to_string(),
             stringify!($method).to_string(),
             lyquor_primitives::encode_by_fields!($($param: $param_type $(= $default)?),*),
             $mode,
         )
-    }};
+    );
 }
 
 /// Initiate a Universal Procedure Call (UPC). **Only usable by instance functions.**
