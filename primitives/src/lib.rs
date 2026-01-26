@@ -88,6 +88,14 @@ pub enum InputABI {
     Eth,
 }
 
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum TriggerMode {
+    /// Trigger repeatedly at the specified interval in milliseconds.
+    IntervalMs(u64),
+    /// Stop the trigger (remove it from the registry).
+    Stop,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct HashBytes(Hash);
 

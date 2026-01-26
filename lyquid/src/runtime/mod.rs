@@ -237,6 +237,7 @@ pub mod lyquor_api {
         http_request(request: http::Request, options: Option<http::RequestOptions>) -> http::Response;
         check_ed25519_pubkey(pubkey: [u8; 32], qx: U256, qy: U256) -> bool;
         get_ed25519_address(pubkey: [u8; 32]) -> Option<Address>;
+        trigger(group: String, method: String, input: Vec<u8>, mode: lyquor_primitives::TriggerMode);
     );
 }
 
@@ -301,6 +302,19 @@ macro_rules! submit_certified_call {
         lyquor_api::submit_call($cert, false)
     }};
     ($cert:expr, $signed:expr) => {{ lyquor_api::submit_call($cert, $signed) }};
+}
+
+/// Trigger a timer function with a given mode, e.g interval.
+#[macro_export]
+macro_rules! trigger {
+    ($($group:ident)::+ $method:ident($($param:ident: $param_type:ty $(= $default:expr)?),*), $mode:expr) => {{
+        $crate::runtime::lyquor_api::trigger(
+            stringify!($($group)::+).to_string(),
+            stringify!($method).to_string(),
+            lyquor_primitives::encode_by_fields!($($param: $param_type $(= $default)?),*),
+            $mode,
+        )
+    }};
 }
 
 /// Initiate a Universal Procedure Call (UPC). **Only usable by instance functions.**
