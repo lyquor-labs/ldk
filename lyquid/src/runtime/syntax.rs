@@ -120,6 +120,7 @@ macro_rules! state {
     };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_state_preprocess {
     ({}, {$($token:tt)*}) => { __lyquid_state_generate!($($token)*); };
@@ -131,6 +132,7 @@ macro_rules! __lyquid_state_preprocess {
     };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_state_generate {
     ($($token:tt)*) => {
@@ -156,128 +158,10 @@ macro_rules! __lyquid_state_generate {
 }
 
 /// Defines network, instance, and UPC methods (functions) for a Lyquid contract.
-///
-/// ## Syntax: `lyquid::method!` Macro
-///
-/// The `lyquid::method!` macro defines functions within a Lyquid contract.
-/// These methods may execute with network or instance context, and can also include UPC procedures.
-/// All Lyquid functions should be described with this macro. Unlike [state] macro, you can use it
-/// multiple times as convenient through out your Lyquid crate (in any file, so it's like
-/// "exporting" the public functions for the Lyquid that could be invoked through the platform).
-///
-/// All functions defined with this macro are in the same global namespace, which means there is one function allowed given the same `<category>`, `<group>` and `<method_name>`.
-///
-///
-/// ### Constructor (optional):
-/// The constructor of the Lyquid is guaranteed to be invoked atomically (and only once) when the
-/// Lyquid is deployed (or a new Lyquid code updates the old code).
-///
-/// ```ignore
-/// lyquid::method! {
-///     constructor(&mut <context>, <parameter_list>) {
-///         // Constructor body
-///     }
-/// }
-/// ```
-///
-/// ### Standard Method Definitions:
-///
-/// #### Abbreviated Form (defaults to `"main"` group):
-/// ```ignore
-/// lyquid::method! {
-///     <category> fn <method_name>(&mut <context>, <parameter_list>) -> LyquidResult<ReturnType> {
-///         // Function body
-///     }
-/// }
-/// ```
-///
-/// #### Full Form (explicit group name):
-///
-/// ```ignore
-/// lyquid::method! {
-///     <category>(<group>) fn <method_name>(&mut <context>, <parameter_list>) -> LyquidResult<ReturnType> {
-///         // Function body
-///     }
-/// }
-/// ```
-///
-/// ### UPC Definitions
-///
-///
-/// These expand the UPC lifecycle into three separate instance functions using dedicated groups.
-///
-/// #### 1. **UPC Callee Selection**
-///
-/// ```ignore
-/// upc(callee) fn <method_name>(&<context>) -> LyquidResult<Vec<NodeID>> {
-///     // Returns a list of NodeIDs representing the nodes to be invoked in this UPC instance.
-/// }
-/// ```
-///
-/// #### 2. **UPC Request Handler**
-///
-/// ```ignore
-/// upc(request) fn <method_name>(&mut <context>, <UPC_parameter_list>) -> LyquidResult<ReturnType> {
-///     // Executed by each callee node to perform the UPC-requested computation.
-///
-///     // Parameters:
-///     // - `<context>.id`: Request ID (u64)
-///     // - `<context>.from`: Caller's NodeID
-/// }
-/// ```
-///
-/// #### 3. **UPC Aggregator (Response Handler)**
-///
-/// ```ignore
-/// upc(response) fn <method_name>(&<context>, response: LyquidResult<ReturnType>) -> LyquidResult<ReturnType> {
-///     // Logic executed by the caller node to aggregate responses.
-///
-///     // Notes:
-///     // - A temporary, volatile UPC-local context is available for aggregation purposes.
-///     // - This context is discarded once the UPC call completes or errors.
-/// }
-/// ```
-///
-/// ### Notes on `<category>` and `<context>`
-///
-/// #### `<category>`:
-///
-/// - `network`:
-///   A **consensus (sequencer) event-driven function** executed deterministically by all nodes hosting the same Lyquid.  
-///   It operates on **network state**, which is shared and versioned across all nodes.
-///
-///   network functions can **read and write `network` state**, and their execution is included in the contract's consensus logic. UPC, and other builtins that involve interaction with nondeterminism are not available in network functions.
-///
-/// - `instance`:
-///   An **external event-driven function**, typically triggered by nondeterministic events such as **UPC calls**, **network messages**, or **timers**.  
-///   These functions operate on **instance-local state**, which is specific to each node instance.
-///
-///   Instance functions can **read/write `instance` state**, and **read `network` state**, but they **can not mutate shared `network` state** — to avoid nondeterminism. They can also initiate a UPC call and invoke other bultins that involve nondeterminism.
-///
-/// #### `<context>`:
-///
-/// The `context` identifier (commonly `ctx`, but you can use your own choice such as `self`)
-/// provides access to runtime state within the function.
-///
-/// - For `network` functions: the context is typed as `__lyquid::NetworkContext`  
-/// - For `instance` functions: the context is typed as `__lyquid::InstanceContext`
-///
-/// Typical access patterns:
-/// ```ignore
-/// ctx.network.my_network_state_var
-/// ctx.instance.my_instance_state_var
-/// ```
-///
-/// See [state] for more information on how network and instance states are defined and accessed.
-///
-/// #### Special Notes on UPC Functions:
-///
-/// - The `upc::callee` function (which defines dynamic callee selection logic) is **optional**.
-///   If omitted, the caller must manually specify which nodes should participate in the UPC call.
-///
-/// - The `upc::response` aggregator function is also **optional**.
-///   If omitted, UPC behaves like a traditional **RPC-style request-response**, where the result from one node is taken as the final result.
-///
+#[deprecated(
+    since = "0.0.1",
+    note = "use #[lyquid::method::network] or #[lyquid::method::instance] instead"
+)]
 #[macro_export]
 macro_rules! method {
     {$($rest:tt)*} => {
@@ -290,15 +174,15 @@ macro_rules! method {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_categorize_methods {
-    ({network(oracle::certified::$($group:tt)*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+    ({network(oracle::certified::$first:ident $(:: $tail:ident)*) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},
      {$($internal_funcs:tt)*}) => {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
-                oracle::certified::$($group)* (true) fn $fn(oc: $crate::runtime::oracle::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
-                    let topic = stringify!($($group)*);
+                oracle::certified::$first $(:: $tail)* (true) fn $fn(oc: $crate::runtime::oracle::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                    let topic = concat!(stringify!($first), $( "::", stringify!($tail) ),*);
                     let params = CallParams {
                         origin: ctx.origin,
                         caller: ctx.caller,
@@ -399,7 +283,7 @@ macro_rules! __lyquid_categorize_methods {
         $crate::__lyquid_categorize_methods!({instance(upc::$role$($group)*) $($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*}, {$($internal_funcs)*});
     };
 
-    ({instance(upc::prepare$($group:tt)*) fn $fn:ident(&$handle:ident) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
+    ({instance(upc::prepare$($group:tt)*) fn $fn:ident(&$handle:ident) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},
      {$($internal_funcs:tt)*}) => {
@@ -424,7 +308,7 @@ macro_rules! __lyquid_categorize_methods {
         );
     };
 
-    ({instance(upc::prepare$($group:tt)*) fn $fn:ident(&$handle:ident, $($params:ident: $type:ty),*) -> LyquidResult<Vec<NodeID>> $body:block $($rest:tt)*},
+    ({instance(upc::prepare$($group:tt)*) fn $fn:ident(&$handle:ident, $($params:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},
      {$($internal_funcs:tt)*}) => {

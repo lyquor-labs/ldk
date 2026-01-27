@@ -70,13 +70,14 @@ lyquid::state! {
     network balances: network::HashMap<Address, U256> = network::new_hashmap();
 }
 
-lyquid::method! {
-    constructor(&mut ctx, _token0: RequiredLyquid, _token1: RequiredLyquid) {
-        *ctx.network.token0 = _token0.0;
-        *ctx.network.token1 = _token1.0;
-    }
+#[lyquid::method::network]
+fn constructor(ctx: &mut _, _token0: RequiredLyquid, _token1: RequiredLyquid) {
+    *ctx.network.token0 = _token0.0;
+    *ctx.network.token1 = _token1.0;
+}
 
-    network fn mint(&mut ctx, to: Address) -> LyquidResult<U256> {
+#[lyquid::method::network]
+fn mint(ctx: &mut _, to: Address) -> LyquidResult<U256> {
         let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
         let lyquid_id = ctx.lyquid_id;
         let self_address: Address = lyquid_id.into();
@@ -107,9 +108,10 @@ lyquid::method! {
         lyquid::println!("Minted {} LP tokens to {} (amounts: {} token0, {} token1)", 
                          liquidity, to, amount0, amount1);
         Ok(liquidity)
-    }
+}
 
-    network fn burn(&mut ctx, to: Address, liquidity: U256) -> LyquidResult<bool> {
+#[lyquid::method::network]
+fn burn(ctx: &mut _, to: Address, liquidity: U256) -> LyquidResult<bool> {
         if to == Address::ZERO || liquidity == U256::ZERO {
             return Err(LyquidError::LyquidRuntime("INVALID_BURN".into()));
         }
@@ -128,9 +130,17 @@ lyquid::method! {
         lyquid::println!("Burned {} LP tokens from {}, returned {} token0 and {} token1", 
                          liquidity, ctx.caller, amount0, amount1);
         Ok(true)
-    }
+}
 
-    network fn swap(&mut ctx, amount0_out: U256, amount1_out: U256, to: Address, amount0_in: U256, amount1_in: U256) -> LyquidResult<bool> {
+#[lyquid::method::network]
+fn swap(
+    ctx: &mut _,
+    amount0_out: U256,
+    amount1_out: U256,
+    to: Address,
+    amount0_in: U256,
+    amount1_in: U256,
+) -> LyquidResult<bool> {
         let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
         let (token0, token1) = (*ctx.network.token0, *ctx.network.token1);
 
@@ -170,21 +180,24 @@ lyquid::method! {
         _update(self_address, &mut ctx.network)?;
         lyquid::println!("Swapped: {} token0 and {} token1 to {}", amount0_out, amount1_out, to);
         Ok(true)
-    }
+}
 
-    network fn getPrice0(&ctx) -> LyquidResult<U256> {
-        Ok(*ctx.network.reserve1 * uint!(1000000000000000000_U256) / *ctx.network.reserve0)
-    }
+#[lyquid::method::network]
+fn getPrice0(ctx: &_) -> LyquidResult<U256> {
+    Ok(*ctx.network.reserve1 * uint!(1000000000000000000_U256) / *ctx.network.reserve0)
+}
 
-    network fn getPrice1(&ctx) -> LyquidResult<U256> {
-        Ok(*ctx.network.reserve0 * uint!(1000000000000000000_U256) / *ctx.network.reserve1)
-    }
+#[lyquid::method::network]
+fn getPrice1(ctx: &_) -> LyquidResult<U256> {
+    Ok(*ctx.network.reserve0 * uint!(1000000000000000000_U256) / *ctx.network.reserve1)
+}
 
-    network fn totalSupply(&ctx) -> LyquidResult<U256> {
-        Ok(*ctx.network.total_supply)
-    }
+#[lyquid::method::network]
+fn totalSupply(ctx: &_) -> LyquidResult<U256> {
+    Ok(*ctx.network.total_supply)
+}
 
-    network fn balanceOf(&ctx, account: Address) -> LyquidResult<U256> {
-        Ok(*ctx.network.balances.get(&account).unwrap_or(&U256::ZERO))
-    }
+#[lyquid::method::network]
+fn balanceOf(ctx: &_, account: Address) -> LyquidResult<U256> {
+    Ok(*ctx.network.balances.get(&account).unwrap_or(&U256::ZERO))
 }

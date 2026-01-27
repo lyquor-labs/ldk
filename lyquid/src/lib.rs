@@ -24,6 +24,100 @@ pub use lyquor_primitives::{
 pub mod http;
 #[cfg(feature = "ldk")] pub mod runtime;
 
+#[cfg(feature = "ldk")]
+/// Lyquid method syntax (attribute macros).
+///
+/// Lyquid functions are defined with attribute macros. These methods may execute with network or
+/// instance context, and can include UPC procedures. Define them as top-level functions in your
+/// crate (module-level items, not inside `impl`/`trait` blocks). All functions are exported into a
+/// single global namespace keyed by `<category>`, `<group>`, and `<method_name>`.
+///
+/// ### Constructor (optional)
+/// The constructor is invoked atomically once at deployment (or code upgrade). It must be named
+/// `constructor`, must not return a value, and must use `#[lyquid::method::network]` with no
+/// attribute arguments.
+///
+/// ```ignore
+/// #[lyquid::method::network]
+/// fn constructor(ctx: &mut _, greeting: String) {
+///     *ctx.network.greeting = greeting.into();
+/// }
+/// ```
+///
+/// ### Standard Methods
+///
+/// #### Network method (defaults to `main` group)
+/// ```ignore
+/// #[lyquid::method::network]
+/// fn set_greeting(ctx: &mut _, greeting: String) -> LyquidResult<bool> {
+///     *ctx.network.greeting = greeting.into();
+///     Ok(true)
+/// }
+/// ```
+///
+/// #### Network method with explicit group
+/// ```ignore
+/// #[lyquid::method::network(group = "node")]
+/// fn join(ctx: &mut _, node: NodeID) -> LyquidResult<()> {
+///     ctx.network.nodes.push(node);
+///     Ok(())
+/// }
+/// ```
+///
+/// #### Instance method
+/// ```ignore
+/// #[lyquid::method::instance]
+/// fn get_price(ctx: &_) -> LyquidResult<U256> {
+///     Ok(*ctx.instance.price.read())
+/// }
+/// ```
+///
+/// ### UPC Methods
+///
+/// UPC expands into three instance functions using dedicated groups.
+///
+/// #### 1. UPC callee selection
+/// ```ignore
+/// #[lyquid::method::instance(upc(prepare))]
+/// fn ping(ctx: &_) -> LyquidResult<Vec<NodeID>> {
+///     Ok(Vec::from(&ctx.network.nodes[..]))
+/// }
+/// ```
+///
+/// #### 2. UPC request handler
+/// ```ignore
+/// #[lyquid::method::instance(upc(request))]
+/// fn ping(ctx: &mut _, msg: String) -> LyquidResult<String> {
+///     let from = ctx.from;
+///     let id = ctx.id;
+///     Ok(format!("pong: {msg} ({from:?}, {id})"))
+/// }
+/// ```
+///
+/// #### 3. UPC response aggregator
+/// ```ignore
+/// #[lyquid::method::instance(upc(response))]
+/// fn ping(ctx: &_, response: LyquidResult<String>) -> LyquidResult<Option<String>> {
+///     let resp = response?;
+///     let from = ctx.from;
+///     Ok(Some(format!("from {from:?}: {resp}")))
+/// }
+/// ```
+///
+/// ### Notes on Categories and Context
+/// - `network` methods are deterministic and can read/write `network` state. They cannot perform
+///   nondeterministic operations (UPC, timers, etc.).
+/// - `instance` methods are event-driven and can read/write `instance` state and read `network`
+///   state, but cannot mutate shared `network` state.
+/// - The context parameter must be a reference like `ctx: &mut _` or `ctx: &_`. The concrete
+///   context type depends on the method category (network/instance/UPC).
+/// - UPC `response` functions are optional. If omitted, UPC behaves like a request-response call
+///   that returns the first result.
+pub mod method {
+    pub use lyquid_proc::instance_function as instance;
+    pub use lyquid_proc::network_function as network;
+}
+
 #[cfg_attr(feature = "ldk", doc(hidden))]
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CallContext {
