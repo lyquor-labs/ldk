@@ -37,27 +37,10 @@
 ///
 /// ### `<type>`
 ///
-/// You may define network/instance variables using any primitive types or nested user-defined structs — **as long as they don't include heap references like `Box`, `Rc`, `Arc`, or raw pointers**.
+/// You may define network/instance variables using any primitive types or nested user-defined structs.
+/// Standard collections like `Vec`, `HashMap`, etc. can be used directly.
 ///
-/// If your type **does require heap allocation**, you must explicitly use the correct allocator:
-///
-/// - `network::Allocator` for network variables  
-/// - `instance::Allocator` for instance variables
-///
-/// This also applies to **nested structures**. For example:
-///
-/// ```ignore
-/// network::Vec<network::Vec<network::Vec<u64>>>
-/// ```
-///
-/// All inner allocations must also use the correct allocator category.
-///
-/// ⚠ **Failure to do so may result in undefined memory access or state corruption.**
-///
-/// Most of the time, you won't run into this issue — the SDK provides re-exported standard containers like [network::Vec](super::network::Vec), [network::HashMap](super::network::HashMap), [instance::Vec](super::instance::Vec), etc., which handle this automatically.
-///
-/// If you're using **third-party data structures**, you must ensure they use the correct allocator throughout the object tree.  
-/// *(Unfortunately, due to limitations in the Rust type system, this cannot be fully automated.)*
+/// If you're using **third-party data structures**, they should just work.
 ///
 /// ---
 ///
@@ -91,15 +74,14 @@
 ///
 /// ```ignore
 /// struct MyData {
-///     // A byte vector for network state — must use network::Vec
-///     arr: network::Vec<u8>,
+///     // A byte vector for network state
+///     arr: Vec<u8>,
 ///     x: u64,
 ///     y: u64,
 /// }
 ///
 /// struct MyNestedData {
-///     // Nested container must also use the correct allocator
-///     entries: network::Vec<MyData>,
+///     entries: Vec<MyData>,
 /// }
 ///
 /// lyquid::state! {
@@ -139,6 +121,9 @@ macro_rules! __lyquid_state_generate {
         pub mod __lyquid {
             use super::*;
             use $crate::runtime::*;
+
+            struct NetworkAlloc;
+            struct InstanceAlloc;
 
             internal::setup_lyquid_state_variables!(
                 State

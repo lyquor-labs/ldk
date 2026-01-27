@@ -9,7 +9,7 @@
 use lyquid::runtime::*;
 
 mod utils;
-use utils::{sqrt, min};
+use utils::{min, sqrt};
 
 // Written by following Solidity code in
 // https://github.com/Uniswap/v2-core/blob/master/contracts/UniswapV2Pair.sol
@@ -47,14 +47,16 @@ fn _update(self_address: Address, state: &mut __lyquid::NetworkState) -> LyquidR
 
 fn _mint(state: &mut __lyquid::NetworkState, to: Address, amount: U256) -> LyquidResult<()> {
     *state.total_supply += amount;
-    state.balances.insert(to, state.balances.get(&to).unwrap_or(&U256::ZERO) + amount);
+    state
+        .balances
+        .insert(to, state.balances.get(&to).unwrap_or(&U256::ZERO) + amount);
     Ok(())
 }
 
 fn _burn(state: &mut __lyquid::NetworkState, from: Address, amount: U256) -> LyquidResult<()> {
     let balance = state.balances.get(&from).unwrap_or(&U256::ZERO).clone();
     if balance < amount {
-         return Err(LyquidError::LyquidRuntime("INSUFFICIENT_BALANCE".into()));
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_BALANCE".into()));
     }
     state.balances.insert(from, balance - amount);
     *state.total_supply -= amount;
@@ -67,7 +69,7 @@ lyquid::state! {
     network reserve0: U256 = U256::ZERO;
     network reserve1: U256 = U256::ZERO;
     network total_supply: U256 = U256::ZERO;
-    network balances: network::HashMap<Address, U256> = network::new_hashmap();
+    network balances: HashMap<Address, U256> = new_hashmap();
 }
 
 #[lyquid::method::network]
@@ -98,14 +100,14 @@ fn mint(ctx: &mut _, to: Address) -> LyquidResult<U256> {
         } else {
             min(amount0 * *ctx.network.total_supply / reserve0, amount1 * *ctx.network.total_supply / reserve1)
         };
-        
+
         if liquidity == U256::ZERO {
             return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY_MINTED".into()));
         }
         _mint(&mut ctx.network, to, liquidity)?;
         *ctx.network.reserve0 = balance0;
         *ctx.network.reserve1 = balance1;
-        lyquid::println!("Minted {} LP tokens to {} (amounts: {} token0, {} token1)", 
+        lyquid::println!("Minted {} LP tokens to {} (amounts: {} token0, {} token1)",
                          liquidity, to, amount0, amount1);
         Ok(liquidity)
 }
@@ -127,7 +129,7 @@ fn burn(ctx: &mut _, to: Address, liquidity: U256) -> LyquidResult<bool> {
 
         let lyquid_id = ctx.lyquid_id;
         _update(lyquid_id.into(), &mut ctx.network)?;
-        lyquid::println!("Burned {} LP tokens from {}, returned {} token0 and {} token1", 
+        lyquid::println!("Burned {} LP tokens from {}, returned {} token0 and {} token1",
                          liquidity, ctx.caller, amount0, amount1);
         Ok(true)
 }

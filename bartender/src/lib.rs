@@ -10,8 +10,8 @@ struct DeployInfo {
 
 struct LyquidMetadata {
     owner: Address,
-    deploy_history: network::Vec<DeployInfo>,
-    dependencies: network::Vec<LyquidID>,
+    deploy_history: Vec<DeployInfo>,
+    dependencies: Vec<LyquidID>,
 }
 
 struct NodeMetadata {
@@ -26,10 +26,10 @@ struct LyquidMetadataOutput {
 }
 
 lyquid::state! {
-    network lyquid_registry: network::HashMap<LyquidID, LyquidMetadata> = network::new_hashmap();
-    network owner_nonce: network::HashMap<Address, u64> = network::new_hashmap();
-    network eth_addrs: network::HashMap<Address, LyquidID> = network::new_hashmap();
-    network node_registry: network::HashMap<NodeID, NodeMetadata> = network::new_hashmap();
+    network lyquid_registry: HashMap<LyquidID, LyquidMetadata> = new_hashmap();
+    network owner_nonce: HashMap<Address, u64> = new_hashmap();
+    network eth_addrs: HashMap<Address, LyquidID> = new_hashmap();
+    network node_registry: HashMap<NodeID, NodeMetadata> = new_hashmap();
 }
 
 fn next_lyquid_id(
@@ -43,8 +43,8 @@ fn next_lyquid_id(
     };
     let metadata = ctx.network.lyquid_registry.entry(id).or_insert_with(|| LyquidMetadata {
         owner,
-        deploy_history: network::new_vec(),
-        dependencies: network::new_vec(),
+        deploy_history: Vec::new(),
+        dependencies: Vec::new(),
     });
     metadata.deploy_history.push(DeployInfo { contract });
     // Store the dependencies for this lyquid

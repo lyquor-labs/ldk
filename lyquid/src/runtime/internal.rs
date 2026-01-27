@@ -106,13 +106,13 @@ pub fn eth_func_type_string<T: EthABI>(form: u8, params: impl Iterator<Item = Op
 }
 
 pub struct BuiltinNetworkState {
-    oracle: super::network::HashMap<String, OracleDest>,
+    oracle: super::HashMap<String, OracleDest>,
 }
 
 impl BuiltinNetworkState {
     pub fn new() -> Self {
         Self {
-            oracle: super::network::new_hashmap(),
+            oracle: super::new_hashmap(),
         }
     }
 

@@ -2,10 +2,10 @@
 use lyquid::runtime::*;
 
 lyquid::state! {
-    network greeting: network::String = network::new_string();
+    network greeting: String = String::new();
     network greet_count: u64 = 0;
     // Off-chain state
-    instance per_user_count: instance::HashMap<Address, u64> = instance::new_hashmap();
+    instance per_user_count: HashMap<Address, u64> = new_hashmap();
 }
 
 #[lyquid::method::network]

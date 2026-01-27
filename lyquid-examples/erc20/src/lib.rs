@@ -124,8 +124,8 @@ fn _burn(state: &mut __lyquid::NetworkState, account: Address, amount: U256) -> 
 /// - allowances: Maps (owner, spender) pairs to approved allowance amounts
 lyquid::state! {
     network total_supply: U256 = U256::ZERO;
-    network balances: network::HashMap<Address, U256> = network::new_hashmap();
-    network allowances: network::HashMap<(Address, Address), U256> = network::new_hashmap();
+    network balances: HashMap<Address, U256> = new_hashmap();
+    network allowances: HashMap<(Address, Address), U256> = new_hashmap();
 }
 
 /// Defines all the contract methods required by the ERC-20 standard:
@@ -140,8 +140,7 @@ lyquid::state! {
 #[lyquid::method::network]
 fn constructor(ctx: &mut _) {
     // sender will mint 1000 LYQ
-    _mint(&mut ctx.network, ctx.caller, uint!(1_000_000_000_000_000_000_000_U256))
-        .expect("failed to init");
+    _mint(&mut ctx.network, ctx.caller, uint!(1_000_000_000_000_000_000_000_U256)).expect("failed to init");
 }
 
 #[lyquid::method::instance]

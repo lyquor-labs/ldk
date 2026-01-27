@@ -34,6 +34,11 @@ const INSTANCE_HEAP_BASE: usize = INSTANCE_HEADER_BASE + INSTANCE_HEADER_SIZE;
 
 #[repr(C)]
 struct VolatileSegmentHeader {
+    /// Used by the global allocator to tell which heap to use for (de)allocation.
+    /// 0x0 -- volatile
+    /// 0x1 -- instance
+    /// 0x2 -- network
+    category: u8,
     allocator: Talck<ErrOnOom>,
 }
 
@@ -64,20 +69,82 @@ fn instance_segment_header() -> &'static mut InstanceSegmentHeader {
     unsafe { &mut *(INSTANCE_HEADER_BASE as *mut InstanceSegmentHeader) }
 }
 
+#[inline(always)]
+pub unsafe fn set_allocator_category(category: u8) {
+    volatile_segment_header().category = category;
+}
+
 #[derive(Clone, Default)]
 pub struct VolatileAlloc;
-pub use instance::Alloc as InstanceAlloc;
-pub use network::Alloc as NetworkAlloc;
+
+#[derive(Clone, Default)]
+pub struct MuxAlloc;
 
 #[global_allocator]
-static ALLOCATOR: VolatileAlloc = VolatileAlloc;
+static ALLOCATOR: MuxAlloc = MuxAlloc;
 
-unsafe impl alloc::GlobalAlloc for VolatileAlloc {
+impl MuxAlloc {
+    #[inline(always)]
+    unsafe fn zero_memory(ptr: *mut u8, layout: alloc::Layout) {
+        unsafe {
+            ptr.write_bytes(0, layout.size());
+            std::hint::black_box(ptr);
+        }
+    }
+}
+
+unsafe impl alloc::GlobalAlloc for MuxAlloc {
     unsafe fn alloc(&self, layout: alloc::Layout) -> *mut u8 {
-        unsafe { volatile_segment_header().allocator.alloc(layout) }
+        let header = volatile_segment_header();
+        unsafe {
+            match header.category {
+                0x1 => &instance_segment_header().allocator,
+                0x2 => &network_segment_header().allocator,
+                _ => &volatile_segment_header().allocator,
+                // this case is needed when building a Barrel (extract_lyquid_functions)
+            }
+            .alloc(layout)
+        }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: alloc::Layout) {
-        unsafe { volatile_segment_header().allocator.dealloc(ptr, layout) }
+        let header = volatile_segment_header();
+        // Zeroing the space to avoid DB writes in page diffing.
+        unsafe {
+            Self::zero_memory(ptr, layout);
+
+            match header.category {
+                0x1 => &instance_segment_header().allocator,
+                0x2 => &network_segment_header().allocator,
+                _ => &volatile_segment_header().allocator,
+            }
+            .dealloc(ptr, layout)
+        }
+    }
+}
+
+unsafe impl alloc::Allocator for MuxAlloc {
+    fn allocate(&self, layout: alloc::Layout) -> Result<core::ptr::NonNull<[u8]>, alloc::AllocError> {
+        let header = volatile_segment_header();
+        match header.category {
+            0x1 => &instance_segment_header().allocator,
+            0x2 => &network_segment_header().allocator,
+            _ => &volatile_segment_header().allocator,
+        }
+        .allocate(layout)
+    }
+
+    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: alloc::Layout) {
+        let header = volatile_segment_header();
+        unsafe {
+            Self::zero_memory(ptr.as_ptr(), layout);
+
+            match header.category {
+                0x1 => &instance_segment_header().allocator,
+                0x2 => &network_segment_header().allocator,
+                _ => &volatile_segment_header().allocator,
+            }
+            .deallocate(ptr, layout)
+        }
     }
 }
 
@@ -92,10 +159,10 @@ unsafe impl alloc::Allocator for VolatileAlloc {
 }
 
 /// This function should be called to setup the runtime environment before executing any other WASM
-/// code.
+/// code, **every time** after the memory is created.
 #[unsafe(no_mangle)]
-fn __lyquid_initialize() -> u32 {
-    initialize_volatile_heap();
+fn __lyquid_initialize(category: u32) -> u32 {
+    initialize_volatile_heap(category as u8);
     match initialize_persistent_heap() {
         Some(init) => 0x10 | init,
         None => 0,
@@ -112,15 +179,17 @@ fn __lyquid_nuke_state() {
 #[unsafe(no_mangle)]
 fn __lyquid_volatile_alloc(size: u32, align: u32) -> *mut u8 {
     use alloc::GlobalAlloc;
-    unsafe { ALLOCATOR.alloc(alloc::Layout::from_size_align(size as usize, align as usize).unwrap()) }
+    let allocator = &volatile_segment_header().allocator;
+    unsafe { allocator.alloc(alloc::Layout::from_size_align(size as usize, align as usize).unwrap()) }
 }
 
 /// Deallocate volatile memory.
 #[unsafe(no_mangle)]
 fn __lyquid_volatile_dealloc(base: u32, size: u32, align: u32) {
     use alloc::GlobalAlloc;
+    let allocator = &volatile_segment_header().allocator;
     unsafe {
-        ALLOCATOR.dealloc(
+        allocator.dealloc(
             base as *mut u8,
             alloc::Layout::from_size_align(size as usize, align as usize).unwrap(),
         )
@@ -133,9 +202,10 @@ static FORCE_SHARED_MEMORY: std::sync::atomic::AtomicU32 = std::sync::atomic::At
 
 /// Prepare the volatile heap for the execution.
 #[inline(always)]
-fn initialize_volatile_heap() {
+fn initialize_volatile_heap(category: u8) {
     // always initialize the allocator for volatile memory
     let volatile_header = volatile_segment_header();
+    volatile_header.category = category;
     volatile_header.allocator = Talck::new(Talc::new(ErrOnOom));
     unsafe {
         volatile_header
@@ -307,14 +377,22 @@ macro_rules! submit_certified_call {
 /// Trigger a timer function with a given mode, e.g interval.
 #[macro_export]
 macro_rules! trigger {
-    ($($group:ident)::+ $method:ident($($param:ident: $param_type:ty $(= $default:expr)?),*), $mode:expr) => (
+    (($($group:ident)::*) $method:ident($($param:ident: $type:ty $(= $default:expr)?),*), $mode:expr) => {
         $crate::runtime::lyquor_api::trigger(
-            stringify!($($group)::+).to_string(),
+            stringify!($($group)::*).to_string(),
             stringify!($method).to_string(),
-            lyquor_primitives::encode_by_fields!($($param: $param_type $(= $default)?),*),
+            lyquor_primitives::encode_by_fields!($($param: $type $(= $default)?),*),
             $mode,
         )
-    );
+    };
+    ($method:ident($($param:ident: $type:ty $(= $default:expr)?),*), $mode:expr) => {
+        $crate::runtime::lyquor_api::trigger(
+            $crate::GROUP_DEFAULT.to_string(),
+            stringify!($method).to_string(),
+            lyquor_primitives::encode_by_fields!($($param: $type $(= $default)?),*),
+            $mode,
+        )
+    }
 }
 
 /// Initiate a Universal Procedure Call (UPC). **Only usable by instance functions.**
@@ -759,9 +837,9 @@ pub use hashbrown;
 type HashMap_<K, V, A> = hashbrown::HashMap<K, V, ahash::RandomState, A>;
 type HashSet_<K, A> = hashbrown::HashSet<K, ahash::RandomState, A>;
 
-pub type HashMap<K, V> = volatile::HashMap<K, V>;
-pub type HashSet<K> = volatile::HashSet<K>;
-pub use volatile::{new_hashmap, new_hashset};
+pub type HashMap<K, V> = mux_alloc::HashMap<K, V>;
+pub type HashSet<K> = mux_alloc::HashSet<K>;
+pub use mux_alloc::{new_hashmap, new_hashset};
 
 macro_rules! gen_container_types {
     ($alloc: tt) => {
@@ -817,105 +895,14 @@ macro_rules! gen_container_types {
     };
 }
 
-/// Format a [network::String] (similar to `format!` but the resulting String is allocated in network state).
-#[macro_export]
-macro_rules! network_format {
-	($($arg:tt)*) => {{
-		$crate::runtime::format_in!($crate::runtime::NetworkAlloc, $($arg)*)
-	}}
-}
-
-/// Format an [instance::String] (similar to `format!` but the resulting String is allocated in instance state).
-#[macro_export]
-macro_rules! instance_format {
-	($($arg:tt)*) => {{
-		$crate::runtime::format_in!($crate::runtime::InstanceAlloc, $($arg)*)
-	}}
-}
-
-/// Network persistent state memory allocator and standard containers.
-pub mod network {
-    use super::*;
-
-    /// Allocator type that Lyquid developer should use when defining a type that needs to make
-    /// dynamic allocation.
-    ///
-    /// In most cases, you don't need to use this, because common containers are already
-    /// re-exported to make sure they use the proper allocator. You can write somethng like:
-    /// `network::HashMap<Address, network::Vec<u8>>`, which maps from an address to a vector of
-    /// bytes (note that you still need to ensure all containers are from the same storage category,
-    /// `network::` in this case).
-    ///
-    /// One should always ensure any customized type for an *network variable*
-    /// is entirely allocated with this allocator, otherwise there could be dangling poiners and
-    /// corruption. In short, all data in a category should always directly or indirectly reference
-    /// to those in the *same* category, so it's invalid to write something like `network::Vec<instance::Vec<u8>>`.
-    ///
-    /// For example, `MyContainer<MyOtherContainer<T, Alloc>, Alloc>` describes a customized
-    /// container implementation by the developer, where the same [Alloc] is used for all its
-    /// possible indirections (the inner `MyOtherContainer` also use the same allocator for heap
-    /// allocation).
-    ///
-    /// This opaque type prevents the developer from mixing allocators in different categories.
-    #[derive(Clone, Default)]
-    pub struct Alloc;
-
-    unsafe impl alloc::Allocator for Alloc {
-        fn allocate(&self, layout: alloc::Layout) -> Result<core::ptr::NonNull<[u8]>, alloc::AllocError> {
-            network_segment_header().allocator.allocate(layout)
-        }
-
-        unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: alloc::Layout) {
-            unsafe { network_segment_header().allocator.deallocate(ptr, layout) }
-        }
-    }
-
-    gen_container_types!(Alloc);
-}
-
-/// Instance persistent state memory allocator and standard containers.
-pub mod instance {
-    use super::*;
-
-    /// Allocator type that Lyquid developer should use when defining a type that needs to make
-    /// dynamic allocation.
-    ///
-    /// In most cases, you don't need to use this, because common containers are already
-    /// re-exported to make sure they use the proper allocator. You can write somethng like:
-    /// `network::HashMap<Address, network::Vec<u8>>`, which maps from an address to a vector of
-    /// bytes (note that you still need to ensure all containers are from the same storage category,
-    /// `network::` in this case).
-    ///
-    /// One should always ensure any customized type for an *instance variable*
-    /// is entirely allocated with this allocator, otherwise there could be dangling poiners and
-    /// corruption. In short, all data in a category should always directly or indirectly reference
-    /// to those in the *same* category, so it's invalid to write something like `network::Vec<instance::Vec<u8>>`.
-    ///
-    /// For example, `MyContainer<MyOtherContainer<T, Alloc>, Alloc>` describes a customized
-    /// container implementation by the developer, where the same [Alloc] is used for all its
-    /// possible indirections (the inner `MyOtherContainer` also use the same allocator for heap
-    /// allocation).
-    ///
-    /// This opaque type prevents the developer from mixing allocators in different categories.
-    #[derive(Clone, Default)]
-    pub struct Alloc;
-
-    unsafe impl alloc::Allocator for Alloc {
-        fn allocate(&self, layout: alloc::Layout) -> Result<core::ptr::NonNull<[u8]>, alloc::AllocError> {
-            instance_segment_header().allocator.allocate(layout)
-        }
-
-        unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: alloc::Layout) {
-            unsafe { instance_segment_header().allocator.deallocate(ptr, layout) }
-        }
-    }
-
-    gen_container_types!(Alloc);
-}
-
 pub mod volatile {
     use super::VolatileAlloc;
     gen_container_types!(VolatileAlloc);
+}
+
+mod mux_alloc {
+    use super::MuxAlloc;
+    gen_container_types!(MuxAlloc);
 }
 
 pub struct RwLock<T: ?Sized>(std::sync::RwLock<T>);

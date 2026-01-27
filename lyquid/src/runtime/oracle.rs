@@ -1,4 +1,7 @@
-use super::{Deserialize, LyquidError, LyquidID, LyquidResult, NodeID, Serialize, StateAccessor, lyquor_api, network};
+use super::{
+    Deserialize, HashMap, HashSet, LyquidError, LyquidID, LyquidResult, NodeID, Serialize, StateAccessor, lyquor_api,
+    new_hashmap, new_hashset,
+};
 pub use lyquor_primitives::oracle::{OracleCert, OracleHeader, OracleTarget, SignerID};
 use lyquor_primitives::oracle::{OracleConfig as OracleConfigWire, OracleSigner, ValidatePreimage, eth};
 use lyquor_primitives::{Address, Bytes, CallParams, Cipher, Hash, HashBytes, InputABI};
@@ -152,7 +155,7 @@ impl Signer {
 /// Per-topic network state for the source (certified call generation) chain.
 pub struct OracleSrc {
     topic: &'static str,
-    committee: network::HashMap<NodeID, Signer>,
+    committee: HashMap<NodeID, Signer>,
     threshold: u16,
     /// Next SignerID to be assigned to a new node.
     ///
@@ -191,7 +194,7 @@ impl OracleSrc {
     pub fn new(topic: &'static str) -> Self {
         Self {
             topic,
-            committee: network::new_hashmap(),
+            committee: new_hashmap(),
             threshold: 0,
             next_signer_id: 0,
             config_hash_lvm: Hash::from_bytes([0; 32]),
@@ -479,7 +482,7 @@ pub struct ValidateAggregation {
     yea_msg: Bytes,
     nay_msg: Bytes,
 
-    collected: super::volatile::HashSet<NodeID>,
+    collected: HashSet<NodeID>,
     yea_sigs: Vec<(SignerID, Bytes)>,
     yea: u16,
     nay: u16,
@@ -489,7 +492,7 @@ pub struct ValidateAggregation {
 /// UPC cache state for propose phrase aggregation.
 pub struct ProposalAggregation {
     init: Bytes,
-    collected: super::volatile::HashSet<NodeID>,
+    collected: HashSet<NodeID>,
     inputs: Vec<ProposalInput>,
     output: Option<Option<Proposal>>,
 }
@@ -498,7 +501,7 @@ impl ProposalAggregation {
     pub fn new(init: Bytes) -> Self {
         Self {
             init,
-            collected: super::volatile::new_hashset(),
+            collected: new_hashset(),
             inputs: Vec::new(),
             output: None,
         }
@@ -558,7 +561,7 @@ impl ValidateAggregation {
             header,
             yea_msg,
             nay_msg,
-            collected: super::volatile::new_hashset(),
+            collected: new_hashset(),
             yea_sigs: Vec::new(),
             yea: 0,
             nay: 0,
@@ -679,14 +682,14 @@ fn verify_oracle_cert(
 
 /// Oracle configuration used by the destination.
 struct OracleConfigDest {
-    committee: network::HashMap<SignerID, network::Vec<u8>>,
+    committee: HashMap<SignerID, Vec<u8>>,
     threshold: u16,
 }
 
 impl Default for OracleConfigDest {
     fn default() -> Self {
         Self {
-            committee: network::new_hashmap(),
+            committee: new_hashmap(),
             threshold: 0,
         }
     }
@@ -694,9 +697,9 @@ impl Default for OracleConfigDest {
 
 impl OracleConfigDest {
     fn from_wire(oc: &OracleConfigWire) -> Self {
-        let mut committee = network::new_hashmap();
+        let mut committee = new_hashmap();
         for signer in oc.committee.iter() {
-            committee.insert(signer.id, signer.key.to_vec_in(network::Alloc));
+            committee.insert(signer.id, signer.key.to_vec());
         }
         Self {
             committee,
@@ -715,7 +718,7 @@ pub struct OracleDest {
     // The following variables are used to ensure a certified call is at most invoked once.
     // Epoch number.
     epoch: u32,
-    used_nonce: network::HashSet<Hash>,
+    used_nonce: HashSet<Hash>,
 }
 
 impl Default for OracleDest {
@@ -724,7 +727,7 @@ impl Default for OracleDest {
             config: OracleConfigDest::default(),
             config_hash: [0; 32].into(),
             epoch: 0,
-            used_nonce: network::new_hashset(),
+            used_nonce: new_hashset(),
         }
     }
 }

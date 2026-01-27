@@ -858,7 +858,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         let mut type_ = type_;
         let mut init = init;
 
-        let (cat_alloc, cat_value, _) = match cats.get(&cat_str) {
+        let (_cat_alloc, cat_value, _) = match cats.get(&cat_str) {
             Some(v) => v,
             None => panic!("invalid category {}", cat.to_string()),
         };
@@ -870,6 +870,17 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
             .entry(cat_str.clone())
             .or_insert_with(|| TokenStream::new());
 
+        // Switch to the correct allocator.
+        let cat_num: u8 = match cat_str.as_str() {
+            "instance" => 0x1,
+            "network" => 0x2,
+            _ => panic!("Unknown category for the allocator."),
+        };
+        init = quote::quote! {{
+            lyquid::runtime::set_allocator_category(#cat_num);
+            #init
+        }};
+
         if cat == "instance" {
             init = quote::quote! {lyquid::runtime::RwLock::new(#init)};
             type_ = quote::quote! {lyquid::runtime::RwLock<#type_>};
@@ -878,7 +889,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         var_setup.extend([quote::quote! {
             // the pointer (only need to do it once, upon initialization of the instance's
             // LiteMemory)
-            let ptr: *mut (#type_) = Box::leak(Box::new_in(#init, #cat_alloc));
+            let ptr: *mut (#type_) = Box::leak(Box::new(#init));
             let bytes = (ptr as u64).to_be_bytes();
             pa.set(#cat_value, #name_str.as_bytes(), &bytes).expect(FAIL_WRITE_STATE);
         }]);
@@ -901,7 +912,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         [quote::quote! {
             // the pointer (only need to do it once, upon initialization of the instance's
             // LiteMemory)
-            let ptr: *mut lyquid::runtime::internal::BuiltinNetworkState = Box::leak(Box::new_in(lyquid::runtime::internal::BuiltinNetworkState::new(), lyquid::runtime::NetworkAlloc));
+            let ptr: *mut lyquid::runtime::internal::BuiltinNetworkState = Box::leak(Box::new(lyquid::runtime::internal::BuiltinNetworkState::new()));
             let bytes = (ptr as u64).to_be_bytes();
             internal_pa.set(StateCategory::Network, "network".as_bytes(), &bytes).expect(FAIL_WRITE_STATE);
         }]
@@ -953,11 +964,12 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         //#extra
 
         #[unsafe(no_mangle)]
-        unsafe fn #init_func() {
+        unsafe fn #init_func(category: u32) {
             const FAIL_WRITE_STATE: &str = "cannot write to low-level state store during LiteMemory initialization";
             let internal_pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::INTERNAL_STATE_PREFIX));
             let pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::VAR_CATALOG_PREFIX));
             #var_setup
+            lyquid::runtime::set_allocator_category(category as u8);
         }
     }
     .into()
