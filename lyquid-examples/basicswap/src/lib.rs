@@ -5,7 +5,6 @@
 // It follows the constant product formula (x * y = k) for token swaps and liquidity provision.
 // =============================================================================
 
-#![feature(allocator_api)]
 use lyquid::runtime::*;
 
 mod utils;
@@ -80,108 +79,118 @@ fn constructor(ctx: &mut _, _token0: RequiredLyquid, _token1: RequiredLyquid) {
 
 #[lyquid::method::network]
 fn mint(ctx: &mut _, to: Address) -> LyquidResult<U256> {
-        let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
-        let lyquid_id = ctx.lyquid_id;
-        let self_address: Address = lyquid_id.into();
-        let balance0 = _get_token_balance(*ctx.network.token0, self_address)?;
-        let balance1 = _get_token_balance(*ctx.network.token1, self_address)?;
-        if balance0 <= reserve0 || balance1 <= reserve1 {
-            return Err(LyquidError::LyquidRuntime("INSUFFICIENT_BALANCE_FOR_MIN".into()));
-        }
-        let (amount0, amount1) = (balance0 - reserve0, balance1 - reserve1);
+    let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
+    let lyquid_id = ctx.lyquid_id;
+    let self_address: Address = lyquid_id.into();
+    let balance0 = _get_token_balance(*ctx.network.token0, self_address)?;
+    let balance1 = _get_token_balance(*ctx.network.token1, self_address)?;
+    if balance0 <= reserve0 || balance1 <= reserve1 {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_BALANCE_FOR_MIN".into()));
+    }
+    let (amount0, amount1) = (balance0 - reserve0, balance1 - reserve1);
 
-        let liquidity = if *ctx.network.total_supply == U256::ZERO {
-            let initial = sqrt(amount0 * amount1);
-            if initial <= MINIMUM_LIQUIDITY {
-                return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY_MINTED".into()));
-            }
-            _mint(&mut ctx.network, Address::ZERO, MINIMUM_LIQUIDITY)?;
-            initial - MINIMUM_LIQUIDITY
-        } else {
-            min(amount0 * *ctx.network.total_supply / reserve0, amount1 * *ctx.network.total_supply / reserve1)
-        };
-
-        if liquidity == U256::ZERO {
+    let liquidity = if *ctx.network.total_supply == U256::ZERO {
+        let initial = sqrt(amount0 * amount1);
+        if initial <= MINIMUM_LIQUIDITY {
             return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY_MINTED".into()));
         }
-        _mint(&mut ctx.network, to, liquidity)?;
-        *ctx.network.reserve0 = balance0;
-        *ctx.network.reserve1 = balance1;
-        lyquid::println!("Minted {} LP tokens to {} (amounts: {} token0, {} token1)",
-                         liquidity, to, amount0, amount1);
-        Ok(liquidity)
+        _mint(&mut ctx.network, Address::ZERO, MINIMUM_LIQUIDITY)?;
+        initial - MINIMUM_LIQUIDITY
+    } else {
+        min(
+            amount0 * *ctx.network.total_supply / reserve0,
+            amount1 * *ctx.network.total_supply / reserve1,
+        )
+    };
+
+    if liquidity == U256::ZERO {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY_MINTED".into()));
+    }
+    _mint(&mut ctx.network, to, liquidity)?;
+    *ctx.network.reserve0 = balance0;
+    *ctx.network.reserve1 = balance1;
+    lyquid::println!(
+        "Minted {} LP tokens to {} (amounts: {} token0, {} token1)",
+        liquidity,
+        to,
+        amount0,
+        amount1
+    );
+    Ok(liquidity)
 }
 
 #[lyquid::method::network]
 fn burn(ctx: &mut _, to: Address, liquidity: U256) -> LyquidResult<bool> {
-        if to == Address::ZERO || liquidity == U256::ZERO {
-            return Err(LyquidError::LyquidRuntime("INVALID_BURN".into()));
-        }
-        let amount0 = liquidity * *ctx.network.reserve0 / *ctx.network.total_supply;
-        let amount1 = liquidity * *ctx.network.reserve1 / *ctx.network.total_supply;
-        if amount0 == U256::ZERO || amount1 == U256::ZERO {
-            return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY_BURNED".into()));
-        }
+    if to == Address::ZERO || liquidity == U256::ZERO {
+        return Err(LyquidError::LyquidRuntime("INVALID_BURN".into()));
+    }
+    let amount0 = liquidity * *ctx.network.reserve0 / *ctx.network.total_supply;
+    let amount1 = liquidity * *ctx.network.reserve1 / *ctx.network.total_supply;
+    if amount0 == U256::ZERO || amount1 == U256::ZERO {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY_BURNED".into()));
+    }
 
-        _burn(&mut ctx.network, ctx.caller, liquidity)?;
-        _safe_transfer(*ctx.network.token0, to, amount0)?;
-        _safe_transfer(*ctx.network.token1, to, amount1)?;
+    _burn(&mut ctx.network, ctx.caller, liquidity)?;
+    _safe_transfer(*ctx.network.token0, to, amount0)?;
+    _safe_transfer(*ctx.network.token1, to, amount1)?;
 
-        let lyquid_id = ctx.lyquid_id;
-        _update(lyquid_id.into(), &mut ctx.network)?;
-        lyquid::println!("Burned {} LP tokens from {}, returned {} token0 and {} token1",
-                         liquidity, ctx.caller, amount0, amount1);
-        Ok(true)
+    let lyquid_id = ctx.lyquid_id;
+    _update(lyquid_id.into(), &mut ctx.network)?;
+    lyquid::println!(
+        "Burned {} LP tokens from {}, returned {} token0 and {} token1",
+        liquidity,
+        ctx.caller,
+        amount0,
+        amount1
+    );
+    Ok(true)
 }
 
 #[lyquid::method::network]
 fn swap(
-    ctx: &mut _,
-    amount0_out: U256,
-    amount1_out: U256,
-    to: Address,
-    amount0_in: U256,
-    amount1_in: U256,
+    ctx: &mut _, amount0_out: U256, amount1_out: U256, to: Address, amount0_in: U256, amount1_in: U256,
 ) -> LyquidResult<bool> {
-        let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
-        let (token0, token1) = (*ctx.network.token0, *ctx.network.token1);
+    let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
+    let (token0, token1) = (*ctx.network.token0, *ctx.network.token1);
 
-        let lyquid_id = ctx.lyquid_id;
-        let self_address: Address = lyquid_id.into();
+    let lyquid_id = ctx.lyquid_id;
+    let self_address: Address = lyquid_id.into();
 
-        if amount0_out == U256::ZERO && amount1_out == U256::ZERO {
-            return Err(LyquidError::LyquidRuntime("INSUFFICIENT_OUTPUT_AMOUNT".into()));
-        }
-        if amount0_out >= reserve0 || amount1_out >= reserve1 {
-            return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
-        }
-        if to == Address::from(token0) || to == Address::from(token1) {
-            return Err(LyquidError::LyquidRuntime("INVALID_TO".into()));
-        }
+    if amount0_out == U256::ZERO && amount1_out == U256::ZERO {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_OUTPUT_AMOUNT".into()));
+    }
+    if amount0_out >= reserve0 || amount1_out >= reserve1 {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
+    }
+    if to == Address::from(token0) || to == Address::from(token1) {
+        return Err(LyquidError::LyquidRuntime("INVALID_TO".into()));
+    }
 
-        // Transfer input tokens from user to this contract
-        if amount0_in > U256::ZERO {
-            _safe_transfer_from(token0, ctx.caller, self_address, amount0_in)?;
-        }
-        if amount1_in > U256::ZERO {
-            _safe_transfer_from(token1, ctx.caller, self_address, amount1_in)?;
-        }
-        // Transfer output tokens to recipient
-        if amount0_out > U256::ZERO {
-            _safe_transfer(token0, to, amount0_out)?;
-        }
-        if amount1_out > U256::ZERO {
-            _safe_transfer(token1, to, amount1_out)?;
-        }
+    // Transfer input tokens from user to this contract
+    if amount0_in > U256::ZERO {
+        _safe_transfer_from(token0, ctx.caller, self_address, amount0_in)?;
+    }
+    if amount1_in > U256::ZERO {
+        _safe_transfer_from(token1, ctx.caller, self_address, amount1_in)?;
+    }
+    // Transfer output tokens to recipient
+    if amount0_out > U256::ZERO {
+        _safe_transfer(token0, to, amount0_out)?;
+    }
+    if amount1_out > U256::ZERO {
+        _safe_transfer(token1, to, amount1_out)?;
+    }
 
-        let balance0_adjusted = _get_token_balance(token0, self_address)? * FEE_DENOMINATOR - amount0_in * FEE_RATE;
-        let balance1_adjusted = _get_token_balance(token1, self_address)? * FEE_DENOMINATOR - amount1_in * FEE_RATE;
-        if balance0_adjusted * balance1_adjusted < reserve0 * reserve1 * FEE_DENOMINATOR * FEE_DENOMINATOR {
-            return Err(LyquidError::LyquidRuntime("INSUFFICIENT_INVARIANT: Constant product formula violated (x*y=k)".into()));
-        }
-        _update(self_address, &mut ctx.network)?;
-        lyquid::println!("Swapped: {} token0 and {} token1 to {}", amount0_out, amount1_out, to);
-        Ok(true)
+    let balance0_adjusted = _get_token_balance(token0, self_address)? * FEE_DENOMINATOR - amount0_in * FEE_RATE;
+    let balance1_adjusted = _get_token_balance(token1, self_address)? * FEE_DENOMINATOR - amount1_in * FEE_RATE;
+    if balance0_adjusted * balance1_adjusted < reserve0 * reserve1 * FEE_DENOMINATOR * FEE_DENOMINATOR {
+        return Err(LyquidError::LyquidRuntime(
+            "INSUFFICIENT_INVARIANT: Constant product formula violated (x*y=k)".into(),
+        ));
+    }
+    _update(self_address, &mut ctx.network)?;
+    lyquid::println!("Swapped: {} token0 and {} token1 to {}", amount0_out, amount1_out, to);
+    Ok(true)
 }
 
 #[lyquid::method::network]

@@ -1,7 +1,6 @@
 pub use std::alloc;
 pub use std::boxed::Box;
 pub use std::vec::Vec;
-pub use string_alloc::format_in;
 
 use allocator::Talck;
 use alloy_dyn_abi::{DynSolType, DynSolValue};
@@ -122,6 +121,7 @@ unsafe impl alloc::GlobalAlloc for MuxAlloc {
     }
 }
 
+/*
 unsafe impl alloc::Allocator for MuxAlloc {
     fn allocate(&self, layout: alloc::Layout) -> Result<core::ptr::NonNull<[u8]>, alloc::AllocError> {
         let header = volatile_segment_header();
@@ -157,6 +157,7 @@ unsafe impl alloc::Allocator for VolatileAlloc {
         unsafe { volatile_segment_header().allocator.deallocate(ptr, layout) }
     }
 }
+*/
 
 /// This function should be called to setup the runtime environment before executing any other WASM
 /// code, **every time** after the memory is created.
@@ -834,13 +835,24 @@ impl EthABI for [u8; 32] {
 }
 
 pub use hashbrown;
-type HashMap_<K, V, A> = hashbrown::HashMap<K, V, ahash::RandomState, A>;
-type HashSet_<K, A> = hashbrown::HashSet<K, ahash::RandomState, A>;
 
-pub type HashMap<K, V> = mux_alloc::HashMap<K, V>;
-pub type HashSet<K> = mux_alloc::HashSet<K>;
-pub use mux_alloc::{new_hashmap, new_hashset};
+//type HashMap_<K, V, A> = hashbrown::HashMap<K, V, ahash::RandomState, A>;
+//type HashSet_<K, A> = hashbrown::HashSet<K, ahash::RandomState, A>;
+//
+//pub type HashMap<K, V> = HashMap_<K, V>;
+//pub type HashSet<K> = HashSet_<K>;
 
+pub type HashMap<K, V> = hashbrown::HashMap<K, V, ahash::RandomState>;
+pub type HashSet<K> = hashbrown::HashSet<K, ahash::RandomState>;
+
+pub fn new_hashmap<K, V>() -> HashMap<K, V> {
+    HashMap::with_hasher(ahash::RandomState::with_seed(0))
+}
+pub fn new_hashset<K>() -> HashSet<K> {
+    HashSet::with_hasher(ahash::RandomState::with_seed(0))
+}
+
+#[allow(unused_macros)]
 macro_rules! gen_container_types {
     ($alloc: tt) => {
         pub type Box<T> = super::Box<T, $alloc>;
@@ -895,6 +907,7 @@ macro_rules! gen_container_types {
     };
 }
 
+/*
 pub mod volatile {
     use super::VolatileAlloc;
     gen_container_types!(VolatileAlloc);
@@ -904,6 +917,7 @@ mod mux_alloc {
     use super::MuxAlloc;
     gen_container_types!(MuxAlloc);
 }
+*/
 
 pub struct RwLock<T: ?Sized>(std::sync::RwLock<T>);
 

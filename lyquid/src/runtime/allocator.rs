@@ -8,12 +8,6 @@ use core::{
     ptr::{NonNull, null_mut},
 };
 
-use core::alloc::{AllocError, Allocator};
-
-fn is_aligned_to(ptr: *mut u8, align: usize) -> bool {
-    (ptr as usize).trailing_zeros() >= align.trailing_zeros()
-}
-
 const RELEASE_LOCK_ON_REALLOC_LIMIT: usize = 0x10000;
 
 /// Talc lock, contains a mutex-locked [`Talc`].
@@ -93,6 +87,14 @@ unsafe impl<O: OomHandler> GlobalAlloc for Talck<O> {
             Ordering::Equal => ptr,
         }
     }
+}
+
+// Keep this because we need it for custom volatile allocator in the future.
+/*
+use core::alloc::{AllocError, Allocator};
+
+fn is_aligned_to(ptr: *mut u8, align: usize) -> bool {
+    (ptr as usize).trailing_zeros() >= align.trailing_zeros()
 }
 
 /// Convert a nonnull and length to a nonnull slice.
@@ -207,3 +209,4 @@ unsafe impl<O: OomHandler> Allocator for Talck<O> {
         Ok(nonnull_slice_from_raw_parts(ptr, new_layout.size()))
     }
 }
+*/

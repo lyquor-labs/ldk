@@ -1,6 +1,6 @@
-#![cfg_attr(feature = "ldk", feature(allocator_api, btreemap_alloc))]
 #![cfg_attr(feature = "ldk", allow(incomplete_features))] // used by specialization feature
 #![cfg_attr(feature = "ldk", feature(specialization))] // only used by EthABI
+//#![cfg_attr(feature = "ldk", feature(allocator_api, btreemap_alloc))]
 
 //! - [Litepaper](https://docs.lyquor.dev/docs/litepaper/arch)
 //! - [Tutorial](https://docs.lyquor.dev/docs/tutorial/)

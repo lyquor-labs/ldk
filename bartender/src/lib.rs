@@ -1,4 +1,3 @@
-#![feature(allocator_api)]
 use lyquid::runtime::*;
 use lyquor_primitives::RegisterEvent;
 use serde::*;

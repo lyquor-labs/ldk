@@ -9,15 +9,14 @@ description = "Lyquid Development Kit (LDK)."
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+ahash = { optional = true, version = "0.8.12", features = ["no-rng"], default-features = false }
+alloy-dyn-abi = { version = "1.5", default-features = false }
+hashbrown = { optional = true, version = "0.16", default-features = false }                      # features = ["nightly"] # features used to be for Allocator
 lyquid-proc = { version = "0.0.1", optional = true, path = "./proc" }
 lyquor-primitives = { workspace = true }
 serde = { workspace = true }
-talc = { optional = true, version = "4.4.3", features = ["allocator"], default-features = false }
-#allocator-api2 = { optional = true, version = "0.2", features = ["serde"] }
-ahash = { optional = true, version = "0.8.12", features = ["no-rng"], default-features = false }
-alloy-dyn-abi = { version = "1.5", default-features = false }
-hashbrown = { optional = true, version = "0.16", features = ["nightly"], default-features = false }
 string-alloc = { optional = true, version = "0.0.3", features = ["std", "serde"] }
+talc = { optional = true, version = "4.4.3", default-features = false }                          # features = ["allocator"] # features used to be for Allocator
 thiserror.workspace = true
 
 [features]

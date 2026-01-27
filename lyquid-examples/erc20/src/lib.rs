@@ -17,7 +17,6 @@
 // Note: Some Ethereum-specific features like events are currently marked as TODOs.
 // =============================================================================
 
-#![feature(allocator_api)]
 use lyquid::runtime::*;
 
 // Written by following Solidity code in
