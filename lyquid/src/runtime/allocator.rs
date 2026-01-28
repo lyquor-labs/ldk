@@ -1,5 +1,5 @@
 #![allow(unsafe_op_in_unsafe_fn)]
-// This code is adapted from talck.rs, but we need to use std::sync::Mutex in place of lock_api here.
+use super::Mutex;
 use talc::{OomHandler, Talc};
 
 use core::{
@@ -20,20 +20,20 @@ const RELEASE_LOCK_ON_REALLOC_LIMIT: usize = 0x10000;
 /// ```
 #[derive(Debug)]
 pub struct Talck<O: OomHandler> {
-    mutex: std::sync::Mutex<Talc<O>>,
+    mutex: Mutex<Talc<O>>,
 }
 
 impl<O: OomHandler> Talck<O> {
     /// Create a new `Talck`.
     pub const fn new(talc: Talc<O>) -> Self {
         Self {
-            mutex: std::sync::Mutex::new(talc),
+            mutex: Mutex::new(talc),
         }
     }
 
     /// Lock the mutex and access the inner `Talc`.
-    pub fn lock(&self) -> std::sync::MutexGuard<'_, Talc<O>> {
-        self.mutex.lock().unwrap()
+    pub fn lock(&self) -> super::MutexGuard<'_, Talc<O>> {
+        self.mutex.lock()
     }
 }
 

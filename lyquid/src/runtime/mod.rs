@@ -919,49 +919,8 @@ mod mux_alloc {
 }
 */
 
-pub struct RwLock<T: ?Sized>(std::sync::RwLock<T>);
-
-impl<T> RwLock<T> {
-    pub fn new(inner: T) -> Self {
-        Self(std::sync::RwLock::new(inner))
-    }
-
-    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, T> {
-        self.0.read().unwrap()
-    }
-
-    pub fn write(&mut self) -> std::sync::RwLockWriteGuard<'_, T> {
-        self.0.write().unwrap()
-    }
-}
-
-impl<T> std::ops::Deref for RwLock<T> {
-    type Target = std::sync::RwLock<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-pub struct Mutex<T: ?Sized>(std::sync::Mutex<T>);
-
-impl<T> Mutex<T> {
-    pub fn new(inner: T) -> Self {
-        Self(std::sync::Mutex::new(inner))
-    }
-
-    pub fn lock(&self) -> std::sync::MutexGuard<'_, T> {
-        self.0.lock().unwrap()
-    }
-}
-
-impl<T> std::ops::Deref for Mutex<T> {
-    type Target = std::sync::Mutex<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+pub mod sync;
+pub use sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub struct Immutable<T>(T);
 
