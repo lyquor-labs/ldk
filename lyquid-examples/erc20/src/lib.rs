@@ -136,38 +136,38 @@ lyquid::state! {
 /// - allowance: Returns the amount a spender is allowed to withdraw from an owner
 /// - approve: Sets spender allowance to withdraw from the caller's account
 /// - transferFrom: Transfers tokens on behalf of another account using allowances
-#[lyquid::method::network]
+#[lyquid::method::network(export = ethereum)]
 fn constructor(ctx: &mut _) {
     // sender will mint 1000 LYQ
     _mint(&mut ctx.network, ctx.caller, uint!(1_000_000_000_000_000_000_000_U256)).expect("failed to init");
 }
 
-#[lyquid::method::instance]
+#[lyquid::method::instance(export = ethereum)]
 fn name(_ctx: &mut _) -> LyquidResult<String> {
     Ok("Lyquor".into())
 }
 
-#[lyquid::method::instance]
+#[lyquid::method::instance(export = ethereum)]
 fn symbol(_ctx: &mut _) -> LyquidResult<String> {
     Ok("LYQ".into())
 }
 
-#[lyquid::method::instance]
+#[lyquid::method::instance(export = ethereum)]
 fn decimals(_ctx: &mut _) -> LyquidResult<u8> {
     Ok(18)
 }
 
-#[lyquid::method::network]
+#[lyquid::method::network(export = ethereum)]
 fn totalSupply(ctx: &_) -> LyquidResult<U256> {
     Ok(ctx.network.total_supply.clone())
 }
 
-#[lyquid::method::network]
+#[lyquid::method::network(export = ethereum)]
 fn balanceOf(ctx: &_, account: Address) -> LyquidResult<U256> {
     Ok(get_balance(&ctx.network, &account).clone())
 }
 
-#[lyquid::method::network]
+#[lyquid::method::network(export = ethereum)]
 fn transfer(ctx: &mut _, to: Address, amount: U256) -> LyquidResult<bool> {
     let from = ctx.caller.clone();
     lyquid::println!("transfer {} from {} to {}", amount, from, to);
@@ -175,18 +175,18 @@ fn transfer(ctx: &mut _, to: Address, amount: U256) -> LyquidResult<bool> {
     Ok(true)
 }
 
-#[lyquid::method::instance]
+#[lyquid::method::instance(export = ethereum)]
 fn allowance(ctx: &mut _, owner: Address, spender: Address) -> LyquidResult<U256> {
     Ok(allowance(&mut ctx.network, owner, spender).clone())
 }
 
-#[lyquid::method::network]
+#[lyquid::method::network(export = ethereum)]
 fn approve(ctx: &mut _, spender: Address, value: U256) -> LyquidResult<bool> {
     approve(&mut ctx.network, ctx.caller, spender, value, true)?;
     Ok(true)
 }
 
-#[lyquid::method::network]
+#[lyquid::method::network(export = ethereum)]
 fn transferFrom(ctx: &mut _, from: Address, to: Address, value: U256) -> LyquidResult<bool> {
     let spender = ctx.caller;
     spend_allowance(&mut ctx.network, from, spender, value)?;

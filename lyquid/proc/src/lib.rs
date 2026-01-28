@@ -104,6 +104,16 @@ struct ParsedConstructor {
     body: Box<syn::Block>,
 }
 
+#[derive(Clone, Copy)]
+enum ExportKind {
+    Ethereum,
+}
+
+struct MethodAttr {
+    group: Option<syn::Path>,
+    export: Option<ExportKind>,
+}
+
 fn parse_function_common(func: syn::ItemFn) -> syn::Result<ParsedFunctionCommon> {
     let syn::ItemFn { attrs, sig, block, .. } = func;
     if sig.asyncness.is_some() {
@@ -327,18 +337,22 @@ fn parse_constructor_signature(func: syn::ItemFn) -> syn::Result<ParsedConstruct
 // Expands #[lyquid::method::network], with a constructor special-case.
 fn expand_network_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result<TokenStream> {
     if func.sig.ident == "constructor" {
-        if !attr.is_empty() {
+        let parsed_attr = parse_method_attr(attr, "lyquid::method::network")?;
+        if parsed_attr.group.is_some() {
             return Err(syn::Error::new_spanned(
-                attr,
+                func.sig.ident,
                 "constructor does not accept group arguments",
             ));
         }
         let parsed = parse_constructor_signature(func)?;
-        return Ok(expand_constructor(parsed));
+        return expand_constructor(parsed, parsed_attr.export);
     }
 
     // Parse optional group metadata and lower to __lyquid_categorize_methods.
-    let group_path = parse_method_group(attr, "lyquid::method::network")?;
+    let MethodAttr {
+        group: group_path,
+        export,
+    } = parse_method_attr(attr, "lyquid::method::network")?;
     let parsed = parse_function_signature(func)?;
     let ctx_ident = parsed.ctx_ident;
     let ctx_mut = parsed.ctx_mut;
@@ -358,22 +372,36 @@ fn expand_network_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result<
         quote::quote! { & #ctx_ident }
     };
     let params_ts = params.iter().map(|(ident, ty)| quote::quote! { #ident: #ty });
+    let export_flag = if export.is_some() {
+        quote::quote! { true }
+    } else {
+        quote::quote! { false }
+    };
+
+    let export_tokens = export
+        .map(|kind| export_metadata(kind, true, group_path.as_ref(), &fn_name, ctx_mut, &params, &ret_inner))
+        .transpose()?
+        .unwrap_or_else(TokenStream::new);
 
     Ok(quote::quote! {
         #(#attrs)*
         lyquid::__lyquid_categorize_methods!(
-            { network(#group_tokens) fn #fn_name(#ctx_pattern #(, #params_ts)*) -> LyquidResult<#ret_inner> #body },
+            { network(#group_tokens) export(#export_flag) fn #fn_name(#ctx_pattern #(, #params_ts)*) -> LyquidResult<#ret_inner> #body },
             {},
             {},
             {}
         );
+        #export_tokens
     })
 }
 
 // Expands #[lyquid::method::instance], optionally handling upc(...) or oracle two-phase helpers.
 fn expand_instance_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result<TokenStream> {
     match parse_instance_attr(attr)? {
-        InstanceAttr::Standard(group_path) => {
+        InstanceAttr::Standard(MethodAttr {
+            group: group_path,
+            export,
+        }) => {
             let parsed = parse_function_signature(func)?;
             let ctx_ident = parsed.ctx_ident;
             let ctx_mut = parsed.ctx_mut;
@@ -391,6 +419,12 @@ fn expand_instance_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result
             if let Some(path) = group_path.as_ref() {
                 if let Some(oracle_name) = oracle_two_phase_name(&path) {
                     if fn_name == "aggregate" {
+                        if export.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                fn_name,
+                                "oracle two-phase aggregate does not support `export`",
+                            ));
+                        }
                         if ctx_mut {
                             return Err(syn::Error::new_spanned(
                                 fn_name,
@@ -412,7 +446,7 @@ fn expand_instance_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result
                         return Ok(quote::quote! {
                             #(#attrs)*
                             lyquid::__lyquid_categorize_methods!(
-                                { instance(oracle::two_phase::#oracle_name) fn aggregate(&#ctx_ident) -> LyquidResult<Option<CertifiedCallParams>> #body },
+                                { instance(oracle::two_phase::#oracle_name) export(false) fn aggregate(&#ctx_ident) -> LyquidResult<Option<CertifiedCallParams>> #body },
                                 {},
                                 {},
                                 {}
@@ -427,15 +461,26 @@ fn expand_instance_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result
                 quote::quote! { & #ctx_ident }
             };
             let params_ts = params.iter().map(|(ident, ty)| quote::quote! { #ident: #ty });
+            let export_flag = if export.is_some() {
+                quote::quote! { true }
+            } else {
+                quote::quote! { false }
+            };
+
+            let export_tokens = export
+                .map(|kind| export_metadata(kind, false, group_path.as_ref(), &fn_name, ctx_mut, &params, &ret_inner))
+                .transpose()?
+                .unwrap_or_else(TokenStream::new);
 
             Ok(quote::quote! {
                 #(#attrs)*
                 lyquid::__lyquid_categorize_methods!(
-                    { instance(#group_tokens) fn #fn_name(#ctx_pattern #(, #params_ts)*) -> LyquidResult<#ret_inner> #body },
+                    { instance(#group_tokens) export(#export_flag) fn #fn_name(#ctx_pattern #(, #params_ts)*) -> LyquidResult<#ret_inner> #body },
                     {},
                     {},
                     {}
                 );
+                #export_tokens
             })
         }
         InstanceAttr::Upc(upc_path) => expand_instance_upc_function(upc_path, func),
@@ -443,7 +488,7 @@ fn expand_instance_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result
 }
 
 // Lower constructor into the same wrapper shape used by legacy lyquid::method!.
-fn expand_constructor(parsed: ParsedConstructor) -> TokenStream {
+fn expand_constructor(parsed: ParsedConstructor, export: Option<ExportKind>) -> syn::Result<TokenStream> {
     let ParsedConstructor {
         ctx_ident,
         ctx_mut,
@@ -463,13 +508,23 @@ fn expand_constructor(parsed: ParsedConstructor) -> TokenStream {
     } else {
         quote::quote! { false }
     };
+    let export_flag = if export.is_some() {
+        quote::quote! { true }
+    } else {
+        quote::quote! { false }
+    };
     let params_ts = params.iter().map(|(ident, ty)| quote::quote! { #ident: #ty });
 
-    quote::quote! {
+    let export_tokens = export
+        .map(|kind| export_metadata(kind, true, None, &ctor_name, ctx_mut, &params, &syn::parse_quote!(bool)))
+        .transpose()?
+        .unwrap_or_else(TokenStream::new);
+
+    Ok(quote::quote! {
         #(#attrs)*
         lyquid::__lyquid_wrap_methods!(
             "__lyquid_method_network",
-            main (#mutable_flag) fn #ctor_name(#(#params_ts),*) -> LyquidResult<bool> {
+            main (#mutable_flag, #export_flag) fn #ctor_name(#(#params_ts),*) -> LyquidResult<bool> {
                 |ctx: CallContext| -> LyquidResult<bool> {
                     use crate::__lyquid;
                     #ctx_init
@@ -479,11 +534,12 @@ fn expand_constructor(parsed: ParsedConstructor) -> TokenStream {
                 }
             }
         );
-    }
+        #export_tokens
+    })
 }
 
 enum InstanceAttr {
-    Standard(Option<syn::Path>),
+    Standard(MethodAttr),
     Upc(syn::Path),
 }
 
@@ -575,7 +631,10 @@ fn option_inner_type(ty: &syn::Type) -> Option<syn::Type> {
 // Parse #[lyquid::method::instance] arguments: group = "...", or upc(...).
 fn parse_instance_attr(attr: TokenStream) -> syn::Result<InstanceAttr> {
     if attr.is_empty() {
-        return Ok(InstanceAttr::Standard(None));
+        return Ok(InstanceAttr::Standard(MethodAttr {
+            group: None,
+            export: None,
+        }));
     }
 
     let mut iter = attr.clone().into_iter();
@@ -584,10 +643,6 @@ fn parse_instance_attr(attr: TokenStream) -> syn::Result<InstanceAttr> {
         .ok_or_else(|| syn::Error::new_spanned(&attr, "invalid attribute arguments"))?;
 
     match first {
-        TokenTree::Ident(ident) if ident == "group" => {
-            let group = parse_method_group(attr, "lyquid::method::instance")?;
-            Ok(InstanceAttr::Standard(group))
-        }
         TokenTree::Ident(ident) if ident == "upc" => {
             let group = match iter.next() {
                 Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Parenthesis => group,
@@ -615,11 +670,158 @@ fn parse_instance_attr(attr: TokenStream) -> syn::Result<InstanceAttr> {
             validate_group_path(&upc_path)?;
             Ok(InstanceAttr::Upc(upc_path))
         }
-        _ => Err(syn::Error::new_spanned(
-            attr,
-            "expected `group = \"foo::bar\"` or `upc(<role>)` for #[lyquid::method::instance]",
-        )),
+        _ => {
+            let parsed = parse_method_attr(attr, "lyquid::method::instance")?;
+            Ok(InstanceAttr::Standard(parsed))
+        }
     }
+}
+
+fn parse_method_attr(attr: TokenStream, attr_name: &str) -> syn::Result<MethodAttr> {
+    if attr.is_empty() {
+        return Ok(MethodAttr {
+            group: None,
+            export: None,
+        });
+    }
+
+    let parser = |input: syn::parse::ParseStream| -> syn::Result<MethodAttr> {
+        let mut group = None;
+        let mut export = None;
+
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            input.parse::<syn::Token![=]>()?;
+
+            if key == "group" {
+                let path = if input.peek(syn::LitStr) {
+                    let lit: syn::LitStr = input.parse()?;
+                    syn::parse_str::<syn::Path>(&lit.value())
+                        .map_err(|_| syn::Error::new_spanned(lit, "invalid group path; expected `foo::bar`"))?
+                } else {
+                    input.parse::<syn::Path>()?
+                };
+                validate_group_path(&path)?;
+                if group.is_some() {
+                    return Err(syn::Error::new_spanned(key, "duplicate `group` argument"));
+                }
+                group = Some(path);
+            } else if key == "export" {
+                let kind = if input.peek(syn::Ident) {
+                    let ident: syn::Ident = input.parse()?;
+                    ident.to_string()
+                } else if input.peek(syn::LitStr) {
+                    let lit: syn::LitStr = input.parse()?;
+                    lit.value()
+                } else {
+                    return Err(syn::Error::new_spanned(
+                        key,
+                        "expected `export = ethereum` for #[lyquid::method::network/instance]",
+                    ));
+                };
+                if export.is_some() {
+                    return Err(syn::Error::new_spanned(key, "duplicate `export` argument"));
+                }
+                export = match kind.as_str() {
+                    "ethereum" => Some(ExportKind::Ethereum),
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            key,
+                            "unsupported export kind; expected `ethereum`",
+                        ))
+                    }
+                };
+            } else {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    format!("expected `group = \"foo::bar\"` or `export = ethereum` for #[{attr_name}]"),
+                ));
+            }
+
+            if input.peek(syn::Token![,]) {
+                input.parse::<syn::Token![,]>()?;
+            }
+        }
+
+        Ok(MethodAttr { group, export })
+    };
+
+    syn::parse::Parser::parse2(&parser, attr)
+}
+
+fn group_path_string(group: Option<&syn::Path>) -> String {
+    match group {
+        None => "main".to_string(),
+        Some(path) => path
+            .segments
+            .iter()
+            .map(|seg| seg.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::"),
+    }
+}
+
+fn export_metadata(
+    kind: ExportKind, is_network: bool, group: Option<&syn::Path>, fn_name: &syn::Ident, ctx_mut: bool,
+    params: &[(syn::Ident, syn::Type)], ret_inner: &syn::Type,
+) -> syn::Result<TokenStream> {
+    match kind {
+        ExportKind::Ethereum => export_metadata_ethereum(is_network, group, fn_name, ctx_mut, params, ret_inner),
+    }
+}
+
+fn export_metadata_ethereum(
+    is_network: bool, group: Option<&syn::Path>, fn_name: &syn::Ident, ctx_mut: bool,
+    params: &[(syn::Ident, syn::Type)], ret_inner: &syn::Type,
+) -> syn::Result<TokenStream> {
+    let group_string = group_path_string(group);
+    let method_string = fn_name.to_string();
+    let param_types = params
+        .iter()
+        .map(|(_, ty)| quote::quote! { <#ty as lyquid::runtime::ethabi::EthAbiType>::DESC })
+        .collect::<Vec<_>>();
+    let param_count = param_types.len();
+    let section_name = syn::LitStr::new("lyquor.method.export.eth", Span::call_site());
+    let category = if is_network {
+        quote::quote! { lyquid::consts::CATEGORY_NETWORK }
+    } else {
+        quote::quote! { lyquid::consts::CATEGORY_INSTANCE }
+    };
+    let mutable = if ctx_mut {
+        quote::quote! { true }
+    } else {
+        quote::quote! { false }
+    };
+
+    Ok(quote::quote! {
+        #[doc(hidden)]
+        const _: () = {
+            const GROUP: &str = #group_string;
+            const METHOD: &str = #method_string;
+            const PARAM_COUNT: usize = #param_count;
+            const PARAM_TYPES: [lyquid::runtime::ethabi::EthAbiTypeDesc; PARAM_COUNT] = [#(#param_types,)*];
+            const RETURN_TYPES: &'static [lyquid::runtime::ethabi::EthAbiTypeDesc] =
+                <#ret_inner as lyquid::runtime::ethabi::EthAbiReturn>::TYPES;
+
+            const LEN: usize = lyquid::consts::export_len(
+                GROUP,
+                METHOD,
+                &PARAM_TYPES,
+                RETURN_TYPES,
+            );
+
+            #[unsafe(link_section = #section_name)]
+            #[used]
+            static EXPORT: [u8; LEN] = lyquid::consts::export_encode::<LEN>(
+                #category,
+                #mutable,
+                GROUP,
+                METHOD,
+                &PARAM_TYPES,
+                RETURN_TYPES,
+            );
+        };
+    })
 }
 
 // Parses group metadata and validates it as a relative path (foo::bar).

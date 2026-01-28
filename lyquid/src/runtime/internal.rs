@@ -84,27 +84,6 @@ impl PrefixedAccess<Vec<u8>> {
     }
 }
 
-pub fn eth_func_type_string<T: EthABI>(form: u8, params: impl Iterator<Item = Option<DynSolType>>) -> Option<String> {
-    let loc = match form {
-        0 => None,
-        1 => Some("calldata"),
-        _ => Some("memory"),
-    };
-
-    // assemble eth abi string for each parameter
-    let params = params
-        .map(|t| t.map(|t| sol_type_name_with_location_keyword(&t, loc)))
-        .collect::<Option<Vec<String>>>()?;
-    match form {
-        0x0 => Some(format!("({})", params.join(","))),
-        _ => {
-            // also check if the output impl EthABI
-            let ret = T::return_type_string()?;
-            Some(format!("({}) returns ({})", params.join(", "), ret))
-        }
-    }
-}
-
 pub struct BuiltinNetworkState {
     oracle: super::HashMap<String, OracleDest>,
 }

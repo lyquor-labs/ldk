@@ -84,6 +84,7 @@ tracing = { version = "0.1" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typed-builder = "0.23"
+wasmparser = "0.243.0"
 x509-parser = "0.18.0"
 
 # These crates run hot during Wasmtime JIT compilation (module lowering, instruction selection,

@@ -1,5 +1,5 @@
 use lyquid::runtime::*;
-use lyquor_primitives::RegisterEvent;
+use lyquor_primitives::{B256, RegisterEvent};
 use serde::*;
 
 #[derive(Serialize, Clone, Debug)]
@@ -72,13 +72,13 @@ fn update_eth_addr(
     }
 }
 
-#[lyquid::method::network]
+#[lyquid::method::network(export = ethereum)]
 fn constructor(ctx: &mut _) {
     // NOTE: it is specially treated (in contract generation) that the caller of bartender's
     // contract is the contract address itself
 }
 
-#[lyquid::method::network]
+#[lyquid::method::network(export = ethereum)]
 fn register(ctx: &mut _, superseded: Address, deps: Vec<Address>) -> LyquidResult<bool> {
     let owner = ctx.origin;
     let contract = ctx.caller;
@@ -103,15 +103,20 @@ fn register(ctx: &mut _, superseded: Address, deps: Vec<Address>) -> LyquidResul
     Ok(true)
 }
 
-#[lyquid::method::network]
-fn set_ed25519_address(ctx: &mut _, pubkey: [u8; 32], qx: U256, qy: U256, addr: Address) -> LyquidResult<bool> {
-    if !lyquor_api::check_ed25519_pubkey(pubkey, qx, qy)? {
+#[lyquid::method::network(export = ethereum)]
+fn set_ed25519_address(ctx: &mut _, pubkey: B256, qx: U256, qy: U256, addr: Address) -> LyquidResult<bool> {
+    let pubkey_bytes: [u8; 32] = *pubkey.as_ref();
+    if !lyquor_api::check_ed25519_pubkey(pubkey_bytes, qx, qy)? {
         // Mismatching pubkey/qx/qy info.
         return Ok(false)
     }
-    let id = pubkey.into();
+    let id = NodeID::from(pubkey_bytes);
     lyquid::println!("set_ed25519_address {id} => {addr}");
-    ctx.network.node_registry.entry(id).or_insert_with(|| NodeMetadata { addr: Address::ZERO }).addr = addr;
+    ctx.network
+        .node_registry
+        .entry(id)
+        .or_insert_with(|| NodeMetadata { addr: Address::ZERO })
+        .addr = addr;
     Ok(true)
 }
 
@@ -124,12 +129,10 @@ fn get_ed25519_address(ctx: &_, id: NodeID) -> LyquidResult<Option<Address>> {
 
 #[lyquid::method::instance]
 fn get_lyquid_info(ctx: &_, id: LyquidID) -> LyquidResult<Option<LyquidMetadataOutput>> {
-    Ok(ctx.network.lyquid_registry.get(&id).map(|d| {
-        LyquidMetadataOutput {
-            owner: d.owner,
-            deploy_history: d.deploy_history.to_vec(),
-            dependencies: d.dependencies.to_vec(),
-        }
+    Ok(ctx.network.lyquid_registry.get(&id).map(|d| LyquidMetadataOutput {
+        owner: d.owner,
+        deploy_history: d.deploy_history.to_vec(),
+        dependencies: d.dependencies.to_vec(),
     }))
 }
 
@@ -147,7 +150,12 @@ fn get_lyquid_deployment_info(ctx: &_, id: LyquidID, nth: u32) -> LyquidResult<O
 
 #[lyquid::method::instance]
 fn get_last_lyquid_deployment_info(ctx: &_, id: LyquidID) -> LyquidResult<Option<DeployInfo>> {
-    Ok(ctx.network.lyquid_registry.get(&id).and_then(|d| d.deploy_history.last()).cloned())
+    Ok(ctx
+        .network
+        .lyquid_registry
+        .get(&id)
+        .and_then(|d| d.deploy_history.last())
+        .cloned())
 }
 
 #[lyquid::method::instance]
