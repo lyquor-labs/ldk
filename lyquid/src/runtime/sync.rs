@@ -144,6 +144,73 @@ impl<T: ?Sized + fmt::Display> fmt::Display for MutexGuard<'_, T> {
 // ============================================================
 // RwLock (writer-fair)
 // ============================================================
+//
+// 1) Safety: mutual exclusion and reader/writer rules.
+//
+// Writer Exclusivity: If state == RWLOCK_WRITER, then no reader holds the lock and at most one writer holds it.
+//
+// Proof:
+// - The only way to set state to RWLOCK_WRITER is compare_exchange_weak(0 -> WRITER). Once state
+// == WRITER, no reader can increment the count because reader increment CAS is s -> s+1 where s
+// must be a finite count; you explicitly wait when s == WRITER.
+// - No other writer can set WRITER because state != 0. Writers only CAS from 0.
+// So writer mutual exclusion holds.
+//
+// Readers Concurrent, with No Writer Concurrently: If 1 <= state <= RWLOCK_MAX_READERS, then there
+// exists exactly state readers holding the lock, and no writer holds it.
+//
+// Proof:
+// - Readers acquire the lock only via CAS s -> s+1 with s != WRITER and s <= MAX_READERS, and release via fetch_sub(1).
+// - Writers can only acquire when state == 0.
+// So readers can be concurrent and exclude writers.
+//
+// Gate Behavior: If writers_waiting != 0, new readers do not enter.
+//
+// Proof:
+// In read(), before attempting to CAS-increment reader count, you load ww = writers_waiting.load()
+// and if ww != 0 you wait on writers_waiting and retry. There is no other reader entry path.
+// This is the fairness gate.
+//
+// 2) Progress: no deadlock or "lost wakeups".
+//
+// The key to "no deadlock" is to show: any thread that goes to sleep is sleeping on a condition
+// that some other thread will eventually change and will __notify on the same address when that
+// condition becomes favorable.
+//
+// - Wait site in `s == RWLOCK_WRITER`: reader waiting on active writer. The only way to leave
+// state == WRITER is unlock_write() doing state.store(0, Release) and then __notify(state, cnt).
+// So any reader sleeping here is guaranteed to be eligible to wake when the writer releases (the
+// only transition that can help a reader). No lost wakeup here because if the writer unlocks
+// before the reader calls __wait, then state != RWLOCK_WRITER and futex semantics make __wait
+// return immediately (or not sleep).
+//
+// - Wait site in `ww != 0`: reader waiting on fairness gate (ww code). WriterQueueGuard::drop()
+// does prev = writers_waiting.fetch_sub(1, AcqRel) and if prev == 1 (meaning it becomes 0) it
+// calls __notify(writers_waiting, MAX). So any reader sleeping here is guaranteed to be woken
+// when the gate opens (writers_waiting transitions to 0). No lost wakeup because if the last
+// writer leaves the queue before the reader calls __wait, then writers_waiting != ww, so futex
+// semantics prevent sleeping.
+//
+// - Wait site in `s != RWLOCK_UNLOCKED`: writer waiting on state (readers present or another
+// writer holds). Writers sleep while state != 0 (either readers count or WRITER). We need to show
+// that whenever state can become 0, there is a notify.
+//
+//   - Case 1: state is a reader count (> 0). The last reader to leave runs unlock_read(). So when
+//   reader count transitions 1 -> 0, a notify is issued on state. That is exactly when a writer
+//   may become eligible to acquire. Intermediate decrements do not notify, but they do not enable
+//   writer acquisition, so they are not required for progress. No lost wakeup because if the last
+//   reader leaves before the writer calls __wait(state, s), then state is no longer s and futex
+//   semantics prevent sleeping.
+//
+//   - Case 2: state == WRITER. Then the holder must call unlock_write(), which stores 0 and
+//   notifies on state. So writers cannot deadlock sleeping on state, because the only "unlocking"
+//   transitions that enable them are notified.
+//
+//   - Remarks: The writer waits on the exact observed s, which might change from 5 to 4 to 3
+//   without notifications. That's fine because writers only need to wake at the enabling
+//   transition (1 -> 0 or WRITER -> 0) which is notified. A writer may "sleep longer than
+//   necessary" relative to intermediate changes, but it will not sleep past the point where it
+//   could acquire.
 
 const RWLOCK_WRITER: u32 = u32::MAX;
 const RWLOCK_UNLOCKED: u32 = 0;
