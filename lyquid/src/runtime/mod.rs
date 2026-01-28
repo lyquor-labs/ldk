@@ -101,7 +101,7 @@ unsafe impl alloc::GlobalAlloc for MuxAlloc {
                 0x1 => &instance_segment_header().allocator,
                 0x2 => &network_segment_header().allocator,
                 _ => &volatile_segment_header().allocator,
-                // this case is needed when building a Barrel (extract_lyquid_functions)
+                // default to volatile until the allocator category is set
             }
             .alloc(layout)
         }
