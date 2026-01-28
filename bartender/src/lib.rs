@@ -72,106 +72,121 @@ fn update_eth_addr(
     }
 }
 
-lyquid::method! {
-    constructor(&mut ctx) {
-        // NOTE: it is specially treated (in contract generation) that the caller of bartender's
-        // contract is the contract address itself
+#[lyquid::method::network]
+fn constructor(ctx: &mut _) {
+    // NOTE: it is specially treated (in contract generation) that the caller of bartender's
+    // contract is the contract address itself
+}
+
+#[lyquid::method::network]
+fn register(ctx: &mut _, superseded: Address, deps: Vec<Address>) -> LyquidResult<bool> {
+    let owner = ctx.origin;
+    let contract = ctx.caller;
+
+    // Convert dependency addresses to LyquidIDs
+    let deps: Vec<LyquidID> = deps
+        .iter()
+        .filter_map(|addr| ctx.network.eth_addrs.get(addr).copied())
+        .collect();
+
+    let id = if superseded == Address::ZERO {
+        // create a new lyquid
+        Some(next_lyquid_id(&mut ctx, owner, contract, deps.clone()))
+    } else {
+        update_eth_addr(&mut ctx, owner, superseded, contract, deps.clone())
     }
+    .ok_or(LyquidError::LyquidRuntime("invalid register call".into()))?;
 
-    network fn register(&mut ctx, superseded: Address, deps: Vec<Address>) -> LyquidResult<bool> {
-        let owner = ctx.origin;
-        let contract = ctx.caller;
+    lyquid::println!("register {id} (owner={owner}, contract={contract}, deps={:?})", deps);
+    lyquid::log!(Register, &RegisterEvent { id, deps });
+    ctx.network.eth_addrs.insert(contract, id);
+    Ok(true)
+}
 
-        // Convert dependency addresses to LyquidIDs
-        let deps: Vec<LyquidID> = deps.iter()
-            .filter_map(|addr| ctx.network.eth_addrs.get(addr).copied())
-            .collect();
-
-        let id = if superseded == Address::ZERO {
-            // create a new lyquid
-            Some(next_lyquid_id(&mut ctx, owner, contract, deps.clone()))
-        } else {
-            update_eth_addr(&mut ctx, owner, superseded, contract, deps.clone())
-        }.ok_or(LyquidError::LyquidRuntime("invalid register call".into()))?;
-
-        lyquid::println!("register {id} (owner={owner}, contract={contract}, deps={:?})", deps);
-        lyquid::log!(Register, &RegisterEvent { id, deps });
-        ctx.network.eth_addrs.insert(contract, id);
-        Ok(true)
+#[lyquid::method::network]
+fn set_ed25519_address(ctx: &mut _, pubkey: [u8; 32], qx: U256, qy: U256, addr: Address) -> LyquidResult<bool> {
+    if !lyquor_api::check_ed25519_pubkey(pubkey, qx, qy)? {
+        // Mismatching pubkey/qx/qy info.
+        return Ok(false)
     }
+    let id = pubkey.into();
+    lyquid::println!("set_ed25519_address {id} => {addr}");
+    ctx.network.node_registry.entry(id).or_insert_with(|| NodeMetadata { addr: Address::ZERO }).addr = addr;
+    Ok(true)
+}
 
-    network fn set_ed25519_address(&mut ctx, pubkey: [u8; 32], qx: U256, qy: U256, addr: Address) -> LyquidResult<bool> {
-        if !lyquor_api::check_ed25519_pubkey(pubkey, qx, qy)? {
-            // Mismatching pubkey/qx/qy info.
-            return Ok(false)
+#[lyquid::method::instance]
+fn get_ed25519_address(ctx: &_, id: NodeID) -> LyquidResult<Option<Address>> {
+    let ret = ctx.network.node_registry.get(&id).map(|r| r.addr);
+    lyquid::println!("get_ed25519_address {id} = {ret:?}");
+    Ok(ret)
+}
+
+#[lyquid::method::instance]
+fn get_lyquid_info(ctx: &_, id: LyquidID) -> LyquidResult<Option<LyquidMetadataOutput>> {
+    Ok(ctx.network.lyquid_registry.get(&id).map(|d| {
+        LyquidMetadataOutput {
+            owner: d.owner,
+            deploy_history: d.deploy_history.to_vec(),
+            dependencies: d.dependencies.to_vec(),
         }
-        let id = pubkey.into();
-        lyquid::println!("set_ed25519_address {id} => {addr}");
-        ctx.network.node_registry.entry(id).or_insert_with(|| NodeMetadata { addr: Address::ZERO }).addr = addr;
-        Ok(true)
-    }
+    }))
+}
 
-    instance fn get_ed25519_address(&ctx, id: NodeID) -> LyquidResult<Option<Address>> {
-        let ret = ctx.network.node_registry.get(&id).map(|r| r.addr);
-        lyquid::println!("get_ed25519_address {id} = {ret:?}");
-        Ok(ret)
-    }
+#[lyquid::method::instance]
+fn get_lyquid_deployment_info(ctx: &_, id: LyquidID, nth: u32) -> LyquidResult<Option<DeployInfo>> {
+    let nth = nth as usize;
+    Ok(ctx.network.lyquid_registry.get(&id).and_then(|d| {
+        if nth < d.deploy_history.len() {
+            Some(d.deploy_history[nth].clone())
+        } else {
+            None
+        }
+    }))
+}
 
-    instance fn get_lyquid_info(&ctx, id: LyquidID) -> LyquidResult<Option<LyquidMetadataOutput>> {
-        Ok(ctx.network.lyquid_registry.get(&id).map(|d| {
-            LyquidMetadataOutput {
-                owner: d.owner,
-                deploy_history: d.deploy_history.to_vec(),
-                dependencies: d.dependencies.to_vec(),
-            }
-        }))
-    }
+#[lyquid::method::instance]
+fn get_last_lyquid_deployment_info(ctx: &_, id: LyquidID) -> LyquidResult<Option<DeployInfo>> {
+    Ok(ctx.network.lyquid_registry.get(&id).and_then(|d| d.deploy_history.last()).cloned())
+}
 
-    instance fn get_lyquid_deployment_info(&ctx, id: LyquidID, nth: u32) -> LyquidResult<Option<DeployInfo>> {
-        let nth = nth as usize;
-        Ok(ctx.network.lyquid_registry.get(&id).and_then(|d| {
-            if nth < d.deploy_history.len() {
-                Some(d.deploy_history[nth].clone())
-            } else {
-                None
-            }
-        }))
-    }
+#[lyquid::method::instance]
+fn get_lyquid_id_by_eth_addr(ctx: &_, addr: Address) -> LyquidResult<Option<LyquidID>> {
+    Ok(ctx.network.eth_addrs.get(&addr).copied())
+}
 
-    instance fn get_last_lyquid_deployment_info(&ctx, id: LyquidID) -> LyquidResult<Option<DeployInfo>> {
-        Ok(ctx.network.lyquid_registry.get(&id).and_then(|d| d.deploy_history.last()).cloned())
-    }
+#[lyquid::method::instance]
+fn get_eth_addr(ctx: &_, id: LyquidID, ln_image: u32) -> LyquidResult<Option<Address>> {
+    Ok(ctx.network.lyquid_registry.get(&id).and_then(|e| {
+        if ln_image < 1 {
+            return None
+        }
+        let ln_image = ln_image as usize - 1;
+        if ln_image < e.deploy_history.len() {
+            Some(e.deploy_history[ln_image].contract)
+        } else {
+            None
+        }
+    }))
+}
 
-    instance fn get_lyquid_id_by_eth_addr(&ctx, addr: Address) -> LyquidResult<Option<LyquidID>> {
-        Ok(ctx.network.eth_addrs.get(&addr).map(|v| v.clone()))
-    }
+#[lyquid::method::instance]
+fn get_lyquid_list(ctx: &_) -> LyquidResult<Vec<LyquidID>> {
+    Ok(ctx.network.lyquid_registry.keys().copied().collect())
+}
 
-    instance fn get_eth_addr(&ctx, id: LyquidID, ln_image: u32) -> LyquidResult<Option<Address>> {
-        Ok(ctx.network.lyquid_registry.get(&id).and_then(|e| {
-            if ln_image < 1 {
-                return None
-            }
-            let ln_image = ln_image as usize - 1;
-            if ln_image < e.deploy_history.len() {
-                Some(e.deploy_history[ln_image].contract)
-            } else {
-                None
-            }
-        }))
-    }
+#[lyquid::method::instance]
+fn get_lyquid_list_with_deps(ctx: &_) -> LyquidResult<Vec<(LyquidID, Vec<LyquidID>)>> {
+    Ok(ctx
+        .network
+        .lyquid_registry
+        .iter()
+        .map(|(id, metadata)| (*id, metadata.dependencies.to_vec()))
+        .collect())
+}
 
-    instance fn get_lyquid_list(&ctx) -> LyquidResult<Vec<LyquidID>> {
-        Ok(ctx.network.lyquid_registry.keys().cloned().collect())
-    }
-
-    instance fn get_lyquid_list_with_deps(&ctx) -> LyquidResult<Vec<(LyquidID, Vec<LyquidID>)>> {
-        Ok(ctx.network.lyquid_registry.iter().map(|(id, metadata)| {
-            (*id, metadata.dependencies.to_vec())
-        }).collect())
-    }
-
-    instance fn eth_abi_test1(&ctx, x: U256, y: Vec<String>, z: [Vec<u64>; 4]) -> LyquidResult<U256> {
-        lyquid::println!("got x = {}, y = {:?}, z = {:?} from {}", x, y, z, ctx.caller);
-        Ok(x + uint!(1_U256))
-    }
+#[lyquid::method::instance]
+fn eth_abi_test1(ctx: &_, x: U256, y: Vec<String>, z: [Vec<u64>; 4]) -> LyquidResult<U256> {
+    lyquid::println!("got x = {}, y = {:?}, z = {:?} from {}", x, y, z, ctx.caller);
+    Ok(x + uint!(1_U256))
 }
