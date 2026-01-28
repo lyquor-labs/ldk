@@ -238,6 +238,11 @@ impl OracleSrc {
         self.committee.len()
     }
 
+    /// Get the list of nodes in the committee.
+    pub fn get_committee(&self) -> Vec<NodeID> {
+        self.committee.keys().cloned().collect()
+    }
+
     /// Update the threshold of the oracle.
     pub fn set_threshold(&mut self, new_thres: u16) {
         if new_thres == self.threshold {
@@ -335,7 +340,7 @@ impl OracleSrc {
             Some(
                 lyquor_primitives::encode_by_fields!(
                     // Use oracle macro expected field "callee" for callee list and pass verification context.
-                    callee: Vec<NodeID> = self.committee.keys().cloned().collect(),
+                    callee: Vec<NodeID> = self.get_committee(),
                     header: OracleHeader = header,
                     yay_msg: Bytes = yay_msg.into(),
                     nay_msg: Bytes = nay_msg.into()
@@ -413,7 +418,7 @@ impl OracleSrc {
             }),
             Some(
                 lyquor_primitives::encode_by_fields!(
-                    callee: Vec<NodeID> = self.committee.keys().cloned().collect(),
+                    callee: Vec<NodeID> = self.get_committee(),
                     init: Bytes = init.clone()
                 )
                 .into(),
