@@ -628,7 +628,7 @@ fn option_inner_type(ty: &syn::Type) -> Option<syn::Type> {
     }
 }
 
-// Parse #[lyquid::method::instance] arguments: group = "...", or upc(...).
+// Parse #[lyquid::method::instance] arguments: group = foo::bar, or upc(...).
 fn parse_instance_attr(attr: TokenStream) -> syn::Result<InstanceAttr> {
     if attr.is_empty() {
         return Ok(InstanceAttr::Standard(MethodAttr {
@@ -694,13 +694,7 @@ fn parse_method_attr(attr: TokenStream, attr_name: &str) -> syn::Result<MethodAt
             input.parse::<syn::Token![=]>()?;
 
             if key == "group" {
-                let path = if input.peek(syn::LitStr) {
-                    let lit: syn::LitStr = input.parse()?;
-                    syn::parse_str::<syn::Path>(&lit.value())
-                        .map_err(|_| syn::Error::new_spanned(lit, "invalid group path; expected `foo::bar`"))?
-                } else {
-                    input.parse::<syn::Path>()?
-                };
+                let path: syn::Path = input.parse()?;
                 validate_group_path(&path)?;
                 if group.is_some() {
                     return Err(syn::Error::new_spanned(key, "duplicate `group` argument"));
@@ -716,25 +710,20 @@ fn parse_method_attr(attr: TokenStream, attr_name: &str) -> syn::Result<MethodAt
                 } else {
                     return Err(syn::Error::new_spanned(
                         key,
-                        "expected `export = ethereum` for #[lyquid::method::network/instance]",
+                        "expected `export = eth` for #[lyquid::method::network/instance]",
                     ));
                 };
                 if export.is_some() {
                     return Err(syn::Error::new_spanned(key, "duplicate `export` argument"));
                 }
                 export = match kind.as_str() {
-                    "ethereum" => Some(ExportKind::Ethereum),
-                    _ => {
-                        return Err(syn::Error::new_spanned(
-                            key,
-                            "unsupported export kind; expected `ethereum`",
-                        ))
-                    }
+                    "eth" => Some(ExportKind::Ethereum),
+                    _ => return Err(syn::Error::new_spanned(key, "unsupported export kind; expected `eth`")),
                 };
             } else {
                 return Err(syn::Error::new_spanned(
                     key,
-                    format!("expected `group = \"foo::bar\"` or `export = ethereum` for #[{attr_name}]"),
+                    format!("expected `group = foo::bar` or `export = eth` for #[{attr_name}]"),
                 ));
             }
 
@@ -766,11 +755,11 @@ fn export_metadata(
     params: &[(syn::Ident, syn::Type)], ret_inner: &syn::Type,
 ) -> syn::Result<TokenStream> {
     match kind {
-        ExportKind::Ethereum => export_metadata_ethereum(is_network, group, fn_name, ctx_mut, params, ret_inner),
+        ExportKind::Ethereum => export_metadata_eth(is_network, group, fn_name, ctx_mut, params, ret_inner),
     }
 }
 
-fn export_metadata_ethereum(
+fn export_metadata_eth(
     is_network: bool, group: Option<&syn::Path>, fn_name: &syn::Ident, ctx_mut: bool,
     params: &[(syn::Ident, syn::Type)], ret_inner: &syn::Type,
 ) -> syn::Result<TokenStream> {
@@ -835,17 +824,11 @@ fn parse_method_group(attr: TokenStream, attr_name: &str) -> syn::Result<Option<
         if key != "group" {
             return Err(syn::Error::new_spanned(
                 key,
-                format!("expected `group = \"foo::bar\"` for #[{attr_name}]"),
+                format!("expected `group = foo::bar` for #[{attr_name}]"),
             ));
         }
         input.parse::<syn::Token![=]>()?;
-        let path = if input.peek(syn::LitStr) {
-            let lit: syn::LitStr = input.parse()?;
-            syn::parse_str::<syn::Path>(&lit.value())
-                .map_err(|_| syn::Error::new_spanned(lit, "invalid group path; expected `foo::bar`"))?
-        } else {
-            input.parse::<syn::Path>()?
-        };
+        let path: syn::Path = input.parse()?;
 
         if input.peek(syn::Token![,]) {
             input.parse::<syn::Token![,]>()?;

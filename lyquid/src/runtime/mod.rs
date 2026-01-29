@@ -1,4 +1,4 @@
-pub use std::alloc;
+use std::alloc;
 pub use std::boxed::Box;
 pub use std::vec::Vec;
 
@@ -14,6 +14,8 @@ pub use oracle::CertifiedCallParams;
 #[doc(hidden)] pub mod syntax;
 pub mod upc;
 pub use ethabi::{EthAbiReturn, EthAbiReturnValue, EthAbiType, EthAbiValue};
+pub mod sync;
+pub use sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use internal::StateAccessor;
 
@@ -75,9 +77,6 @@ pub unsafe fn set_allocator_category(category: u8) {
 }
 
 #[derive(Clone, Default)]
-pub struct VolatileAlloc;
-
-#[derive(Clone, Default)]
 pub struct MuxAlloc;
 
 #[global_allocator]
@@ -121,44 +120,6 @@ unsafe impl alloc::GlobalAlloc for MuxAlloc {
         }
     }
 }
-
-/*
-unsafe impl alloc::Allocator for MuxAlloc {
-    fn allocate(&self, layout: alloc::Layout) -> Result<core::ptr::NonNull<[u8]>, alloc::AllocError> {
-        let header = volatile_segment_header();
-        match header.category {
-            0x1 => &instance_segment_header().allocator,
-            0x2 => &network_segment_header().allocator,
-            _ => &volatile_segment_header().allocator,
-        }
-        .allocate(layout)
-    }
-
-    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: alloc::Layout) {
-        let header = volatile_segment_header();
-        unsafe {
-            Self::zero_memory(ptr.as_ptr(), layout);
-
-            match header.category {
-                0x1 => &instance_segment_header().allocator,
-                0x2 => &network_segment_header().allocator,
-                _ => &volatile_segment_header().allocator,
-            }
-            .deallocate(ptr, layout)
-        }
-    }
-}
-
-unsafe impl alloc::Allocator for VolatileAlloc {
-    fn allocate(&self, layout: alloc::Layout) -> Result<core::ptr::NonNull<[u8]>, alloc::AllocError> {
-        volatile_segment_header().allocator.allocate(layout)
-    }
-
-    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: alloc::Layout) {
-        unsafe { volatile_segment_header().allocator.deallocate(ptr, layout) }
-    }
-}
-*/
 
 /// This function should be called to setup the runtime environment before executing any other WASM
 /// code, **every time** after the memory is created.
@@ -423,12 +384,6 @@ macro_rules! upc {
 
 pub use hashbrown;
 
-//type HashMap_<K, V, A> = hashbrown::HashMap<K, V, ahash::RandomState, A>;
-//type HashSet_<K, A> = hashbrown::HashSet<K, ahash::RandomState, A>;
-//
-//pub type HashMap<K, V> = HashMap_<K, V>;
-//pub type HashSet<K> = HashSet_<K>;
-
 pub type HashMap<K, V> = hashbrown::HashMap<K, V, ahash::RandomState>;
 pub type HashSet<K> = hashbrown::HashSet<K, ahash::RandomState>;
 
@@ -438,71 +393,6 @@ pub fn new_hashmap<K, V>() -> HashMap<K, V> {
 pub fn new_hashset<K>() -> HashSet<K> {
     HashSet::with_hasher(ahash::RandomState::with_seed(0))
 }
-
-#[allow(unused_macros)]
-macro_rules! gen_container_types {
-    ($alloc: tt) => {
-        pub type Box<T> = super::Box<T, $alloc>;
-        pub fn new_vec<T>() -> Vec<T> {
-            Vec::new_in($alloc)
-        }
-
-        pub type Vec<T> = super::Vec<T, $alloc>;
-        pub fn new_box<T>(v: T) -> Box<T> {
-            Box::new_in(v, $alloc)
-        }
-
-        pub type VecDeque<T> = std::collections::VecDeque<T, $alloc>;
-        pub fn new_vecdeque<T>() -> VecDeque<T> {
-            VecDeque::new_in($alloc)
-        }
-
-        pub type LinkedList<T> = std::collections::LinkedList<T, $alloc>;
-        pub fn new_linkedlist<T>() -> LinkedList<T> {
-            LinkedList::new_in($alloc)
-        }
-
-        pub type HashMap<K, V> = super::HashMap_<K, V, $alloc>;
-        pub fn new_hashmap<K, V>() -> HashMap<K, V> {
-            HashMap::with_hasher_in(ahash::RandomState::with_seed(0), $alloc)
-        }
-
-        pub type HashSet<K> = super::HashSet_<K, $alloc>;
-        pub fn new_hashset<K>() -> HashSet<K> {
-            HashSet::with_hasher_in(ahash::RandomState::with_seed(0), $alloc)
-        }
-
-        pub type BTreeMap<K, V> = std::collections::BTreeMap<K, V, $alloc>;
-        pub fn new_btreemap<K, V>() -> BTreeMap<K, V> {
-            BTreeMap::new_in($alloc)
-        }
-
-        pub type BTreeSet<K> = std::collections::BTreeSet<K, $alloc>;
-        pub fn new_btreeset<K>() -> BTreeSet<K> {
-            BTreeSet::new_in($alloc)
-        }
-
-        pub type BinaryHeap<T> = std::collections::BinaryHeap<T, $alloc>;
-        pub fn new_binaryheap<T: Ord>() -> BinaryHeap<T> {
-            BinaryHeap::new_in($alloc)
-        }
-    };
-}
-
-/*
-pub mod volatile {
-    use super::VolatileAlloc;
-    gen_container_types!(VolatileAlloc);
-}
-
-mod mux_alloc {
-    use super::MuxAlloc;
-    gen_container_types!(MuxAlloc);
-}
-*/
-
-pub mod sync;
-pub use sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub struct Immutable<T>(T);
 

@@ -72,13 +72,13 @@ fn update_eth_addr(
     }
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn constructor(ctx: &mut _) {
     // NOTE: it is specially treated (in contract generation) that the caller of bartender's
     // contract is the contract address itself
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn register(ctx: &mut _, superseded: Address, deps: Vec<Address>) -> LyquidResult<bool> {
     let owner = ctx.origin;
     let contract = ctx.caller;
@@ -103,7 +103,7 @@ fn register(ctx: &mut _, superseded: Address, deps: Vec<Address>) -> LyquidResul
     Ok(true)
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn set_ed25519_address(ctx: &mut _, pubkey: B256, qx: U256, qy: U256, addr: Address) -> LyquidResult<bool> {
     let pubkey_bytes: [u8; 32] = *pubkey.as_ref();
     if !lyquor_api::check_ed25519_pubkey(pubkey_bytes, qx, qy)? {

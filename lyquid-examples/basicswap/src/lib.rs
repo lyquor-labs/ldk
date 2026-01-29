@@ -71,13 +71,13 @@ lyquid::state! {
     network balances: HashMap<Address, U256> = new_hashmap();
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn constructor(ctx: &mut _, _token0: RequiredLyquid, _token1: RequiredLyquid) {
     *ctx.network.token0 = _token0.0;
     *ctx.network.token1 = _token1.0;
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn mint(ctx: &mut _, to: Address) -> LyquidResult<U256> {
     let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
     let lyquid_id = ctx.lyquid_id;
@@ -119,7 +119,7 @@ fn mint(ctx: &mut _, to: Address) -> LyquidResult<U256> {
     Ok(liquidity)
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn burn(ctx: &mut _, to: Address, liquidity: U256) -> LyquidResult<bool> {
     if to == Address::ZERO || liquidity == U256::ZERO {
         return Err(LyquidError::LyquidRuntime("INVALID_BURN".into()));
@@ -146,7 +146,7 @@ fn burn(ctx: &mut _, to: Address, liquidity: U256) -> LyquidResult<bool> {
     Ok(true)
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn swap(
     ctx: &mut _, amount0_out: U256, amount1_out: U256, to: Address, amount0_in: U256, amount1_in: U256,
 ) -> LyquidResult<bool> {
@@ -193,22 +193,22 @@ fn swap(
     Ok(true)
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn getPrice0(ctx: &_) -> LyquidResult<U256> {
     Ok(*ctx.network.reserve1 * uint!(1000000000000000000_U256) / *ctx.network.reserve0)
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn getPrice1(ctx: &_) -> LyquidResult<U256> {
     Ok(*ctx.network.reserve0 * uint!(1000000000000000000_U256) / *ctx.network.reserve1)
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn totalSupply(ctx: &_) -> LyquidResult<U256> {
     Ok(*ctx.network.total_supply)
 }
 
-#[lyquid::method::network(export = ethereum)]
+#[lyquid::method::network(export = eth)]
 fn balanceOf(ctx: &_, account: Address) -> LyquidResult<U256> {
     Ok(*ctx.network.balances.get(&account).unwrap_or(&U256::ZERO))
 }

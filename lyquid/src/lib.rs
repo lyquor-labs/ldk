@@ -54,7 +54,7 @@ pub mod http;
 ///
 /// #### Network method with explicit group
 /// ```ignore
-/// #[lyquid::method::network(group = "node")]
+/// #[lyquid::method::network(group = node)]
 /// fn join(ctx: &mut _, node: NodeID) -> LyquidResult<()> {
 ///     ctx.network.nodes.push(node);
 ///     Ok(())
