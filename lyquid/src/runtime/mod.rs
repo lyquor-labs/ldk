@@ -1,23 +1,24 @@
-use std::alloc;
-pub use std::boxed::Box;
-pub use std::vec::Vec;
-
-use allocator::Talck;
-use talc::{ErrOnOom, Span, Talc};
-
-pub use super::*;
 mod allocator;
-pub mod ethabi;
+#[doc(hidden)] pub mod ethabi;
 #[doc(hidden)] pub mod internal;
 pub mod oracle;
-pub use oracle::CertifiedCallParams;
+pub mod prelude;
+#[doc(hidden)] pub mod sync;
 #[doc(hidden)] pub mod syntax;
 pub mod upc;
-pub use ethabi::{EthAbiReturn, EthAbiReturnValue, EthAbiType, EthAbiValue};
-pub mod sync;
-pub use sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use std::alloc;
+
+use allocator::Talck;
+use lyquor_primitives::{Cipher, ConsoleSink, LyteLog, StateCategory};
+use talc::{ErrOnOom, Span, Talc};
+
+use super::http;
+use super::{
+    CallContext, INSTANCE_MEMSIZE_IN_MB, LYTEMEM_BASE, LyquidResult, NETWORK_MEMSIZE_IN_MB, VOLATILE_MEMSIZE_IN_MB,
+};
 use internal::StateAccessor;
+use prelude::*;
 
 const VOLATILE_SEGMENT_SIZE: usize = VOLATILE_MEMSIZE_IN_MB << 20;
 const NETWORK_SEGMENT_SIZE: usize = NETWORK_MEMSIZE_IN_MB << 20;
@@ -77,7 +78,7 @@ pub unsafe fn set_allocator_category(category: u8) {
 }
 
 #[derive(Clone, Default)]
-pub struct MuxAlloc;
+struct MuxAlloc;
 
 #[global_allocator]
 static ALLOCATOR: MuxAlloc = MuxAlloc;
@@ -218,7 +219,7 @@ fn initialize_persistent_heap() -> Option<u32> {
 macro_rules! host_api {
     ($fn:ident($($param:ident: $type:ty),*) -> $rt:ty; $($rest:tt)*) => {
         pub fn $fn($($param:$type),*) -> Result<$rt, $crate::LyquidError> {
-            use $crate::lyquor_primitives::decode_object;
+            use $crate::prelude::decode_object;
 
             let output_raw = {
                 #[link(wasm_import_module = "lyquor_api")]
@@ -226,7 +227,7 @@ macro_rules! host_api {
                     fn $fn(base: u32, len: u32) -> u64;
                 }
                 // encode input
-                let raw = $crate::lyquor_primitives::encode_by_fields!($($param: $type),*);
+                let raw = $crate::prelude::encode_by_fields!($($param: $type),*);
                 // run host-side and locate the returned output in the WASM-allocated memory;
                 // host-side will allocate the WASM volatile memory for the result
                 unsafe {
@@ -264,8 +265,8 @@ pub mod lyquor_api {
         universal_procedural_call(target: LyquidID, group: Option<String>, method: String, input: Vec<u8>, client_params: Option<Bytes>) -> Vec<u8>;
         inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
         submit_call(params: lyquor_primitives::CallParams, signed: bool) -> Vec<u8>;
-        sign(msg: Bytes, cipher: lyquor_primitives::Cipher) -> Bytes;
-        verify(msg: Bytes, cipher: lyquor_primitives::Cipher, sig: Bytes, pubkey: Bytes) -> bool;
+        sign(msg: Bytes, cipher: Cipher) -> Bytes;
+        verify(msg: Bytes, cipher: Cipher, sig: Bytes, pubkey: Bytes) -> bool;
         random_bytes(length: usize) -> Vec<u8>;
         http_request(request: http::Request, options: Option<http::RequestOptions>) -> http::Response;
         check_ed25519_pubkey(pubkey: [u8; 32], qx: U256, qy: U256) -> bool;
@@ -278,7 +279,7 @@ pub mod lyquor_api {
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => {
-        lyquor_api::console_output($crate::ConsoleSink::StdOut, format!($($arg)*)).unwrap();
+        lyquor_api::console_output($crate::lyquor_primitives::ConsoleSink::StdOut, format!($($arg)*)).unwrap();
     };
 }
 
@@ -286,7 +287,7 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     ($($arg:tt)*) => {
-        lyquor_api::console_output($crate::ConsoleSink::StdOut, format!($($arg)*) + "\n").unwrap();
+        lyquor_api::console_output($crate::lyquor_primitives::ConsoleSink::StdOut, format!($($arg)*) + "\n").unwrap();
     };
 }
 
@@ -294,7 +295,7 @@ macro_rules! println {
 #[macro_export]
 macro_rules! eprint {
     ($($arg:tt)*) => {
-        lyquor_api::console_output($crate::ConsoleSink::StdErr, format!($($arg)*)).unwrap();
+        lyquor_api::console_output($crate::lyquor_primitives::ConsoleSink::StdErr, format!($($arg)*)).unwrap();
     };
 }
 
@@ -302,7 +303,7 @@ macro_rules! eprint {
 #[macro_export]
 macro_rules! eprintln {
     ($($arg:tt)*) => {
-        lyquor_api::console_output($crate::ConsoleSink::StdErr, format!($($arg)*) + "\n").unwrap();
+        lyquor_api::console_output($crate::lyquor_primitives::StdErr, format!($($arg)*) + "\n").unwrap();
     };
 }
 
@@ -310,7 +311,12 @@ macro_rules! eprintln {
 /// instruction in EVM.) **Only usable by network functions.**
 #[macro_export]
 macro_rules! log {
-    ($tag: ident, $v: expr) => {{ lyquor_api::log($crate::LyteLog::new_from_tagged_value(stringify!($tag), $v))? }};
+    ($tag: ident, $v: expr) => {{
+        lyquor_api::log($crate::lyquor_primitives::LyteLog::new_from_tagged_value(
+            stringify!($tag),
+            $v,
+        ))?
+    }};
 }
 
 /// Initiate a inter-lyquid call. **Only usable by network functions.**
@@ -321,8 +327,8 @@ macro_rules! call {
         lyquor_api::inter_lyquid_call(
             $service,
             stringify!($method).to_string().into(),
-            Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
-        ).and_then(|r| lyquor_primitives::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
+            Vec::from(&$crate::prelude::encode_by_fields!($($var: $type = $val),*)[..]),
+        ).and_then(|r| $crate::prelude::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
     };
 }
 
@@ -344,15 +350,15 @@ macro_rules! trigger {
         $crate::runtime::lyquor_api::trigger(
             stringify!($($group)::*).to_string(),
             stringify!($method).to_string(),
-            lyquor_primitives::encode_by_fields!($($param: $type $(= $default)?),*),
+            $crate::prelude::encode_by_fields!($($param: $type $(= $default)?),*),
             $mode,
         )
     };
     ($method:ident($($param:ident: $type:ty $(= $default:expr)?),*), $mode:expr) => {
         $crate::runtime::lyquor_api::trigger(
-            $crate::GROUP_DEFAULT.to_string(),
+            $crate::lyquor_primitives::GROUP_DEFAULT.to_string(),
             stringify!($method).to_string(),
-            lyquor_primitives::encode_by_fields!($($param: $type $(= $default)?),*),
+            $crate::prelude::encode_by_fields!($($param: $type $(= $default)?),*),
             $mode,
         )
     }
@@ -366,9 +372,9 @@ macro_rules! upc {
             $network,
             None, // TODO: allow user to specify group with upc macro
             stringify!($method).to_string().into(),
-            Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
+            Vec::from(&$crate::prelude::encode_by_fields!($($var: $type = $val),*)[..]),
             None,
-        ).and_then(|r| lyquor_primitives::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
+        ).and_then(|r| $crate::prelude::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
     };
 
     (($network: expr).$method: ident[$($params:ident: $params_type:ty = $params_val: expr),*]($($var:ident: $type:ty = $val: expr),*) -> ($($ovar:ident: $otype:ty),*)) => {
@@ -376,22 +382,10 @@ macro_rules! upc {
             $network,
             None, // TODO: allow user to specify group with upc macro
             stringify!($method).to_string().into(),
-            Vec::from(&lyquor_primitives::encode_by_fields!($($var: $type = $val),*)[..]),
-            Some($crate::lyquor_primitives::encode_by_fields!($($params: $params_type = $params_val),*).into()),
-        ).and_then(|r| lyquor_primitives::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
+            Vec::from(&$crate::prelude::encode_by_fields!($($var: $type = $val),*)[..]),
+            Some($crate::prelude::encode_by_fields!($($params: $params_type = $params_val),*).into()),
+        ).and_then(|r| $crate::prelude::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
     };
-}
-
-pub use hashbrown;
-
-pub type HashMap<K, V> = hashbrown::HashMap<K, V, ahash::RandomState>;
-pub type HashSet<K> = hashbrown::HashSet<K, ahash::RandomState>;
-
-pub fn new_hashmap<K, V>() -> HashMap<K, V> {
-    HashMap::with_hasher(ahash::RandomState::with_seed(0))
-}
-pub fn new_hashset<K>() -> HashSet<K> {
-    HashSet::with_hasher(ahash::RandomState::with_seed(0))
 }
 
 pub struct Immutable<T>(T);

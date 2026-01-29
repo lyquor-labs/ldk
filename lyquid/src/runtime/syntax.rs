@@ -98,19 +98,19 @@
 #[macro_export]
 macro_rules! state {
     {$($token:tt)*} => {
-        __lyquid_state_preprocess!({$($token)*}, {});
+        $crate::__lyquid_state_preprocess!({$($token)*}, {});
     };
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_state_preprocess {
-    ({}, {$($token:tt)*}) => { __lyquid_state_generate!($($token)*); };
+    ({}, {$($token:tt)*}) => { $crate::__lyquid_state_generate!($($token)*); };
     ({network oracle $var:ident; $($rest:tt)*}, {$($token:tt)*}) => {
-        __lyquid_state_preprocess!({$($rest)*}, {(oracle $var) $($token)*});
+        $crate::__lyquid_state_preprocess!({$($rest)*}, {(oracle $var) $($token)*});
     };
     ({$cat:ident $var:ident: $type:ty = $init:expr; $($rest:tt)*}, {$($token:tt)*}) => {
-        __lyquid_state_preprocess!({$($rest)*}, {($cat $var $type $init) $($token)*});
+        $crate::__lyquid_state_preprocess!({$($rest)*}, {($cat $var $type $init) $($token)*});
     };
 }
 
@@ -120,16 +120,15 @@ macro_rules! __lyquid_state_generate {
     ($($token:tt)*) => {
         pub mod __lyquid {
             use super::*;
-            use $crate::runtime::*;
+            use $crate::prelude::*;
+            use $crate::lyquor_primitives::StateCategory;
+            use $crate::runtime;
 
-            struct NetworkAlloc;
-            struct InstanceAlloc;
-
-            internal::setup_lyquid_state_variables!(
+            runtime::internal::setup_lyquid_state_variables!(
                 State
                 __lyquid_initialize_state_variables
-                [(network NetworkAlloc Network StateCategory::Network)
-                (instance InstanceAlloc Instance StateCategory::Instance)] $($token)*);
+                [(network Network StateCategory::Network)
+                (instance Instance StateCategory::Instance)] $($token)*);
 
             pub type NetworkContext = $crate::runtime::NetworkContextImpl<NetworkState>;
             pub type ImmutableNetworkContext = $crate::runtime::ImmutableNetworkContextImpl<NetworkState>;
@@ -166,9 +165,9 @@ macro_rules! __lyquid_categorize_methods {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
-                oracle::certified::$first $(:: $tail)* (true, $export) fn $fn(oc: $crate::runtime::oracle::OracleCert, input_raw: $crate::Bytes) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                oracle::certified::$first $(:: $tail)* (true, $export) fn $fn(oc: $crate::runtime::oracle::OracleCert, input_raw: $crate::prelude::Bytes) -> LyquidResult<$rt> {|ctx: $crate::CallContext| -> LyquidResult<$rt> {
                     let topic = concat!(stringify!($first), $( "::", stringify!($tail) ),*);
-                    let params = CallParams {
+                    let params = $crate::lyquor_primitives::CallParams {
                         origin: ctx.origin,
                         caller: ctx.caller,
                         group: topic.to_string(),
@@ -204,7 +203,7 @@ macro_rules! __lyquid_categorize_methods {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
-                $($group)::* (true, $export) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                $($group)::* (true, $export) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: $crate::CallContext| -> LyquidResult<$rt> {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::NetworkContext::new(ctx)?;
                     let result = $body; // execute the body of the function
@@ -226,7 +225,7 @@ macro_rules! __lyquid_categorize_methods {
         $crate::__lyquid_categorize_methods!(
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
-                $($group)::* (false, $export) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                $($group)::* (false, $export) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: $crate::CallContext| -> LyquidResult<$rt> {
                     use crate::__lyquid;
                     let $handle = __lyquid::ImmutableNetworkContext::new(ctx)?;
                     let result = $body; // execute the body of the function
@@ -287,7 +286,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($network_funcs)*},
             {$($instance_funcs)*
                 // see PrepareInput
-                upc::prepare$($group)* (true, false) fn $fn(client_params: $crate::lyquor_primitives::Bytes) -> LyquidResult<$crate::upc::PrepareOutput> {|ctx: CallContext| -> LyquidResult<$crate::upc::PrepareOutput> {
+                upc::prepare$($group)* (true, false) fn $fn(client_params: $crate::lyquor_primitives::Bytes) -> LyquidResult<$crate::upc::PrepareOutput> {|ctx: $crate::CallContext| -> LyquidResult<$crate::upc::PrepareOutput> {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcPrepareContext::new(ctx)?;
                     let result: LyquidResult<Vec<NodeID>> = (|| {$body})();
@@ -312,7 +311,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($network_funcs)*},
             {$($instance_funcs)*
                 // see PrepareInput
-                upc::prepare$($group)* (true, false) fn $fn(client_params: $crate::lyquor_primitives::Bytes) -> LyquidResult<$crate::upc::PrepareOutput> {|ctx: CallContext| -> LyquidResult<$crate::upc::PrepareOutput> {
+                upc::prepare$($group)* (true, false) fn $fn(client_params: $crate::lyquor_primitives::Bytes) -> LyquidResult<$crate::upc::PrepareOutput> {|ctx: $crate::CallContext| -> LyquidResult<$crate::upc::PrepareOutput> {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcPrepareContext::new(ctx)?;
                     let input = $crate::lyquor_primitives::decode_by_fields!(&client_params, $($params: $type),*).ok_or(LyquidError::LyquorInput)?;
@@ -339,7 +338,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($network_funcs)*},
             {$($instance_funcs)*
                 // see RequestInput
-                upc::request$($group)* (true, false) fn $fn(from: $crate::NodeID, id: u64, input: Vec<u8>) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                upc::request$($group)* (true, false) fn $fn(from: $crate::prelude::NodeID, id: u64, input: Vec<u8>) -> LyquidResult<$rt> {|ctx: $crate::CallContext| -> LyquidResult<$rt> {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcRequestContext::new(ctx, from, id)?;
                     let input = $crate::lyquor_primitives::decode_by_fields!(&input, $($name: $type),*).ok_or(LyquidError::LyquorInput)?;
@@ -376,7 +375,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($network_funcs)*},
             {$($instance_funcs)*
                 // see ResponseInput
-                upc::response$($group)* (true, false) fn $fn(from: $crate::NodeID, id: u64, returned: Vec<u8>, cache: Option<$crate::upc::CachePtr>) -> LyquidResult<$crate::upc::ResponseOutput> {|ctx: CallContext| -> LyquidResult<$crate::upc::ResponseOutput> {
+                upc::response$($group)* (true, false) fn $fn(from: $crate::prelude::NodeID, id: u64, returned: Vec<u8>, cache: Option<$crate::upc::CachePtr>) -> LyquidResult<$crate::upc::ResponseOutput> {|ctx: $crate::CallContext| -> LyquidResult<$crate::upc::ResponseOutput> {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::UpcResponseContext::new(ctx, from, id, cache)?;
                     let $returned = $crate::lyquor_primitives::decode_object::<LyquidResult<$rt>>(&returned).ok_or(LyquidError::LyquorInput)?;
@@ -558,7 +557,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($rest)*},
             {$($network_funcs)*},
             {$($instance_funcs)*
-                $($group)::* (true, $export) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                $($group)::* (true, $export) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: $crate::CallContext| -> LyquidResult<$rt> {
                     use crate::__lyquid;
                     let mut $handle = __lyquid::InstanceContext::new(ctx)?;
                     let result = $body;
@@ -577,7 +576,7 @@ macro_rules! __lyquid_categorize_methods {
             {$($rest)*},
             {$($network_funcs)*},
             {$($instance_funcs)*
-                $($group)::* (false, $export) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: CallContext| -> LyquidResult<$rt> {
+                $($group)::* (false, $export) fn $fn($($name: $type),*) -> LyquidResult<$rt> {|ctx: $crate::CallContext| -> LyquidResult<$rt> {
                     use crate::__lyquid;
                     let $handle = __lyquid::ImmutableInstanceContext::new(ctx)?;
                     let result = $body;
@@ -642,12 +641,11 @@ macro_rules! __lyquid_method_alias {
 
 // TODO: move this macro to primitives crate instead
 #[macro_export]
-macro_rules! decode_eth_params {
+macro_rules! decode_eth_call_params {
     ($input:expr, $($name:ident: $type:ty),*) => {
         (|| -> Option<($($type,)*)> {
             use $crate::alloy_dyn_abi::{DynSolType, DynSolValue};
-            use $crate::runtime::EthAbiValue;
-            use $crate::runtime::ethabi::{EthAbiType, dyn_sol_type};
+            use $crate::runtime::ethabi::{EthAbiType, EthAbiValue, dyn_sol_type};
 
             let sol_type = DynSolType::Tuple(vec![
                 $(dyn_sol_type(<$type as EthAbiType>::DESC)?,)*
@@ -665,12 +663,12 @@ macro_rules! decode_eth_params {
 }
 
 #[macro_export]
-macro_rules! encode_eth_params {
+macro_rules! encode_eth_call_params {
     ($($val:expr),*) => {
         {
             use $crate::alloy_dyn_abi::DynSolValue;
-            use $crate::runtime::EthAbiValue;
-            use $crate::Bytes;
+            use $crate::runtime::ethabi::EthAbiValue;
+            use $crate::prelude::Bytes;
             let vals = vec![$($val.encode()),*];
             Bytes::from(DynSolValue::Tuple(vals).abi_encode_params())
         }
@@ -748,7 +746,7 @@ macro_rules! __lyquid_emit_method_fn {
         #[unsafe(no_mangle)]
         fn $fn(base: u32, len: u32, abi: u32) -> u64 {
             let raw = unsafe { HostInput::new(base, len) };
-            let output = if abi == ABI_ETH {
+            let output = if abi == $crate::ABI_ETH {
                 let result = (|| -> Result<$rt, LyquidError> {
                     let (input, ctx) = (|| {
                         let ctx: $crate::CallContext = decode_object(&raw)?;
@@ -775,7 +773,7 @@ macro_rules! __lyquid_emit_method_fn {
                         struct Parameters {$($name: $type),*}
                         // then let each type use its trait method to decode further
                         Some((Parameters {
-                            $($name: <$type as EthAbiValue>::decode(iter.next()?)?),*
+                            $($name: <$type as $crate::runtime::ethabi::EthAbiValue>::decode(iter.next()?)?),*
                         }, ctx))
                     })().ok_or(LyquidError::LyquorInput)?;
                     drop(raw);
@@ -785,7 +783,7 @@ macro_rules! __lyquid_emit_method_fn {
                     // execute the function body
                     ($body)(ctx)
                 })().map(|rt| {
-                    let values = <$rt as EthAbiReturnValue>::encode_return(rt);
+                    let values = <$rt as $crate::runtime::ethabi::EthAbiReturnValue>::encode_return(rt);
                     $crate::alloy_dyn_abi::DynSolValue::Tuple(values).abi_encode_sequence().unwrap()
                 });
                 encode_object(&result)

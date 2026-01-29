@@ -2,7 +2,7 @@ use std::string::String;
 
 use alloy_dyn_abi::{DynSolType, DynSolValue};
 
-use crate::lyquor_primitives::{Address, B256, Bytes, LyquidID, NodeID, RequiredLyquid, U64, U128, U256};
+use lyquor_primitives::{Address, B256, Bytes, LyquidID, NodeID, RequiredLyquid, U64, U128, U256};
 
 #[derive(Copy, Clone)]
 pub struct EthAbiTypeDesc {

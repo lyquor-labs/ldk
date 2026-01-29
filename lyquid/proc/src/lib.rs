@@ -525,7 +525,7 @@ fn expand_constructor(parsed: ParsedConstructor, export: Option<ExportKind>) -> 
         lyquid::__lyquid_wrap_methods!(
             "__lyquid_method_network",
             main (#mutable_flag, #export_flag) fn #ctor_name(#(#params_ts),*) -> LyquidResult<bool> {
-                |ctx: CallContext| -> LyquidResult<bool> {
+                |ctx: lyquid::CallContext| -> LyquidResult<bool> {
                     use crate::__lyquid;
                     #ctx_init
                     let result: LyquidResult<bool> = (|| -> LyquidResult<bool> { #body; Ok(true) })();
@@ -1002,12 +1002,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         let grp = token_is_group(token).expect("expect category info");
         let mut iter = grp.stream().into_iter();
         let cat_id = next_token_is_ident(&mut iter).expect("expect category identifer");
-        let cat_alloc = next_token_is_ident(&mut iter).expect("expect category allocator");
         let cat_prefix = next_token_is_ident(&mut iter).expect("expect category prefix");
-        cats.insert(
-            cat_id.to_string(),
-            (cat_alloc, TokenStream::from_iter(iter), cat_prefix),
-        );
+        cats.insert(cat_id.to_string(), (TokenStream::from_iter(iter), cat_prefix));
     }
     let mut struct_fields = HashMap::new(); // maps from categories to a token stream of struct fields
     let mut struct_inits = HashMap::new(); // maps from categories to a token stream of field initializers
@@ -1029,8 +1025,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         match cat_str.as_str() {
             "oracle" => {
                 cat_str = "network".to_string();
-                type_ = quote::quote! { lyquid::runtime::oracle::OracleSrc };
-                init = quote::quote! { lyquid::runtime::oracle::OracleSrc::new(#name_str) };
+                type_ = quote::quote! { runtime::oracle::OracleSrc };
+                init = quote::quote! { runtime::oracle::OracleSrc::new(#name_str) };
             }
             _ => {
                 type_ = def_iter.next().expect("expect variable type").into();
@@ -1043,7 +1039,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         let mut type_ = type_;
         let mut init = init;
 
-        let (_cat_alloc, cat_value, _) = match cats.get(&cat_str) {
+        let (cat_value, _) = match cats.get(&cat_str) {
             Some(v) => v,
             None => panic!("invalid category {}", cat.to_string()),
         };
@@ -1062,13 +1058,13 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
             _ => panic!("Unknown category for the allocator."),
         };
         init = quote::quote! {{
-            lyquid::runtime::set_allocator_category(#cat_num);
+            runtime::set_allocator_category(#cat_num);
             #init
         }};
 
         if cat == "instance" {
-            init = quote::quote! {lyquid::runtime::RwLock::new(#init)};
-            type_ = quote::quote! {lyquid::runtime::RwLock<#type_>};
+            init = quote::quote! {runtime::sync::RwLock::new(#init)};
+            type_ = quote::quote! {runtime::sync::RwLock<#type_>};
         }
 
         var_setup.extend([quote::quote! {
@@ -1086,8 +1082,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         init_ts.extend([quote::quote! {
             #name: {
                 // retrieve the pointer for Box<T>
-                let bytes = pa.get(#cat_value, &#name_str.as_bytes())?.ok_or(lyquid::LyquidError::Init)?;
-                let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| lyquid::LyquidError::Init)?);
+                let bytes = pa.get(#cat_value, &#name_str.as_bytes())?.ok_or(LyquidError::Init)?;
+                let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| LyquidError::Init)?);
                 unsafe { &mut *(addr as *mut (#type_)) }
             },
         }]);
@@ -1097,7 +1093,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         [quote::quote! {
             // the pointer (only need to do it once, upon initialization of the instance's
             // LiteMemory)
-            let ptr: *mut lyquid::runtime::internal::BuiltinNetworkState = Box::leak(Box::new(lyquid::runtime::internal::BuiltinNetworkState::new()));
+            let ptr: *mut runtime::internal::BuiltinNetworkState = Box::leak(Box::new(runtime::internal::BuiltinNetworkState::new()));
             let bytes = (ptr as u64).to_be_bytes();
             internal_pa.set(StateCategory::Network, "network".as_bytes(), &bytes).expect(FAIL_WRITE_STATE);
         }]
@@ -1107,7 +1103,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         .entry("network".to_string())
         .or_insert_with(|| TokenStream::new())
         .extend([quote::quote! {
-            pub __internal: &'static mut lyquid::runtime::internal::BuiltinNetworkState,
+            pub __internal: &'static mut runtime::internal::BuiltinNetworkState,
         }]);
     struct_inits
         .entry("network".to_string())
@@ -1115,15 +1111,15 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         .extend([quote::quote! {
             __internal: {
                 // retrieve the pointer for Box<T>
-                let bytes = internal_pa.get(StateCategory::Network, "network".as_bytes())?.ok_or(lyquid::LyquidError::Init)?;
-                let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| lyquid::LyquidError::Init)?);
-                unsafe { &mut *(addr as *mut lyquid::runtime::internal::BuiltinNetworkState) }
+                let bytes = internal_pa.get(StateCategory::Network, "network".as_bytes())?.ok_or(LyquidError::Init)?;
+                let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| LyquidError::Init)?);
+                unsafe { &mut *(addr as *mut runtime::internal::BuiltinNetworkState) }
             },
         }]);
 
     // now we summary up each category and generate output
     let mut structs = TokenStream::new();
-    for (cat, (_, _, cat_prefix)) in cats.iter() {
+    for (cat, (_, cat_prefix)) in cats.iter() {
         let field_ts = struct_fields.entry(cat.clone()).or_insert_with(|| TokenStream::new());
         let init_ts = struct_inits.entry(cat.clone()).or_insert_with(|| TokenStream::new());
         let sname = quote::format_ident!("{}{}", cat_prefix, struct_suffix);
@@ -1132,10 +1128,10 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
                 #field_ts
             }
 
-            impl lyquid::runtime::internal::StateAccessor for #sname {
-                fn new() -> Result<Self, lyquid::LyquidError> {
-                    let internal_pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::INTERNAL_STATE_PREFIX));
-                    let pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::VAR_CATALOG_PREFIX));
+            impl runtime::internal::StateAccessor for #sname {
+                fn new() -> Result<Self, LyquidError> {
+                    let internal_pa = runtime::internal::PrefixedAccess::new(Vec::from(lyquid::INTERNAL_STATE_PREFIX));
+                    let pa = runtime::internal::PrefixedAccess::new(Vec::from(lyquid::VAR_CATALOG_PREFIX));
                     Ok(Self {
                         #init_ts
                     })
@@ -1151,10 +1147,10 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         #[unsafe(no_mangle)]
         unsafe fn #init_func(category: u32) {
             const FAIL_WRITE_STATE: &str = "cannot write to low-level state store during LiteMemory initialization";
-            let internal_pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::INTERNAL_STATE_PREFIX));
-            let pa = lyquid::runtime::internal::PrefixedAccess::new(Vec::from(lyquid::VAR_CATALOG_PREFIX));
+            let internal_pa = runtime::internal::PrefixedAccess::new(Vec::from(lyquid::INTERNAL_STATE_PREFIX));
+            let pa = runtime::internal::PrefixedAccess::new(Vec::from(lyquid::VAR_CATALOG_PREFIX));
             #var_setup
-            lyquid::runtime::set_allocator_category(category as u8);
+            runtime::set_allocator_category(category as u8);
         }
     }
     .into()

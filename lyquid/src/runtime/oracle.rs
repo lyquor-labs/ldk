@@ -1,10 +1,9 @@
-use super::{
-    Deserialize, HashMap, HashSet, LyquidError, LyquidID, LyquidResult, NodeID, Serialize, StateAccessor, lyquor_api,
-    new_hashmap, new_hashset,
-};
+use super::StateAccessor;
+use super::prelude::*;
 pub use lyquor_primitives::oracle::{OracleCert, OracleHeader, OracleTarget, SignerID};
 use lyquor_primitives::oracle::{OracleConfig as OracleConfigWire, OracleSigner, ValidatePreimage, eth};
 use lyquor_primitives::{Address, Bytes, CallParams, Cipher, Hash, HashBytes, InputABI};
+use serde::{Deserialize, Serialize};
 
 /// Necessary info required for a certified call to be sequenced.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -332,13 +331,13 @@ impl OracleSrc {
             ctx.get_lyquid_id(),
             Some(format!("oracle::single_phase::{}", params.group)),
             "validate".into(),
-            lyquor_primitives::encode_by_fields!(msg: ValidateRequest = ValidateRequest {
+            encode_by_fields!(msg: ValidateRequest = ValidateRequest {
                 header,
                 params: params.clone(),
                 extra,
             }),
             Some(
-                lyquor_primitives::encode_by_fields!(
+                encode_by_fields!(
                     // Use oracle macro expected field "callee" for callee list and pass verification context.
                     callee: Vec<NodeID> = self.get_committee(),
                     header: OracleHeader = header,
@@ -351,7 +350,7 @@ impl OracleSrc {
         .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))?;
 
         Ok(cert.map(move |cert| {
-            params.input = crate::encode_by_fields!(cert: OracleCert = cert, input_raw: Bytes = params.input).into();
+            params.input = encode_by_fields!(cert: OracleCert = cert, input_raw: Bytes = params.input).into();
             params
         }))
     }
@@ -413,11 +412,11 @@ impl OracleSrc {
             lyquid,
             Some(format!("oracle::two_phase::{group}")),
             "propose".into(),
-            lyquor_primitives::encode_by_fields!(msg: ProposeRequest = ProposeRequest {
+            encode_by_fields!(msg: ProposeRequest = ProposeRequest {
                 init: init.clone(),
             }),
             Some(
-                lyquor_primitives::encode_by_fields!(
+                encode_by_fields!(
                     callee: Vec<NodeID> = self.get_committee(),
                     init: Bytes = init.clone()
                 )
@@ -430,7 +429,7 @@ impl OracleSrc {
             Some(p) => self.certify(
                 ctx,
                 p.output,
-                lyquor_primitives::encode_by_fields!(
+                encode_by_fields!(
                     init: Bytes = init,
                     inputs: Vec<ProposalInput> = p.inputs
                 )

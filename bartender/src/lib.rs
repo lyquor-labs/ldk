@@ -1,6 +1,6 @@
-use lyquid::runtime::*;
+use lyquid::prelude::*;
 use lyquor_primitives::{B256, RegisterEvent};
-use serde::*;
+use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
 struct DeployInfo {
@@ -24,7 +24,7 @@ struct LyquidMetadataOutput {
     dependencies: Vec<LyquidID>,
 }
 
-lyquid::state! {
+state! {
     network lyquid_registry: HashMap<LyquidID, LyquidMetadata> = new_hashmap();
     network owner_nonce: HashMap<Address, u64> = new_hashmap();
     network eth_addrs: HashMap<Address, LyquidID> = new_hashmap();
@@ -72,13 +72,13 @@ fn update_eth_addr(
     }
 }
 
-#[lyquid::method::network(export = eth)]
+#[method::network(export = eth)]
 fn constructor(ctx: &mut _) {
     // NOTE: it is specially treated (in contract generation) that the caller of bartender's
     // contract is the contract address itself
 }
 
-#[lyquid::method::network(export = eth)]
+#[method::network(export = eth)]
 fn register(ctx: &mut _, superseded: Address, deps: Vec<Address>) -> LyquidResult<bool> {
     let owner = ctx.origin;
     let contract = ctx.caller;
@@ -103,7 +103,7 @@ fn register(ctx: &mut _, superseded: Address, deps: Vec<Address>) -> LyquidResul
     Ok(true)
 }
 
-#[lyquid::method::network(export = eth)]
+#[method::network(export = eth)]
 fn set_ed25519_address(ctx: &mut _, pubkey: B256, qx: U256, qy: U256, addr: Address) -> LyquidResult<bool> {
     let pubkey_bytes: [u8; 32] = *pubkey.as_ref();
     if !lyquor_api::check_ed25519_pubkey(pubkey_bytes, qx, qy)? {
@@ -120,14 +120,14 @@ fn set_ed25519_address(ctx: &mut _, pubkey: B256, qx: U256, qy: U256, addr: Addr
     Ok(true)
 }
 
-#[lyquid::method::instance]
+#[method::instance]
 fn get_ed25519_address(ctx: &_, id: NodeID) -> LyquidResult<Option<Address>> {
     let ret = ctx.network.node_registry.get(&id).map(|r| r.addr);
     lyquid::println!("get_ed25519_address {id} = {ret:?}");
     Ok(ret)
 }
 
-#[lyquid::method::instance]
+#[method::instance]
 fn get_lyquid_info(ctx: &_, id: LyquidID) -> LyquidResult<Option<LyquidMetadataOutput>> {
     Ok(ctx.network.lyquid_registry.get(&id).map(|d| LyquidMetadataOutput {
         owner: d.owner,
@@ -136,7 +136,7 @@ fn get_lyquid_info(ctx: &_, id: LyquidID) -> LyquidResult<Option<LyquidMetadataO
     }))
 }
 
-#[lyquid::method::instance]
+#[method::instance]
 fn get_lyquid_deployment_info(ctx: &_, id: LyquidID, nth: u32) -> LyquidResult<Option<DeployInfo>> {
     let nth = nth as usize;
     Ok(ctx.network.lyquid_registry.get(&id).and_then(|d| {
@@ -148,7 +148,7 @@ fn get_lyquid_deployment_info(ctx: &_, id: LyquidID, nth: u32) -> LyquidResult<O
     }))
 }
 
-#[lyquid::method::instance]
+#[method::instance]
 fn get_last_lyquid_deployment_info(ctx: &_, id: LyquidID) -> LyquidResult<Option<DeployInfo>> {
     Ok(ctx
         .network
@@ -158,12 +158,12 @@ fn get_last_lyquid_deployment_info(ctx: &_, id: LyquidID) -> LyquidResult<Option
         .cloned())
 }
 
-#[lyquid::method::instance]
+#[method::instance]
 fn get_lyquid_id_by_eth_addr(ctx: &_, addr: Address) -> LyquidResult<Option<LyquidID>> {
     Ok(ctx.network.eth_addrs.get(&addr).copied())
 }
 
-#[lyquid::method::instance]
+#[method::instance]
 fn get_eth_addr(ctx: &_, id: LyquidID, ln_image: u32) -> LyquidResult<Option<Address>> {
     Ok(ctx.network.lyquid_registry.get(&id).and_then(|e| {
         if ln_image < 1 {
@@ -178,12 +178,12 @@ fn get_eth_addr(ctx: &_, id: LyquidID, ln_image: u32) -> LyquidResult<Option<Add
     }))
 }
 
-#[lyquid::method::instance]
+#[method::instance]
 fn get_lyquid_list(ctx: &_) -> LyquidResult<Vec<LyquidID>> {
     Ok(ctx.network.lyquid_registry.keys().copied().collect())
 }
 
-#[lyquid::method::instance]
+#[method::instance]
 fn get_lyquid_list_with_deps(ctx: &_) -> LyquidResult<Vec<(LyquidID, Vec<LyquidID>)>> {
     Ok(ctx
         .network
@@ -193,7 +193,7 @@ fn get_lyquid_list_with_deps(ctx: &_) -> LyquidResult<Vec<(LyquidID, Vec<LyquidI
         .collect())
 }
 
-#[lyquid::method::instance]
+#[method::instance]
 fn eth_abi_test1(ctx: &_, x: U256, y: Vec<String>, z: [Vec<u64>; 4]) -> LyquidResult<U256> {
     lyquid::println!("got x = {}, y = {:?}, z = {:?} from {}", x, y, z, ctx.caller);
     Ok(x + uint!(1_U256))

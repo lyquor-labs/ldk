@@ -1,4 +1,4 @@
-use lyquid::runtime::*;
+use lyquid::prelude::*;
 
 // Written by following Solidity code in
 // https://github.com/Uniswap/v2-core/blob/master/contracts/libraries/Math.sol
