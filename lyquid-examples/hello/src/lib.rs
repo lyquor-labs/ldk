@@ -9,12 +9,12 @@ state! {
 
 #[method::network(export = eth)]
 fn constructor(ctx: &mut _, greeting: String) {
-    *ctx.network.greeting = greeting.into();
+    *ctx.network.greeting = greeting;
 }
 
 #[method::network(export = eth)]
 fn set_greeting(ctx: &mut _, greeting: String) -> LyquidResult<bool> {
-    *ctx.network.greeting = greeting.into();
+    *ctx.network.greeting = greeting;
     Ok(true)
 }
 

@@ -321,7 +321,7 @@ create_devnet_script() {
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-rm -rf lyquor_db && LYQUOR_LOG=${LYQUOR_LOG:-info} "$SCRIPT_DIR/lyquor" --network devnet &
+rm -rf lyquor_db && LYQUOR_LOG=${LYQUOR_LOG:-info} "$SCRIPT_DIR/lyquor" &
 pid=$!
 trap 'echo "Received signal, stopping devnet node..."; kill -INT "$pid" 2>/dev/null; wait "$pid"; exit' INT TERM
 sleep 1
