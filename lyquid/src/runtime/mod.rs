@@ -452,11 +452,6 @@ macro_rules! gen_container_types {
             Box::new_in(v, $alloc)
         }
 
-        pub type String = string_alloc::String<$alloc>;
-        pub fn new_string() -> String {
-            String::new_in($alloc)
-        }
-
         pub type VecDeque<T> = std::collections::VecDeque<T, $alloc>;
         pub fn new_vecdeque<T>() -> VecDeque<T> {
             VecDeque::new_in($alloc)

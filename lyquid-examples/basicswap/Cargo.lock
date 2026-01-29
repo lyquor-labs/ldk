@@ -1039,7 +1039,6 @@ dependencies = [
  "lyquid-proc",
  "lyquor-primitives",
  "serde",
- "string-alloc",
  "talc",
  "thiserror",
 ]
@@ -1637,15 +1636,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "string-alloc"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fc7909ff677a6208e324924331f1bafc944791ca7f9c89ee82991d38ae252a2"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "subtle"
