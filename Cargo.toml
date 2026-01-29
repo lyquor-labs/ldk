@@ -22,7 +22,7 @@ assert_cmd = "2.1"
 async-trait = "0.1"
 axum = { version = "0.8" }
 bytes = "1.11"
-clap = { version = "4.5.53" }
+clap = { version = "4.5.55" }
 config = { version = "0.15", default-features = false, features = ["toml", "json", "yaml"] }
 const-hex = "1.15"
 derive_more = { version = "2.1", features = ["debug"] }
@@ -84,7 +84,7 @@ tracing = { version = "0.1" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typed-builder = "0.23"
-wasmparser = "0.243.0"
+wasmparser = "0.244.0"
 x509-parser = "0.18.0"
 
 # These crates run hot during Wasmtime JIT compilation (module lowering, instruction selection,
