@@ -92,6 +92,8 @@ pub enum InputABI {
 pub enum TriggerMode {
     /// Trigger repeatedly at the specified interval in milliseconds.
     IntervalMs(u64),
+    /// Trigger once, delayed by the specified milliseconds (0 for immediate).
+    Once(u64),
     /// Stop the trigger (remove it from the registry).
     Stop,
 }
