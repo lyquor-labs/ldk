@@ -276,10 +276,19 @@ pub fn encode_object_with_prefix<T: Serialize + ?Sized>(prefix: &[u8], obj: &T) 
     vec
 }
 
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StateCategory {
     Network,
     Instance,
+}
+
+impl StateCategory {
+    pub fn as_runtime(&self) -> u8 {
+        match self {
+            Self::Instance => 0x1,
+            Self::Network => 0x2,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, Copy, Clone)]
