@@ -91,9 +91,11 @@ pub enum InputABI {
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum TriggerMode {
     /// Trigger repeatedly at the specified interval in milliseconds.
-    IntervalMs(u64),
+    Recurrent(u64),
     /// Trigger once, delayed by the specified milliseconds (0 for immediate).
     Once(u64),
+    /// Trigger once immediately and wait for completion.
+    Sync,
     /// Stop the trigger (remove it from the registry).
     Stop,
 }
