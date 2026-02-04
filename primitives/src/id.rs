@@ -350,13 +350,14 @@ impl std::str::FromStr for LyquidNumber {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_compact::KeyPair;
+    use ed25519_dalek::SigningKey;
 
     #[test]
     fn test_hex() {
-        let kp = KeyPair::from_seed([42u8; 32].into());
-        let id = NodeID::from(*kp.pk);
-        let hex = hex::encode(*kp.pk);
+        let kp = SigningKey::from_bytes(&[42u8; 32]);
+        let pubkey = kp.verifying_key().to_bytes();
+        let id = NodeID::from(pubkey);
+        let hex = hex::encode(pubkey);
         let decoded_id = NodeID::from_hex(&hex).unwrap();
         assert_eq!(id, decoded_id);
         assert_eq!(hex, "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61");

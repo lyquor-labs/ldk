@@ -27,7 +27,7 @@ config = { version = "0.15", default-features = false, features = ["toml", "json
 const-hex = "1.15"
 derive_more = { version = "2.1", features = ["debug"] }
 duct = "1.1"
-ed25519-compact = { version = "2", default-features = false }
+ed25519-dalek = { version = "2.1", default-features = false, features = ["pkcs8", "pem", "std"] }
 futures = "0.3"
 http = "1.4"
 http-body-util = "0.1"

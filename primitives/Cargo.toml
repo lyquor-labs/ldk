@@ -19,4 +19,4 @@ sha2.workspace = true
 typed-builder.workspace = true
 
 [dev-dependencies]
-ed25519-compact = { workspace = true }
+ed25519-dalek = { workspace = true }
