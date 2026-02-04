@@ -151,6 +151,20 @@ impl<A: EthAbiValue, B: EthAbiValue, C: EthAbiValue, D: EthAbiValue> EthAbiRetur
     }
 }
 
+impl<A: EthAbiValue, B: EthAbiValue, C: EthAbiValue, D: EthAbiValue, E: EthAbiValue> EthAbiReturnValue
+    for (A, B, C, D, E)
+{
+    fn encode_return(self) -> Vec<DynSolValue> {
+        vec![
+            self.0.encode(),
+            self.1.encode(),
+            self.2.encode(),
+            self.3.encode(),
+            self.4.encode(),
+        ]
+    }
+}
+
 impl EthAbiReturn for () {
     const COUNT: usize = 0;
     const TYPES: &'static [EthAbiTypeDesc] = &[];
@@ -174,6 +188,11 @@ impl<A: EthAbiType, B: EthAbiType, C: EthAbiType> EthAbiReturn for (A, B, C) {
 impl<A: EthAbiType, B: EthAbiType, C: EthAbiType, D: EthAbiType> EthAbiReturn for (A, B, C, D) {
     const COUNT: usize = 4;
     const TYPES: &'static [EthAbiTypeDesc] = &[A::DESC, B::DESC, C::DESC, D::DESC];
+}
+
+impl<A: EthAbiType, B: EthAbiType, C: EthAbiType, D: EthAbiType, E: EthAbiType> EthAbiReturn for (A, B, C, D, E) {
+    const COUNT: usize = 5;
+    const TYPES: &'static [EthAbiTypeDesc] = &[A::DESC, B::DESC, C::DESC, D::DESC, E::DESC];
 }
 
 impl EthAbiValue for U256 {
