@@ -10,8 +10,11 @@ use lyquid::prelude::*;
 mod utils;
 use utils::{min, sqrt};
 
-// Written by following Solidity code in
+// Core AMM logic follows Uniswap V2 Pair (Solidity):
 // https://github.com/Uniswap/v2-core/blob/master/contracts/UniswapV2Pair.sol
+// Quote math and slippage-style flows are inspired by Uniswap V2 periphery:
+// - Library math: https://github.com/Uniswap/v2-periphery/blob/master/contracts/libraries/UniswapV2Library.sol
+// - Router flows: https://github.com/Uniswap/v2-periphery/blob/master/contracts/UniswapV2Router02.sol
 
 /// Minimum liquidity locked in the contract forever (sent to zero address)
 const MINIMUM_LIQUIDITY: U256 = uint!(1000_U256);
@@ -19,6 +22,9 @@ const MINIMUM_LIQUIDITY: U256 = uint!(1000_U256);
 /// Fee taken on swaps: 0.3% = 3/1000
 const FEE_RATE: U256 = uint!(3_U256);
 const FEE_DENOMINATOR: U256 = uint!(1000_U256);
+const FEE_FACTOR: U256 = uint!(997_U256);
+/// Basis points denominator (100% = 10_000 bps)
+const BPS_DENOMINATOR: U256 = uint!(10_000_U256);
 
 fn _safe_transfer(token: LyquidID, to: Address, amount: U256) -> LyquidResult<()> {
     if !call!((token).transfer(to: Address = to, amount: U256 = amount) -> (success: LyquidResult<bool>))?.success? {
@@ -36,6 +42,52 @@ fn _safe_transfer_from(token: LyquidID, from: Address, to: Address, amount: U256
 
 fn _get_token_balance(token: LyquidID, account: Address) -> LyquidResult<U256> {
     Ok(call!((token).balanceOf(account: Address = account) -> (balance: LyquidResult<U256>))?.balance?)
+}
+
+fn _get_amount_out(amount_in: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
+    if amount_in == U256::ZERO {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_INPUT_AMOUNT".into()));
+    }
+    if reserve_in == U256::ZERO || reserve_out == U256::ZERO {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
+    }
+    let amount_in_with_fee = amount_in * FEE_FACTOR;
+    let numerator = amount_in_with_fee * reserve_out;
+    let denominator = reserve_in * FEE_DENOMINATOR + amount_in_with_fee;
+    let amount_out = numerator / denominator;
+    if amount_out == U256::ZERO {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_OUTPUT_AMOUNT".into()));
+    }
+    Ok(amount_out)
+}
+
+fn _get_amount_in(amount_out: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
+    if amount_out == U256::ZERO {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_OUTPUT_AMOUNT".into()));
+    }
+    if reserve_in == U256::ZERO || reserve_out == U256::ZERO || amount_out >= reserve_out {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
+    }
+    let numerator = reserve_in * amount_out * FEE_DENOMINATOR;
+    let denominator = (reserve_out - amount_out) * FEE_FACTOR;
+    Ok(numerator / denominator + uint!(1_U256))
+}
+
+fn _slippage_bps(slippage_bps: u32) -> LyquidResult<U256> {
+    if slippage_bps > 10_000 {
+        return Err(LyquidError::LyquidRuntime("SLIPPAGE_TOO_HIGH".into()));
+    }
+    Ok(U256::from(slippage_bps))
+}
+
+fn _min_amount_out(quote_out: U256, slippage_bps: u32) -> LyquidResult<U256> {
+    let bps = _slippage_bps(slippage_bps)?;
+    Ok(quote_out * (BPS_DENOMINATOR - bps) / BPS_DENOMINATOR)
+}
+
+fn _max_amount_in(quote_in: U256, slippage_bps: u32) -> LyquidResult<U256> {
+    let bps = _slippage_bps(slippage_bps)?;
+    Ok(quote_in * (BPS_DENOMINATOR + bps) / BPS_DENOMINATOR)
 }
 
 fn _update(self_address: Address, state: &mut __lyquid::NetworkState) -> LyquidResult<()> {
@@ -60,6 +112,61 @@ fn _burn(state: &mut __lyquid::NetworkState, from: Address, amount: U256) -> Lyq
     state.balances.insert(from, balance - amount);
     *state.total_supply -= amount;
     Ok(())
+}
+
+fn _swap_internal(
+    ctx: &mut __lyquid::NetworkContext,
+    amount0_out: U256,
+    amount1_out: U256,
+    to: Address,
+    amount0_in: U256,
+    amount1_in: U256,
+) -> LyquidResult<bool> {
+    let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
+    let (token0, token1) = (*ctx.network.token0, *ctx.network.token1);
+
+    let lyquid_id = ctx.lyquid_id;
+    let self_address: Address = lyquid_id.into();
+
+    if amount0_out == U256::ZERO && amount1_out == U256::ZERO {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_OUTPUT_AMOUNT".into()));
+    }
+    if amount0_out >= reserve0 || amount1_out >= reserve1 {
+        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
+    }
+    if to == Address::from(token0) || to == Address::from(token1) {
+        return Err(LyquidError::LyquidRuntime("INVALID_TO".into()));
+    }
+
+    // Transfer input tokens from user to this contract
+    if amount0_in > U256::ZERO {
+        _safe_transfer_from(token0, ctx.caller, self_address, amount0_in)?;
+    }
+    if amount1_in > U256::ZERO {
+        _safe_transfer_from(token1, ctx.caller, self_address, amount1_in)?;
+    }
+    // Transfer output tokens to recipient
+    if amount0_out > U256::ZERO {
+        _safe_transfer(token0, to, amount0_out)?;
+    }
+    if amount1_out > U256::ZERO {
+        _safe_transfer(token1, to, amount1_out)?;
+    }
+
+    let balance0_adjusted =
+        _get_token_balance(token0, self_address)? * FEE_DENOMINATOR - amount0_in * FEE_RATE;
+    let balance1_adjusted =
+        _get_token_balance(token1, self_address)? * FEE_DENOMINATOR - amount1_in * FEE_RATE;
+    if balance0_adjusted * balance1_adjusted
+        < reserve0 * reserve1 * FEE_DENOMINATOR * FEE_DENOMINATOR
+    {
+        return Err(LyquidError::LyquidRuntime(
+            "INSUFFICIENT_INVARIANT: Constant product formula violated (x*y=k)".into(),
+        ));
+    }
+    _update(self_address, &mut ctx.network)?;
+    lyquid::println!("Swapped: {} token0 and {} token1 to {}", amount0_out, amount1_out, to);
+    Ok(true)
 }
 
 state! {
@@ -148,49 +255,74 @@ fn burn(ctx: &mut _, to: Address, liquidity: U256) -> LyquidResult<bool> {
 
 #[method::network(export = eth)]
 fn swap(
-    ctx: &mut _, amount0_out: U256, amount1_out: U256, to: Address, amount0_in: U256, amount1_in: U256,
+    ctx: &mut _,
+    amount0_out: U256,
+    amount1_out: U256,
+    to: Address,
+    amount0_in: U256,
+    amount1_in: U256,
 ) -> LyquidResult<bool> {
-    let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
-    let (token0, token1) = (*ctx.network.token0, *ctx.network.token1);
+    _swap_internal(&mut ctx, amount0_out, amount1_out, to, amount0_in, amount1_in)
+}
 
-    let lyquid_id = ctx.lyquid_id;
-    let self_address: Address = lyquid_id.into();
-
-    if amount0_out == U256::ZERO && amount1_out == U256::ZERO {
+/// Swap with exact input amount and slippage (bps). Returns actual output amount.
+/// `token0_to_token1`: set true to swap token0 for token1 (token0 is input, token1 is output);
+/// set false for otherwise.
+#[method::network(export = eth)]
+fn swapExactInWithSlippage(
+    ctx: &mut _,
+    token0_to_token1: bool,
+    amount_in: U256,
+    slippage_bps: u32,
+    to: Address,
+) -> LyquidResult<U256> {
+    let (reserve_in, reserve_out) = if token0_to_token1 {
+        (*ctx.network.reserve0, *ctx.network.reserve1)
+    } else {
+        (*ctx.network.reserve1, *ctx.network.reserve0)
+    };
+    let quote_out = _get_amount_out(amount_in, reserve_in, reserve_out)?;
+    let min_out = _min_amount_out(quote_out, slippage_bps)?;
+    if quote_out < min_out {
         return Err(LyquidError::LyquidRuntime("INSUFFICIENT_OUTPUT_AMOUNT".into()));
     }
-    if amount0_out >= reserve0 || amount1_out >= reserve1 {
-        return Err(LyquidError::LyquidRuntime("INSUFFICIENT_LIQUIDITY".into()));
-    }
-    if to == Address::from(token0) || to == Address::from(token1) {
-        return Err(LyquidError::LyquidRuntime("INVALID_TO".into()));
-    }
+    let (amount0_in, amount1_in, amount0_out, amount1_out) = if token0_to_token1 {
+        (amount_in, U256::ZERO, U256::ZERO, quote_out)
+    } else {
+        (U256::ZERO, amount_in, quote_out, U256::ZERO)
+    };
+    _swap_internal(&mut ctx, amount0_out, amount1_out, to, amount0_in, amount1_in)?;
+    Ok(quote_out)
+}
 
-    // Transfer input tokens from user to this contract
-    if amount0_in > U256::ZERO {
-        _safe_transfer_from(token0, ctx.caller, self_address, amount0_in)?;
+/// Swap with exact output amount and slippage (bps). Returns actual input amount.
+/// `token0_to_token1`: set true to swap token0 for token1 (token0 is input, token1 is output);
+/// set false for otherwise.
+#[method::network(export = eth)]
+fn swapExactOutWithSlippage(
+    ctx: &mut _,
+    token0_to_token1: bool,
+    amount_out: U256,
+    slippage_bps: u32,
+    to: Address,
+) -> LyquidResult<U256> {
+    let (reserve_in, reserve_out) = if token0_to_token1 {
+        (*ctx.network.reserve0, *ctx.network.reserve1)
+    } else {
+        (*ctx.network.reserve1, *ctx.network.reserve0)
+    };
+    let quote_in = _get_amount_in(amount_out, reserve_in, reserve_out)?;
+    let max_in = _max_amount_in(quote_in, slippage_bps)?;
+    if quote_in > max_in {
+        return Err(LyquidError::LyquidRuntime("EXCESSIVE_INPUT_AMOUNT".into()));
     }
-    if amount1_in > U256::ZERO {
-        _safe_transfer_from(token1, ctx.caller, self_address, amount1_in)?;
-    }
-    // Transfer output tokens to recipient
-    if amount0_out > U256::ZERO {
-        _safe_transfer(token0, to, amount0_out)?;
-    }
-    if amount1_out > U256::ZERO {
-        _safe_transfer(token1, to, amount1_out)?;
-    }
-
-    let balance0_adjusted = _get_token_balance(token0, self_address)? * FEE_DENOMINATOR - amount0_in * FEE_RATE;
-    let balance1_adjusted = _get_token_balance(token1, self_address)? * FEE_DENOMINATOR - amount1_in * FEE_RATE;
-    if balance0_adjusted * balance1_adjusted < reserve0 * reserve1 * FEE_DENOMINATOR * FEE_DENOMINATOR {
-        return Err(LyquidError::LyquidRuntime(
-            "INSUFFICIENT_INVARIANT: Constant product formula violated (x*y=k)".into(),
-        ));
-    }
-    _update(self_address, &mut ctx.network)?;
-    lyquid::println!("Swapped: {} token0 and {} token1 to {}", amount0_out, amount1_out, to);
-    Ok(true)
+    let (amount0_in, amount1_in, amount0_out, amount1_out) = if token0_to_token1 {
+        (quote_in, U256::ZERO, U256::ZERO, amount_out)
+    } else {
+        (U256::ZERO, quote_in, amount_out, U256::ZERO)
+    };
+    _swap_internal(&mut ctx, amount0_out, amount1_out, to, amount0_in, amount1_in)?;
+    Ok(quote_in)
 }
 
 #[method::network(export = eth)]
