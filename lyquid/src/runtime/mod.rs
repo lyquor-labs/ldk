@@ -352,7 +352,7 @@ macro_rules! trigger {
             stringify!($method).to_string(),
             $crate::prelude::encode_by_fields!($($param: $type $(= $default)?),*),
             $mode,
-        )
+        ).map_err(|e| $crate::LyquidError::LyquidRuntime(format!("Failed to trigger {} :{e:?}.", stringify!($method))))?
     };
     ($method:ident($($param:ident: $type:ty $(= $default:expr)?),*), $mode:expr) => {
         $crate::runtime::lyquor_api::trigger(
@@ -360,7 +360,7 @@ macro_rules! trigger {
             stringify!($method).to_string(),
             $crate::prelude::encode_by_fields!($($param: $type $(= $default)?),*),
             $mode,
-        )
+        ).map_err(|e| $crate::LyquidError::LyquidRuntime(format!("Failed to trigger {} :{e:?}.", stringify!($method).to_string())))?
     }
 }
 
