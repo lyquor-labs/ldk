@@ -55,6 +55,11 @@
 /// - `input: Bytes` – raw input buffer (decoded values already available via parameters)  
 /// - `network: lyquid::runtime::Mutable<NetworkState>` – access to your `network` state variables
 ///
+/// #### `__lyquid::CertifiedContext` (used in `network(oracle::certified::...)` functions):
+///
+/// - Same fields as `NetworkContext`
+/// - `cert: lyquid::runtime::oracle::OracleCert` – validated oracle certificate for the current call
+///
 /// #### `__lyquid::InstanceContext` (used in `instance` functions):
 ///
 /// - `origin: Address` - this will always be the same as `caller`
@@ -131,6 +136,7 @@ macro_rules! __lyquid_state_generate {
                 (instance Instance StateCategory::Instance)] $($token)*);
 
             pub type NetworkContext = $crate::runtime::NetworkContextImpl<NetworkState>;
+            pub type CertifiedContext = $crate::runtime::CertifiedContextImpl<NetworkState>;
             pub type ImmutableNetworkContext = $crate::runtime::ImmutableNetworkContextImpl<NetworkState>;
             pub type InstanceContext = $crate::runtime::InstanceContextImpl<NetworkState, InstanceState>;
             pub type ImmutableInstanceContext = $crate::runtime::ImmutableInstanceContextImpl<NetworkState, InstanceState>;
@@ -176,9 +182,10 @@ macro_rules! __lyquid_categorize_methods {
                         abi: $crate::lyquor_primitives::InputABI::Lyquor,
                     };
                     let me = ctx.lyquid_id;
-                    let mut $handle = crate::__lyquid::NetworkContext::new(ctx)?;
+                    let mut $handle = crate::__lyquid::CertifiedContext::new(ctx, oc, topic)?;
+                    let cert = &$handle.cert;
 
-                    if !$handle.network.__internal.oracle_dest(topic).verify(me, params, oc) {
+                    if !$handle.network.__internal.oracle_dest(topic).verify(me, params, cert) {
                         return Err(LyquidError::InputCert)
                     }
 

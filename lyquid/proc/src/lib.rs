@@ -1123,6 +1123,15 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         let field_ts = struct_fields.entry(cat.clone()).or_insert_with(|| TokenStream::new());
         let init_ts = struct_inits.entry(cat.clone()).or_insert_with(|| TokenStream::new());
         let sname = quote::format_ident!("{}{}", cat_prefix, struct_suffix);
+        let oracle_dest_fn = if cat == "network" {
+            quote::quote! {
+                fn oracle_dest(&mut self, topic: &'static str) -> Option<&mut runtime::oracle::OracleDest> {
+                    Some(self.__internal.oracle_dest(topic))
+                }
+            }
+        } else {
+            quote::quote! {}
+        };
         structs.extend([quote::quote! {
             pub struct #sname {
                 #field_ts
@@ -1136,6 +1145,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
                         #init_ts
                     })
                 }
+
+                #oracle_dest_fn
             }
         }]);
     }

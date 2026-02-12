@@ -748,6 +748,12 @@ impl OracleDest {
         &self.config_hash
     }
 
+    pub fn signer_node_id(&self, id: SignerID) -> Option<NodeID> {
+        let key = self.config.committee.get(&id)?;
+        let key: [u8; 32] = key.as_slice().try_into().ok()?;
+        Some(NodeID::from(key))
+    }
+
     fn update_config(&mut self, config: OracleConfigDest, config_hash: HashBytes) -> bool {
         if config.committee.is_empty() {
             // No signers.
@@ -792,11 +798,11 @@ impl OracleDest {
         // false if Nonce is used.
     }
 
-    pub fn verify(&mut self, me: LyquidID, params: lyquor_primitives::CallParams, oc: OracleCert) -> bool {
+    pub fn verify(&mut self, me: LyquidID, params: lyquor_primitives::CallParams, oc: &OracleCert) -> bool {
         // Ensure the certificate targets this Lyquid
-        match oc.header.target {
+        match &oc.header.target {
             OracleTarget::LVM(id) => {
-                if id != me {
+                if *id != me {
                     // Target mismatch (possible Lyquid-level replay attempt).
                     return false;
                 }
@@ -806,7 +812,7 @@ impl OracleDest {
 
         // Ensure the preimage matches the signed digest.
         let msg = ValidatePreimage {
-            header: oc.header,
+            header: oc.header.clone(),
             params,
             approval: true,
         }
@@ -814,7 +820,7 @@ impl OracleDest {
         .into();
 
         // Verify the validity of the OracleCert.
-        let new_config = match verify_oracle_cert(&oc, msg, &self.config, &self.config_hash) {
+        let new_config = match verify_oracle_cert(oc, msg, &self.config, &self.config_hash) {
             Ok(cfg) => cfg,
             Err(_) => {
                 // Invalid call certificate.
@@ -827,13 +833,13 @@ impl OracleDest {
             // together with the call payload, and therefore has also been
             // validated). Let's first update the config because it is used for
             // this call and future calls, until a later update.
-            if !self.update_config(config, oc.header.config_hash) {
+            if !self.update_config(config, oc.header.config_hash.clone()) {
                 return false;
             }
         }
 
         // Prevent the call from being used again.
-        self.record_nonce(oc.header.epoch, oc.header.nonce.into())
+        self.record_nonce(oc.header.epoch, oc.header.nonce.clone().into())
     }
 }
 

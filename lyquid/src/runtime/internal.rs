@@ -48,6 +48,10 @@ pub trait StateAccessor {
     fn new() -> Result<Self, LyquidError>
     where
         Self: Sized;
+
+    fn oracle_dest(&mut self, _topic: &'static str) -> Option<&mut OracleDest> {
+        None
+    }
 }
 
 /// A low-cost wrapper that applies the same prefix to low-level state access through `lyquor_api`.

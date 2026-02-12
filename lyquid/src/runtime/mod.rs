@@ -268,6 +268,7 @@ pub mod lyquor_api {
         sign(msg: Bytes, cipher: Cipher) -> Bytes;
         verify(msg: Bytes, cipher: Cipher, sig: Bytes, pubkey: Bytes) -> bool;
         random_bytes(length: usize) -> Vec<u8>;
+        systime() -> u64;
         http_request(request: http::Request, options: Option<http::RequestOptions>) -> http::Response;
         check_ed25519_pubkey(pubkey: [u8; 32], qx: U256, qy: U256) -> bool;
         get_ed25519_address(pubkey: [u8; 32]) -> Option<Address>;
@@ -448,6 +449,49 @@ where
             input: ctx.input,
             network: Mutable::new(S::new()?),
         })
+    }
+}
+
+/// Read/write network state variables for certified network functions.
+pub struct CertifiedContextImpl<S>
+where
+    S: StateAccessor,
+{
+    pub lyquid_id: LyquidID,
+    pub origin: Address,
+    pub caller: Address,
+    pub input: Bytes,
+    pub network: Mutable<S>,
+    topic: &'static str,
+    pub cert: oracle::OracleCert,
+}
+
+impl<S> CertifiedContextImpl<S>
+where
+    S: StateAccessor,
+{
+    pub fn new(ctx: CallContext, cert: oracle::OracleCert, topic: &'static str) -> LyquidResult<Self> {
+        Ok(Self {
+            lyquid_id: ctx.lyquid_id,
+            origin: ctx.origin,
+            caller: ctx.caller,
+            input: ctx.input,
+            network: Mutable::new(S::new()?),
+            topic,
+            cert,
+        })
+    }
+}
+
+impl<S> CertifiedContextImpl<S>
+where
+    S: StateAccessor,
+{
+    pub fn signer_node_id(&mut self, id: u64) -> Option<NodeID> {
+        let sid: oracle::SignerID = id.try_into().ok()?;
+        self.network
+            .oracle_dest(self.topic)
+            .and_then(|dest| dest.signer_node_id(sid))
     }
 }
 
