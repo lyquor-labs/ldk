@@ -260,6 +260,7 @@ pub mod lyquor_api {
         state_set(cat: StateCategory, key: Vec<u8>, value: Option<Vec<u8>>);
         state_get(cat: StateCategory, key: Vec<u8>) -> Option<Vec<u8>>;
         version() -> LyquidNumber;
+        chain_pos() -> ChainPos;
         log(record: LyteLog);
         console_output(output: ConsoleSink, s: String);
         universal_procedural_call(target: LyquidID, group: Option<String>, method: String, input: Vec<u8>, client_params: Option<Bytes>) -> Vec<u8>;

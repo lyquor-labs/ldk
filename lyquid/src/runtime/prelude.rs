@@ -5,8 +5,8 @@ pub use lyquor_primitives;
 pub use lyquor_primitives::blake3;
 
 pub use lyquor_primitives::{
-    Address, Bytes, CallParams, Hash, LyquidID, LyquidNumber, NodeID, RequiredLyquid, TriggerMode, U64, U128, U256,
-    address, decode_by_fields, decode_object, encode_by_fields, encode_object, uint,
+    Address, Bytes, CallParams, ChainPos, Hash, LyquidID, LyquidNumber, NodeID, RequiredLyquid, TriggerMode, U64, U128,
+    U256, address, decode_by_fields, decode_object, encode_by_fields, encode_object, uint,
 };
 
 pub use super::lyquor_api;

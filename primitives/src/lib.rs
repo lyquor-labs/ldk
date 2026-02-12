@@ -50,7 +50,7 @@ pub type Hash = blake3::Hash;
 ///
 /// Typically, a sequencing backend may be a chain that carries Lyquid slots in some of its blocks.
 /// This means the [SlotNumber]s do not necessarily correspond to continuous [ChainPos] in the sequencing backend.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChainPos(u128);
 
 impl ChainPos {
@@ -62,6 +62,11 @@ impl ChainPos {
     #[inline(always)]
     pub fn block(&self) -> u64 {
         (self.0 >> 32) as u64
+    }
+
+    #[inline(always)]
+    pub fn block_index(&self) -> u32 {
+        self.0 as u32
     }
 
     #[inline(always)]
@@ -79,6 +84,47 @@ impl fmt::Display for ChainPos {
 impl fmt::Debug for ChainPos {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         fmt::Display::fmt(self, f)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HumanReadableChainPos {
+    block_number: U64,
+    block_index: U32,
+}
+
+impl Serialize for ChainPos {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if serializer.is_human_readable() {
+            HumanReadableChainPos {
+                block_number: U64::from(self.block()),
+                block_index: U32::from(self.block_index()),
+            }
+            .serialize(serializer)
+        } else {
+            serializer.serialize_u128(self.0)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ChainPos {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            let HumanReadableChainPos {
+                block_number,
+                block_index,
+            } = HumanReadableChainPos::deserialize(deserializer)?;
+            Ok(Self::new(block_number.to::<u64>(), block_index.to::<u32>()))
+        } else {
+            Ok(Self(u128::deserialize(deserializer)?))
+        }
     }
 }
 
