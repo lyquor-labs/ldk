@@ -115,11 +115,7 @@ fn _burn(state: &mut __lyquid::NetworkState, from: Address, amount: U256) -> Lyq
 }
 
 fn _swap_internal(
-    ctx: &mut __lyquid::NetworkContext,
-    amount0_out: U256,
-    amount1_out: U256,
-    to: Address,
-    amount0_in: U256,
+    ctx: &mut __lyquid::NetworkContext, amount0_out: U256, amount1_out: U256, to: Address, amount0_in: U256,
     amount1_in: U256,
 ) -> LyquidResult<bool> {
     let (reserve0, reserve1) = (*ctx.network.reserve0, *ctx.network.reserve1);
@@ -153,13 +149,9 @@ fn _swap_internal(
         _safe_transfer(token1, to, amount1_out)?;
     }
 
-    let balance0_adjusted =
-        _get_token_balance(token0, self_address)? * FEE_DENOMINATOR - amount0_in * FEE_RATE;
-    let balance1_adjusted =
-        _get_token_balance(token1, self_address)? * FEE_DENOMINATOR - amount1_in * FEE_RATE;
-    if balance0_adjusted * balance1_adjusted
-        < reserve0 * reserve1 * FEE_DENOMINATOR * FEE_DENOMINATOR
-    {
+    let balance0_adjusted = _get_token_balance(token0, self_address)? * FEE_DENOMINATOR - amount0_in * FEE_RATE;
+    let balance1_adjusted = _get_token_balance(token1, self_address)? * FEE_DENOMINATOR - amount1_in * FEE_RATE;
+    if balance0_adjusted * balance1_adjusted < reserve0 * reserve1 * FEE_DENOMINATOR * FEE_DENOMINATOR {
         return Err(LyquidError::LyquidRuntime(
             "INSUFFICIENT_INVARIANT: Constant product formula violated (x*y=k)".into(),
         ));
@@ -255,12 +247,7 @@ fn burn(ctx: &mut _, to: Address, liquidity: U256) -> LyquidResult<bool> {
 
 #[method::network(export = eth)]
 fn swap(
-    ctx: &mut _,
-    amount0_out: U256,
-    amount1_out: U256,
-    to: Address,
-    amount0_in: U256,
-    amount1_in: U256,
+    ctx: &mut _, amount0_out: U256, amount1_out: U256, to: Address, amount0_in: U256, amount1_in: U256,
 ) -> LyquidResult<bool> {
     _swap_internal(&mut ctx, amount0_out, amount1_out, to, amount0_in, amount1_in)
 }
@@ -270,11 +257,7 @@ fn swap(
 /// set false for otherwise.
 #[method::network(export = eth)]
 fn swapExactInWithSlippage(
-    ctx: &mut _,
-    token0_to_token1: bool,
-    amount_in: U256,
-    slippage_bps: u32,
-    to: Address,
+    ctx: &mut _, token0_to_token1: bool, amount_in: U256, slippage_bps: u32, to: Address,
 ) -> LyquidResult<U256> {
     let (reserve_in, reserve_out) = if token0_to_token1 {
         (*ctx.network.reserve0, *ctx.network.reserve1)
@@ -300,11 +283,7 @@ fn swapExactInWithSlippage(
 /// set false for otherwise.
 #[method::network(export = eth)]
 fn swapExactOutWithSlippage(
-    ctx: &mut _,
-    token0_to_token1: bool,
-    amount_out: U256,
-    slippage_bps: u32,
-    to: Address,
+    ctx: &mut _, token0_to_token1: bool, amount_out: U256, slippage_bps: u32, to: Address,
 ) -> LyquidResult<U256> {
     let (reserve_in, reserve_out) = if token0_to_token1 {
         (*ctx.network.reserve0, *ctx.network.reserve1)
