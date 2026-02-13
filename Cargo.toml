@@ -73,6 +73,7 @@ protoc-bin-vendored = "3.2"
 quote = "1.0"
 rand = "0.9"
 regex = "1.11.2"
+reqwest = { version = "0.13.1", default-features = false }
 rustls = { version = "0.23", features = ["aws_lc_rs"], default-features = false }
 rustls-pki-types = { version = "1.14" }
 rustls-webpki = { version = "0.103.9", features = ["aws-lc-rs"] }
