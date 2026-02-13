@@ -49,6 +49,7 @@ lyquor-db = { path = "db" }
 lyquor-jsonrpc = { path = "jsonrpc" }
 lyquor-net = { path = "net" }
 lyquor-net-rpc = { path = "net/rpc" }
+lyquor-oci = { path = "oci" }
 lyquor-primitives = { path = "primitives" }
 lyquor-router = { path = "router" }
 lyquor-seq = { path = "sequencer" }
@@ -59,7 +60,9 @@ lyquor-tls = { path = "tls" }
 lyquor-tools = { path = "tools" }
 lyquor-upc = { path = "upc" }
 lyquor-vm = { path = "vm" }
+lyquor-wasm = { path = "wasm" }
 nix = { version = "0.31.1", default-features = false, features = ["signal"] }
+oci-client = { version = "0.16.0", default-features = false, features = ["rustls-tls"] }
 parking_lot = { version = "0.12" }
 paste = "1.0"
 proc-macro2 = "1.0.106"
