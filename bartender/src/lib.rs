@@ -5,7 +5,8 @@ use serde::Serialize;
 #[derive(Serialize, Clone, Debug)]
 struct DeployInfo {
     contract: Address,
-    image_locator: Option<String>,
+    repo_hint: Option<String>,
+    image_digest: B256,
 }
 
 struct LyquidMetadata {
@@ -33,8 +34,8 @@ state! {
 }
 
 fn next_lyquid_id(
-    ctx: &mut __lyquid::NetworkContext, owner: Address, contract: Address, image_locator: Option<String>,
-    deps: Vec<LyquidID>,
+    ctx: &mut __lyquid::NetworkContext, owner: Address, contract: Address, repo_hint: Option<String>,
+    image_digest: B256, deps: Vec<LyquidID>,
 ) -> LyquidID {
     let id = {
         let nonce = ctx.network.owner_nonce.entry(owner).or_insert(0);
@@ -49,7 +50,8 @@ fn next_lyquid_id(
     });
     metadata.deploy_history.push(DeployInfo {
         contract,
-        image_locator,
+        repo_hint,
+        image_digest,
     });
     // Store the dependencies for this lyquid
     for dep in deps {
@@ -59,8 +61,8 @@ fn next_lyquid_id(
 }
 
 fn update_eth_addr(
-    ctx: &mut __lyquid::NetworkContext, owner: Address, old: Address, new: Address, image_locator: Option<String>,
-    deps: Vec<LyquidID>,
+    ctx: &mut __lyquid::NetworkContext, owner: Address, old: Address, new: Address, repo_hint: Option<String>,
+    image_digest: B256, deps: Vec<LyquidID>,
 ) -> Option<LyquidID> {
     // otherwise we need to find the existing lyquid
     let id = *ctx.network.eth_addrs.get(&old)?;
@@ -68,7 +70,8 @@ fn update_eth_addr(
     if metadata.owner == owner && metadata.deploy_history.last()?.contract == old {
         metadata.deploy_history.push(DeployInfo {
             contract: new,
-            image_locator,
+            repo_hint,
+            image_digest,
         });
         // Update dependencies for this deployment
         metadata.dependencies.clear();
@@ -88,7 +91,9 @@ fn constructor(ctx: &mut _) {
 }
 
 #[method::network(export = eth)]
-fn register(ctx: &mut _, superseded: Address, deps: Vec<Address>, image_locator: String) -> LyquidResult<bool> {
+fn register(
+    ctx: &mut _, superseded: Address, deps: Vec<Address>, image_digest: B256, repo_hint: String,
+) -> LyquidResult<bool> {
     let owner = ctx.origin;
     let contract = ctx.caller;
 
@@ -97,17 +102,28 @@ fn register(ctx: &mut _, superseded: Address, deps: Vec<Address>, image_locator:
         .iter()
         .filter_map(|addr| ctx.network.eth_addrs.get(addr).copied())
         .collect();
-    let image_locator = if image_locator.is_empty() {
-        None
-    } else {
-        Some(image_locator)
-    };
+    let repo_hint = if repo_hint.is_empty() { None } else { Some(repo_hint) };
 
     let id = if superseded == Address::ZERO {
         // create a new lyquid
-        Some(next_lyquid_id(&mut ctx, owner, contract, image_locator, deps.clone()))
+        Some(next_lyquid_id(
+            &mut ctx,
+            owner,
+            contract,
+            repo_hint,
+            image_digest,
+            deps.clone(),
+        ))
     } else {
-        update_eth_addr(&mut ctx, owner, superseded, contract, image_locator, deps.clone())
+        update_eth_addr(
+            &mut ctx,
+            owner,
+            superseded,
+            contract,
+            repo_hint,
+            image_digest,
+            deps.clone(),
+        )
     }
     .ok_or(LyquidError::LyquidRuntime("invalid register call".into()))?;
     lyquid::println!("register {id} (owner={owner}, contract={contract}, deps={:?})", deps);
