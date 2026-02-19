@@ -48,6 +48,7 @@ lyquor-cli = { path = "cli" }
 lyquor-crypto = { path = "crypto" }
 lyquor-db = { path = "db" }
 lyquor-eth = { path = "eth" }
+lyquor-image-store = { path = "image-store" }
 lyquor-jsonrpc = { path = "jsonrpc" }
 lyquor-net = { path = "net" }
 lyquor-net-rpc = { path = "net/rpc" }
