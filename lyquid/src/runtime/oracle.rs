@@ -5,7 +5,7 @@ use lyquor_primitives::oracle::{OracleConfig as OracleConfigWire, OracleSigner, 
 use lyquor_primitives::{Address, Bytes, CallParams, Cipher, Hash, HashBytes, InputABI};
 use serde::{Deserialize, Serialize};
 
-/// Necessary info required for a certified call to be sequenced.
+/// Necessary info filled by the user for a certified call to be sequenced.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CertifiedCallParams {
     pub origin: Address,
@@ -16,25 +16,36 @@ pub struct CertifiedCallParams {
 
 /// UPC message sent to each validator for proposal validation.
 ///
-/// The validator (signer) will check config hash to see if it's consistent with its oracle
-/// configuration state as of the given network state version, and then run the user-defined
-/// `validate` function to sign for its approval/disapproval.
+/// The validator (signer) will check `header` to see if it's consistent with its oracle
+/// configuration as of the given network state version, and then run the user-defined `validate`
+/// function to sign for its approval/disapproval.
 ///
-/// The `params` field carries the part that needs to be sequenced.
-/// The `extra` field carries the supplementary information given to each validator for its local
-/// validation consideration, as needed by the LDK user.
+/// - The `header` field carries the call's setup, whose validation is automated by this LDK.
+/// - The `params` field carries the call to be sequenced, whose validation is done by `validate()`.
+/// - The `extra` field carries the supplementary information given by the proposer to each
+/// validator for its local consideration during `validate()`. This data will NOT be signed or
+/// contained in [ValidateResponse]. Like `params`, its validity is not verified when passed to
+/// `validate()`.
 ///
-/// By making a [ValidateResponse], the validator gives its attestation for both the header and the
-/// params that will be sequenced, and also implicitly with the help of the extra information. A
+/// The entire flow done by `validate()` looks like this:
+///
+/// ```
+/// [header] --------------------------LDK checked-------------------.--> signed [header] & [params]
+/// [params] ---[custom validation]\____validate()---> true/false ---/
+/// [extra]  ---[custom validation]/
+/// ```
+///
+/// By making a [ValidateResponse], the validator gives its attestation for both the `header` and
+/// the `params` that will be sequenced, implicitly with the help of the extra information. A
 /// signature will be automatically signed, and the validator will respond to the proposer with
 /// `validate()`'s result (true/false).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ValidateRequest {
-    /// Metadata for the Oracle's setup.
+    /// Metadata for the setup of this call to be signed and sequenced.
     pub header: OracleHeader,
-    /// Certified call parameters to be sequenced.
+    /// Call parameters to be signed and sequenced.
     pub params: CallParams,
-    /// Supplementary data interpreted by the validate() function, which do NOT need to be sequenced.
+    /// Supplementary data not to be signed or sequenced.
     pub extra: Bytes,
 }
 
@@ -210,7 +221,6 @@ impl OracleSrc {
             .unwrap_or(Address::ZERO);
         let sid = self.next_signer_id;
         self.next_signer_id = self.next_signer_id.wrapping_add(1);
-
         let signer = Signer {
             id: sid,
             key_lvm,
@@ -267,7 +277,7 @@ impl OracleSrc {
             self.committee.len() < self.threshold as usize
         {
             return Err(crate::LyquidError::LyquidRuntime(format!(
-                "Invalid oracle configuration: committee.len()={}, threshold={}.",
+                "OracleSrc: invalid oracle configuration committee={}, threshold={}.",
                 self.threshold,
                 self.committee.len()
             ))
@@ -300,7 +310,7 @@ impl OracleSrc {
         // The network fn call to be certified.
         let mut params = CallParams {
             origin: params.origin,
-            caller: params.origin,
+            caller: ctx.get_lyquid_id().into(),
             group,
             method: params.method,
             input: params.input,
@@ -394,7 +404,7 @@ impl OracleSrc {
             self.committee.len() < self.threshold as usize
         {
             return Err(crate::LyquidError::LyquidRuntime(format!(
-                "Invalid oracle configuration: committee.len()={}, threshold={}.",
+                "OraclSrc: invalid oracle configuration: committee={}, threshold={}.",
                 self.threshold,
                 self.committee.len()
             ))
@@ -440,7 +450,10 @@ impl OracleSrc {
         }
     }
 
-    pub fn __pre_validation(&self, header: &OracleHeader) -> bool {
+    pub fn __pre_validation(&self, header: &OracleHeader, from: NodeID) -> bool {
+        if from != header.proposer {
+            return false
+        }
         let hash = match header.target {
             OracleTarget::LVM(_) => self.config_hash_lvm,
             OracleTarget::EVM(_) => self.config_hash_evm,
@@ -551,7 +564,7 @@ impl ProposalAggregation {
                 inputs: self.inputs.clone(),
                 output,
             }));
-        } else if oracle.committee.len() - (self.collected.len() - self.inputs.len()) < oracle.threshold as usize {
+        } else if oracle.committee.len() + self.inputs.len() < oracle.threshold as usize + self.collected.len() {
             self.output = Some(None);
         }
 
@@ -623,7 +636,7 @@ impl ValidateAggregation {
                 signers,
                 signatures,
             }))
-        } else if oracle.committee.len() - (self.collected.len() - self.yea as usize) < oracle.threshold as usize {
+        } else if oracle.committee.len() + (self.yea as usize) < (oracle.threshold as usize) + self.collected.len() {
             // Early failure: impossible to reach threshold with remaining nodes.
             self.result = Some(None)
         }
@@ -633,7 +646,7 @@ impl ValidateAggregation {
 
 // TODO: use delta to update OracleConfigDest incrementally (instead of replacing it entirely).
 fn verify_oracle_cert(
-    oc: &OracleCert, msg: Bytes, config: &OracleConfigDest, config_hash: &Hash,
+    oc: &OracleCert, params: CallParams, config: &OracleConfigDest, config_hash: &Hash,
 ) -> Result<Option<OracleConfigDest>, ()> {
     let mut config = config;
     let mut new_config = None;
@@ -666,6 +679,14 @@ fn verify_oracle_cert(
     }
 
     let cipher = oc.header.target.cipher();
+
+    let msg: Bytes = ValidatePreimage {
+        header: oc.header.clone(),
+        params,
+        approval: true,
+    }
+    .to_preimage()
+    .into();
 
     for (id, sig) in oc
         .signers
@@ -738,7 +759,10 @@ impl Default for OracleDest {
 
 /// Network state for the destination (call execution) chain.
 impl OracleDest {
+    /// Max nonce set size per epoch.
     const MAX_NONCE_PER_EPOCH: usize = 1_000_000;
+    /// Min nonce set size for epoch advancement.
+    const MIN_NONCE_NEXT_EPOCH: usize = Self::MAX_NONCE_PER_EPOCH * 9 / 10;
 
     pub fn get_epoch(&self) -> u32 {
         self.epoch
@@ -780,7 +804,7 @@ impl OracleDest {
 
         // Enter a new epoch if higher.
         if epoch > self.epoch {
-            if self.used_nonce.len() < Self::MAX_NONCE_PER_EPOCH {
+            if self.used_nonce.len() < Self::MIN_NONCE_NEXT_EPOCH {
                 // Epoch advanced too early.
                 return false;
             }
@@ -799,6 +823,9 @@ impl OracleDest {
     }
 
     pub fn verify(&mut self, me: LyquidID, params: lyquor_primitives::CallParams, oc: &OracleCert) -> bool {
+        // TODO: Should rollback any changes made to self if the OracleCert can't pass
+        // verification.
+
         // Ensure the certificate targets this Lyquid
         match &oc.header.target {
             OracleTarget::LVM(id) => {
@@ -810,17 +837,8 @@ impl OracleDest {
             _ => return false,
         }
 
-        // Ensure the preimage matches the signed digest.
-        let msg = ValidatePreimage {
-            header: oc.header.clone(),
-            params,
-            approval: true,
-        }
-        .to_preimage()
-        .into();
-
         // Verify the validity of the OracleCert.
-        let new_config = match verify_oracle_cert(oc, msg, &self.config, &self.config_hash) {
+        let new_config = match verify_oracle_cert(oc, params, &self.config, &self.config_hash) {
             Ok(cfg) => cfg,
             Err(_) => {
                 // Invalid call certificate.

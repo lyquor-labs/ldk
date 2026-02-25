@@ -468,7 +468,11 @@ macro_rules! __lyquid_categorize_methods {
                 ctx.network.$name.__post_propose(msg.init, result)
             }
 
-            instance(oracle::single_phase::$name::two_phase$($group)*) export(false) fn validate(&mut ctx, params: CallParams, extra: Bytes) -> LyquidResult<bool> {
+            instance(oracle::single_phase::$name::two_phase$($group)*) export(false) fn validate(&mut ctx, params: CallParams, extra: Bytes, _target: OracleTarget) -> LyquidResult<bool> {
+                // NOTE: We don't need to check `_target` here, because in a two-phase process, the
+                // target is determined by the user-defined aggregate function, and thus already
+                // implicitly checked during validate() (as it invokes aggregate() independently).
+
                 let extra = match $crate::lyquor_primitives::decode_by_fields!(&extra,
                     init: Bytes,
                     inputs: Vec<$crate::runtime::oracle::ProposalInput>
@@ -476,6 +480,8 @@ macro_rules! __lyquid_categorize_methods {
                     Some(extra) => extra,
                     None => return Ok(false),
                 };
+
+                // Check the validity of extra info.
                 for input in &extra.inputs {
                     if !input.verify(extra.init.clone(), ctx.network.$name)? {
                         return Ok(false)
@@ -493,8 +499,9 @@ macro_rules! __lyquid_categorize_methods {
                     Some(o) => o,
                     None => return Ok(false),
                 };
+                let caller: Address = ctx.lyquid_id.into();
                 Ok(params.origin == _params.origin &&
-                    params.caller == _params.origin &&
+                    params.caller == caller &&
                     params.method == _params.method &&
                     params.input == _params.input)
             }
@@ -503,7 +510,7 @@ macro_rules! __lyquid_categorize_methods {
          }, {$($network_funcs)*}, {$($instance_funcs)*}, {$($internal_funcs)*});
      };
 
-    ({instance(oracle::single_phase::$name:ident$($group:tt)*) export($export:tt) fn validate(&mut $handle:ident, $params:ident: CallParams, $extra:ident: Bytes) -> LyquidResult<bool> $body:block $($rest:tt)*},
+    ({instance(oracle::single_phase::$name:ident$($group:tt)*) export($export:tt) fn validate(&mut $handle:ident, $params:ident: CallParams, $extra:ident: Bytes, $target:ident: OracleTarget) -> LyquidResult<bool> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},
      {$($internal_funcs:tt)*}) => {
@@ -535,15 +542,14 @@ macro_rules! __lyquid_categorize_methods {
                 &mut ctx,
                 msg: $crate::runtime::oracle::ValidateRequest
             ) -> LyquidResult<$crate::runtime::oracle::ValidateResponse> {
-                // TODO: check if msg.proposer matches the UPC sender.
-
-                if !ctx.network.$name.__pre_validation(&msg.header) {
+                if !ctx.network.$name.__pre_validation(&msg.header, ctx.from) {
                     return Err(LyquidError::LyquidRuntime("Mismatch config".into()))
                 }
 
                 let approval = (|| -> LyquidResult<bool> {
                     let $params = msg.params.clone();
                     let $extra = msg.extra;
+                    let $target = msg.header.target;
                     let $handle = &mut ctx;
                     $body
                 })()?;

@@ -1,5 +1,6 @@
 use super::*;
 
+// TODO: add target chain ID
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum OracleTarget {
     // Lyquor network fn
@@ -24,7 +25,6 @@ pub struct OracleHeader {
     pub proposer: NodeID,
     /// Destination of the call (where it will be finally executed).
     pub target: OracleTarget,
-    // TODO: add target chain ID
     /// Oracle config digest.
     pub config_hash: HashBytes,
     /// Epoch number used by OracleDest.
