@@ -101,6 +101,8 @@ pub mod eth {
     use alloy_sol_types::{SolType, sol};
     sol! {
         struct OracleHeader {
+            bytes32 topic;
+            bytes32 group;
             bytes32 proposer;
             address target;
             bytes32 seqId;
@@ -120,11 +122,23 @@ pub mod eth {
             uint16 threshold;
         }
 
+        enum ABI {
+            Lyquor,
+            Eth
+        }
+
+        struct CallParams {
+            address origin;
+            address caller;
+            string group;
+            string method;
+            bytes input;
+            ABI abi_;
+        }
+
         struct ValidatePreimage {
             OracleHeader header;
-            bytes32 topic; // keccak256(topic name)
-            string method; // Invoked method of the contract.
-            bytes input; // Raw input for the call.
+            CallParams params;
             bool approval; // Should always be true signed by multi-sigs that make up the final cert.
         }
     }
@@ -155,26 +169,6 @@ pub mod eth {
 
         pub fn to_hash(&self) -> super::Hash {
             alloy_primitives::keccak256(&self.to_preimage()).0.into()
-        }
-    }
-
-    impl TryFrom<super::OracleHeader> for OracleHeader {
-        type Error = ();
-
-        fn try_from(oh: super::OracleHeader) -> Result<Self, ()> {
-            let (target, eth_contract) = match oh.target.target {
-                super::OracleServiceTarget::LVM(_) => return Err(()),
-                super::OracleServiceTarget::EVM { target, eth_contract } => (target, eth_contract),
-            };
-            Ok(OracleHeader {
-                proposer: <[u8; 32]>::from(oh.proposer).into(),
-                target,
-                seqId: <[u8; 32]>::from(oh.target.seq_id).into(),
-                ethContract: eth_contract,
-                configHash: <[u8; 32]>::from(oh.config_hash).into(),
-                epoch: oh.epoch,
-                nonce: <[u8; 32]>::from(oh.nonce).into(),
-            })
         }
     }
 
@@ -215,12 +209,44 @@ pub mod eth {
     impl TryFrom<super::ValidatePreimage> for ValidatePreimage {
         type Error = ();
         fn try_from(om: super::ValidatePreimage) -> Result<Self, ()> {
-            let topic = om.params.group.split("::").next().unwrap_or(om.params.group.as_str());
-            Ok(Self {
-                header: om.header.try_into()?,
-                topic: alloy_primitives::keccak256(topic.as_bytes()),
+            let topic = alloy_primitives::keccak256(
+                om.params
+                    .group
+                    .split("::")
+                    .next()
+                    .unwrap_or(om.params.group.as_str())
+                    .as_bytes(),
+            );
+            let group = alloy_primitives::keccak256(om.params.group.as_bytes());
+            let (target, eth_contract) = match om.header.target.target {
+                super::OracleServiceTarget::LVM(_) => return Err(()),
+                super::OracleServiceTarget::EVM { target, eth_contract } => (target, eth_contract),
+            };
+            let params = CallParams {
+                origin: om.params.origin,
+                caller: om.params.caller,
+                group: om.params.group,
                 method: om.params.method,
                 input: om.params.input.into(),
+                abi_: match om.params.abi {
+                    super::InputABI::Lyquor => ABI::Lyquor,
+                    super::InputABI::Eth => ABI::Eth,
+                },
+            };
+            let header = OracleHeader {
+                topic: topic.into(),
+                group: group.into(),
+                proposer: <[u8; 32]>::from(om.header.proposer).into(),
+                target,
+                seqId: <[u8; 32]>::from(om.header.target.seq_id).into(),
+                ethContract: eth_contract,
+                configHash: <[u8; 32]>::from(om.header.config_hash).into(),
+                epoch: om.header.epoch,
+                nonce: <[u8; 32]>::from(om.header.nonce).into(),
+            };
+            Ok(Self {
+                header,
+                params,
                 approval: om.approval,
             })
         }

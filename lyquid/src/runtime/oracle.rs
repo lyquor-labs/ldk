@@ -534,16 +534,7 @@ impl OracleSrc {
         if params.caller != Address::from(lyquid_id) {
             return false;
         }
-        let group_ok = match header.target.target {
-            OracleServiceTarget::LVM(_) => params.group == expected_group,
-            OracleServiceTarget::EVM { .. } => params
-                .group
-                .split("::")
-                .next()
-                .map(|topic| topic == self.topic)
-                .unwrap_or(false),
-        };
-        if !group_ok {
+        if params.group != expected_group {
             return false;
         }
         let hash = match header.target.target {
@@ -969,6 +960,9 @@ impl OracleDest {
             Err(_) => return false,
         };
         if oc.header.target.seq_id != backend {
+            return false;
+        }
+        if params.abi != InputABI::Lyquor {
             return false;
         }
 
