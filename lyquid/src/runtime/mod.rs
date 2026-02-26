@@ -273,6 +273,8 @@ pub mod lyquor_api {
         http_request(request: http::Request, options: Option<http::RequestOptions>) -> http::Response;
         check_ed25519_pubkey(pubkey: [u8; 32], qx: U256, qy: U256) -> bool;
         get_ed25519_address(pubkey: [u8; 32]) -> Option<Address>;
+        eth_contract() -> Option<Address>;
+        sequence_backend_id() -> lyquor_primitives::SequenceBackendID;
         trigger(group: String, method: String, input: Vec<u8>, mode: lyquor_primitives::TriggerMode);
     );
 }

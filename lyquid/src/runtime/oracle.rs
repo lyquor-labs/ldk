@@ -1,11 +1,22 @@
 use super::StateAccessor;
 use super::prelude::*;
-pub use lyquor_primitives::oracle::{OracleCert, OracleHeader, OracleTarget, SignerID};
+pub use lyquor_primitives::oracle::{OracleCert, OracleHeader, OracleServiceTarget, OracleTarget, SignerID};
 use lyquor_primitives::oracle::{OracleConfig as OracleConfigWire, OracleSigner, ValidatePreimage, eth};
 use lyquor_primitives::{Address, Bytes, CallParams, Cipher, Hash, HashBytes, InputABI};
 use serde::{Deserialize, Serialize};
 
 /// Necessary info filled by the user for a certified call to be sequenced.
+///
+/// # Contract With LDK User
+///
+/// For both single-phase and two-phase flows, these are the user-policy fields and should be
+/// validated by the Lyquid developer in `validate()` (and usually in `aggregate()` for two-phase):
+///
+/// - `target` is acceptable for this call.
+/// - `origin`, `method`, and `input` satisfy the application's intended semantics.
+///
+/// The framework then handles protocol-level checks and aggregation, so a valid `OracleCert`
+/// represents a call approved by threshold-majority validation under the active oracle config.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CertifiedCallParams {
     pub origin: Address,
@@ -60,13 +71,15 @@ pub struct ValidateResponse {
 
 /// UPC message sent to solicit each node's input value for proposal aggregation.
 ///
-/// Each node that participates in this input collection phase will derive the its input from the
+/// Each node that participates in this input collection phase will derive its input from the
 /// given initial value (`init`) by the proposer, followed by signing the initial value together
 /// with its input.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProposeRequest {
     /// Initial arguments passed to each node for deriving their input.
     pub init: Bytes,
+    /// Proposal nonce to bind a specific first-phase round.
+    pub nonce: HashBytes,
 }
 
 /// UPC message responded from each node for its input for aggregation.
@@ -87,28 +100,41 @@ pub struct ProposalInput {
 }
 
 impl ProposalInput {
-    pub fn verify(&self, init: Bytes, oracle: &OracleSrc) -> LyquidResult<bool> {
+    pub fn verify(
+        &self, lyquid_id: LyquidID, group: &str, proposer: NodeID, init: Bytes, nonce: HashBytes, oracle: &OracleSrc,
+        seen: &mut HashSet<NodeID>,
+    ) -> LyquidResult<bool> {
+        if !seen.insert(self.from) {
+            return Ok(false);
+        }
         let signer = match oracle.committee.get(&self.from) {
             Some(s) => s,
             None => return Ok(false),
         };
         let key = signer.get_verifying_key(Cipher::Ed25519);
         ProposePreimage {
+            lyquid_id,
+            topic: oracle.topic.into(),
+            group: group.into(),
+            proposer,
             init,
+            nonce,
             input: self.input.clone(),
         }
         .verify(self.sig.clone(), key)
     }
 }
 
-/// Preimage to be signed during the Propose phase. This is private because it is only required
+/// Preimage to be signed during the propose phase. This is private because it is only required
 /// during off-chain computation.
 #[derive(Serialize, Deserialize)]
 struct ProposePreimage {
-    /// The initial value given by the proposer, signed together to avoid equivocation by the
-    // proposer.
+    lyquid_id: LyquidID,
+    topic: String,
+    group: String,
+    proposer: NodeID,
     init: Bytes,
-    /// The input value responded by the solicited node.
+    nonce: HashBytes,
     input: Bytes,
 }
 
@@ -127,14 +153,27 @@ impl ProposePreimage {
 
 /// Proposal used in validation (second) phase.
 ///
-/// During validation, each node will check the validity of inputs, and whether output = aggregate(inputs).
-/// The `output` field will be used to form the `params` field of [ValidateResponse].
-/// The `inputs` field will be given to the `extra` field of [ValidateResponse] to be used by the
+/// During validation, each node checks the validity of inputs and whether
+/// `output == aggregate(inputs)`.
+/// The `output` field is used to form the `params` field of [ValidateResponse].
+/// The `inputs` field is given to the `extra` field of [ValidateResponse], used by
 /// LDK-generated validation code (see [super::syntax]).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Proposal {
+    nonce: HashBytes,
     inputs: Vec<ProposalInput>,
     output: CertifiedCallParams,
+}
+
+/// Derive second-phase certificate nonce from first-phase proposal nonce.
+fn derive_two_phase_cert_nonce(proposal_nonce: HashBytes) -> HashBytes {
+    blake3::hash(&<[u8; 32]>::from(proposal_nonce)).into()
+}
+
+fn random_cert_nonce() -> Option<HashBytes> {
+    let bytes = lyquor_api::random_bytes(32).ok()?;
+    let hash = Hash::from_slice(&bytes).ok()?;
+    Some(hash.into())
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize)]
@@ -171,7 +210,7 @@ pub struct OracleSrc {
     ///
     /// This 32-bit counter keeps increasing and only wraps around to 0 when it hits 2^32. This
     /// guarantees that practically all nodes are given a unique 32-bit identifier, which shortens
-    /// the OracleCert size and also makes it pubkey-agnostic. The destination chain will keep the
+    /// the [OracleCert] size and also makes it pubkey-agnostic. The destination chain keeps the
     /// pubkey/address for the committee, so that we can avoid repeating the pubkey by using such
     /// an identifer.
     next_signer_id: SignerID,
@@ -179,7 +218,7 @@ pub struct OracleSrc {
     config_hash_lvm: Hash,
     /// Digest of the oracle's configuration (committee and threshold) for EVM target.
     config_hash_evm: Hash,
-    // TODO: recored config deltas so OracleCert does not need to carry a full OracleConfigWire
+    // TODO: record config deltas so [OracleCert] does not need to carry a full [OracleConfigWire]
     // every time when there is a change to the configuration.
 }
 
@@ -266,11 +305,9 @@ impl OracleSrc {
         return self.threshold
     }
 
-    /// Generate a self-certified call bundle under the oracle topic to be sequenced by the target
-    /// network (sequence backend).
-    pub fn certify(
-        &self, ctx: &impl OracleCertifyContext, params: CertifiedCallParams, extra: Bytes,
-        group_suffix: Option<&'static str>,
+    fn certify_with_nonce_group(
+        &self, ctx: &impl OracleCertifyContext, params: CertifiedCallParams, extra: Bytes, group: String,
+        nonce_fn: impl FnOnce() -> Option<HashBytes>,
     ) -> LyquidResult<Option<CallParams>> {
         if self.threshold == 0 ||
             self.committee.len() > u16::MAX as usize ||
@@ -284,14 +321,13 @@ impl OracleSrc {
             .into());
         }
 
-        let (config_hash, abi) = match params.target {
-            OracleTarget::EVM(_) => (self.config_hash_evm, InputABI::Eth),
-            OracleTarget::LVM(_) => (self.config_hash_lvm, InputABI::Lyquor),
+        let (config_hash, abi) = match params.target.target {
+            OracleServiceTarget::EVM { .. } => (self.config_hash_evm, InputABI::Eth),
+            OracleServiceTarget::LVM(_) => (self.config_hash_lvm, InputABI::Lyquor),
         };
         // Populate epoch from instance state and derive a nonce per call.
-        let nonce = Hash::from_slice(&lyquor_api::random_bytes(32)?)
-            .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to obtain random nonce.".into()))?
-            .into();
+        let nonce =
+            nonce_fn().ok_or_else(|| LyquidError::LyquidRuntime("OracleSrc: failed to generate nonce.".into()))?;
         let epoch: u32 = 0; // TODO: use the cached epoch from instance state.
         let header = OracleHeader {
             proposer: ctx.get_node_id(),
@@ -301,12 +337,6 @@ impl OracleSrc {
             nonce,
         };
 
-        let mut group: String = self.topic.into();
-        if let Some(suffix) = group_suffix {
-            use std::fmt::Write;
-            write!(group, "::{suffix}")
-                .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to write buffer.".into()))?;
-        }
         // The network fn call to be certified.
         let mut params = CallParams {
             origin: params.origin,
@@ -329,12 +359,12 @@ impl OracleSrc {
             approval: false,
         };
 
-        let (yay_msg, nay_msg) = match header.target {
-            OracleTarget::EVM(_) => (
+        let (yay_msg, nay_msg) = match header.target.target {
+            OracleServiceTarget::EVM { .. } => (
                 eth::ValidatePreimage::try_from(yay).unwrap().to_preimage(),
                 eth::ValidatePreimage::try_from(nay).unwrap().to_preimage(),
             ),
-            OracleTarget::LVM(_) => (yay.to_preimage(), nay.to_preimage()),
+            OracleServiceTarget::LVM(_) => (yay.to_preimage(), nay.to_preimage()),
         };
 
         let cert: Option<OracleCert> = lyquor_api::universal_procedural_call(
@@ -365,8 +395,30 @@ impl OracleSrc {
         }))
     }
 
+    fn certify_with_nonce(
+        &self, ctx: &impl OracleCertifyContext, params: CertifiedCallParams, extra: Bytes,
+        group_suffix: Option<&'static str>, nonce_fn: impl FnOnce() -> Option<HashBytes>,
+    ) -> LyquidResult<Option<CallParams>> {
+        let mut group: String = self.topic.into();
+        if let Some(suffix) = group_suffix {
+            use std::fmt::Write;
+            write!(group, "::{suffix}")
+                .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to write buffer.".into()))?;
+        }
+        self.certify_with_nonce_group(ctx, params, extra, group, nonce_fn)
+    }
+
     /// Generate a self-certified call bundle under the oracle topic to be sequenced by the target
-    /// network (sequence backend). The proposal is first aggregated from the inputs of some nodes,
+    /// network (sequence backend).
+    pub fn certify(
+        &self, ctx: &impl OracleCertifyContext, params: CertifiedCallParams, extra: Bytes,
+        group_suffix: Option<&'static str>,
+    ) -> LyquidResult<Option<CallParams>> {
+        self.certify_with_nonce(ctx, params, extra, group_suffix, random_cert_nonce)
+    }
+
+    /// Generate a self-certified call bundle under the oracle topic to be sequenced by the target
+    /// network (sequence backend). The proposal is first aggregated from inputs collected from nodes,
     /// and then certified through the committee.
     ///
     /// This is a two-phase process.
@@ -389,12 +441,11 @@ impl OracleSrc {
     ///
     /// <proposer>: output = aggregate({input_A, input_B, input_C})
     ///
-    /// 2. **Validate**: The proposer then uses a second UPC (through [Self::ceritfy]) to form a
+    /// 2. **Validate**: The proposer then uses a second UPC (through [Self::certify]) to form a
     ///    certified call to be sequenced by the sequence backend.
     ///
-    /// Use [Self::certify] directly if the initial aggregation phase is not needed (e.g., to just
-    /// ceritify some network state which is the consistent across all nodes from one chain to
-    /// another).
+    /// Use [Self::certify] directly if the initial aggregation phase is not needed (e.g., to
+    /// certify network state that is consistent across all nodes from one chain to another).
     ///
     pub fn propose_and_certify(
         &self, ctx: &impl OracleCertifyContext, init: Bytes, group_suffix: Option<&'static str>,
@@ -412,6 +463,9 @@ impl OracleSrc {
         }
 
         let lyquid = ctx.get_lyquid_id();
+        let nonce = Hash::from_slice(&lyquor_api::random_bytes(32)?)
+            .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to obtain proposal nonce.".into()))?
+            .into();
         let mut group: String = self.topic.into();
         if let Some(suffix) = group_suffix {
             use std::fmt::Write;
@@ -424,42 +478,110 @@ impl OracleSrc {
             "propose".into(),
             encode_by_fields!(msg: ProposeRequest = ProposeRequest {
                 init: init.clone(),
+                nonce,
             }),
             Some(
                 encode_by_fields!(
                     callee: Vec<NodeID> = self.get_committee(),
-                    init: Bytes = init.clone()
+                    init: Bytes = init.clone(),
+                    nonce: HashBytes = nonce
                 )
                 .into(),
             ),
         )
         .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))?;
 
+        let mut validate_group: String = self.topic.into();
+        match group_suffix {
+            Some(suffix) => {
+                use std::fmt::Write;
+                write!(validate_group, "::two_phase::{suffix}")
+                    .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to write buffer.".into()))?;
+            }
+            None => validate_group.push_str("::two_phase"),
+        };
         match proposal {
-            Some(p) => self.certify(
-                ctx,
-                p.output,
-                encode_by_fields!(
-                    init: Bytes = init,
-                    inputs: Vec<ProposalInput> = p.inputs
+            Some(p) => {
+                let Proposal {
+                    nonce: proposal_nonce,
+                    inputs,
+                    output,
+                } = p;
+                let cert_nonce = derive_two_phase_cert_nonce(proposal_nonce);
+                self.certify_with_nonce_group(
+                    ctx,
+                    output,
+                    encode_by_fields!(
+                        init: Bytes = init,
+                        nonce: HashBytes = proposal_nonce,
+                        inputs: Vec<ProposalInput> = inputs
+                    )
+                    .into(),
+                    validate_group,
+                    || Some(cert_nonce),
                 )
-                .into(),
-                Some("two_phase"),
-            ),
+            }
             None => Ok(None),
         }
     }
 
-    pub fn __pre_validation(&self, header: &OracleHeader, from: NodeID) -> bool {
+    pub fn __pre_validation(
+        &self, header: &OracleHeader, params: &CallParams, expected_group: &str, from: NodeID, lyquid_id: LyquidID,
+    ) -> bool {
         if from != header.proposer {
-            return false
+            return false;
         }
-        let hash = match header.target {
-            OracleTarget::LVM(_) => self.config_hash_lvm,
-            OracleTarget::EVM(_) => self.config_hash_evm,
+        let abi_ok = match header.target.target {
+            OracleServiceTarget::LVM(_) => params.abi == InputABI::Lyquor,
+            OracleServiceTarget::EVM { .. } => params.abi == InputABI::Eth,
+        };
+        if !abi_ok {
+            return false;
+        }
+        if params.caller != Address::from(lyquid_id) {
+            return false;
+        }
+        let group_ok = match header.target.target {
+            OracleServiceTarget::LVM(_) => params.group == expected_group,
+            OracleServiceTarget::EVM { .. } => params
+                .group
+                .split("::")
+                .next()
+                .map(|topic| topic == self.topic)
+                .unwrap_or(false),
+        };
+        if !group_ok {
+            return false;
+        }
+        let hash = match header.target.target {
+            OracleServiceTarget::LVM(_) => self.config_hash_lvm,
+            OracleServiceTarget::EVM { .. } => self.config_hash_evm,
         };
         // Verify if the configuration in the proposal is consistent with the network state.
-        hash == *header.config_hash
+        if hash != *header.config_hash {
+            return false;
+        }
+
+        match header.target.target {
+            OracleServiceTarget::LVM(_) => true,
+            OracleServiceTarget::EVM { eth_contract, .. } => lyquor_api::eth_contract()
+                .ok()
+                .flatten()
+                .is_some_and(|contract| eth_contract == contract),
+        }
+    }
+
+    pub fn __pre_validation_two_phase(&self, header: &OracleHeader, extra: &Bytes) -> bool {
+        let payload = match lyquor_primitives::decode_by_fields!(
+            extra,
+            init: Bytes,
+            nonce: HashBytes,
+            inputs: Vec<ProposalInput>
+        ) {
+            Some(v) => v,
+            None => return false,
+        };
+        derive_two_phase_cert_nonce(payload.nonce) == header.nonce
     }
 
     pub fn __post_validation(
@@ -471,21 +593,28 @@ impl OracleSrc {
             approval,
         };
 
-        let (cipher, m) = match header.target {
-            OracleTarget::EVM(_) => (
+        let (cipher, m) = match header.target.target {
+            OracleServiceTarget::EVM { .. } => (
                 Cipher::Secp256k1,
                 eth::ValidatePreimage::try_from(preimage).unwrap().to_preimage(),
             ),
-            OracleTarget::LVM(_) => (Cipher::Ed25519, preimage.to_preimage()),
+            OracleServiceTarget::LVM(_) => (Cipher::Ed25519, preimage.to_preimage()),
         };
 
         let sig = lyquor_api::sign(m.into(), cipher)?;
         Ok(ValidateResponse { approval, sig })
     }
 
-    pub fn __post_propose(&self, init: Bytes, input: Bytes) -> LyquidResult<ProposeResponse> {
+    pub fn __post_propose(
+        &self, lyquid_id: LyquidID, group: &str, proposer: NodeID, init: Bytes, nonce: HashBytes, input: Bytes,
+    ) -> LyquidResult<ProposeResponse> {
         let preimage = ProposePreimage {
+            lyquid_id,
+            topic: self.topic.into(),
+            group: group.into(),
+            proposer,
             init,
+            nonce,
             input: input.clone(),
         };
         let sig = lyquor_api::sign(preimage.to_preimage().into(), Cipher::Ed25519)?;
@@ -506,18 +635,20 @@ pub struct ValidateAggregation {
     result: Option<Option<OracleCert>>,
 }
 
-/// UPC cache state for propose phrase aggregation.
+/// UPC cache state for propose phase aggregation.
 pub struct ProposalAggregation {
     init: Bytes,
+    nonce: HashBytes,
     collected: HashSet<NodeID>,
     inputs: Vec<ProposalInput>,
     output: Option<Option<Proposal>>,
 }
 
 impl ProposalAggregation {
-    pub fn new(init: Bytes) -> Self {
+    pub fn new(init: Bytes, nonce: HashBytes) -> Self {
         Self {
             init,
+            nonce,
             collected: new_hashset(),
             inputs: Vec::new(),
             output: None,
@@ -527,6 +658,7 @@ impl ProposalAggregation {
     pub fn add_response(
         &mut self, node: NodeID, resp: ProposeResponse, oracle: &OracleSrc,
         agg: fn(ProposalAggregationContext) -> LyquidResult<Option<CertifiedCallParams>>, lyquid_id: LyquidID,
+        group: &str, proposer: NodeID,
     ) -> Option<Option<Proposal>> {
         // A node can only respond once.
         if self.output.is_some() || !self.collected.insert(node) {
@@ -537,7 +669,12 @@ impl ProposalAggregation {
         let key = signer.get_verifying_key(Cipher::Ed25519);
 
         let preimage = ProposePreimage {
+            lyquid_id,
+            topic: oracle.topic.into(),
+            group: group.into(),
+            proposer,
             init: self.init.clone(),
+            nonce: self.nonce,
             input: resp.input.clone(),
         };
         let ok = preimage.verify(resp.sig.clone(), key).ok().unwrap_or(false);
@@ -561,6 +698,7 @@ impl ProposalAggregation {
             lyquid_id,
         }) {
             self.output = Some(Some(Proposal {
+                nonce: self.nonce,
                 inputs: self.inputs.clone(),
                 output,
             }));
@@ -619,12 +757,10 @@ impl ValidateAggregation {
 
         crate::println!("yea = {}, thres = {}", self.yea, oracle.threshold);
         if self.yea >= oracle.threshold {
-            let mut signers = Vec::new();
-            let mut signatures = Vec::new();
-            for (id, sig) in self.yea_sigs.clone().into_iter() {
-                signers.push(id);
-                signatures.push(sig);
-            }
+            // Canonicalize cert signer order so verifier can do O(n) monotonic checks.
+            let mut yea_sigs = self.yea_sigs.clone();
+            yea_sigs.sort_by_key(|(id, _)| *id);
+            let (signers, signatures): (Vec<_>, Vec<_>) = yea_sigs.into_iter().unzip();
             self.result = Some(Some(OracleCert {
                 header: self.header,
                 // TODO: right now we just force every OracleCert to carry the current
@@ -644,7 +780,8 @@ impl ValidateAggregation {
     }
 }
 
-// TODO: use delta to update OracleConfigDest incrementally (instead of replacing it entirely).
+// TODO: use delta to update [`OracleConfigDest`] incrementally (instead of replacing it entirely).
+// Mirrors `eth/src/lib/oracle.sol::_verifyOracleCert` for the LVM destination path.
 fn verify_oracle_cert(
     oc: &OracleCert, params: CallParams, config: &OracleConfigDest, config_hash: &Hash,
 ) -> Result<Option<OracleConfigDest>, ()> {
@@ -679,7 +816,6 @@ fn verify_oracle_cert(
     }
 
     let cipher = oc.header.target.cipher();
-
     let msg: Bytes = ValidatePreimage {
         header: oc.header.clone(),
         params,
@@ -688,17 +824,28 @@ fn verify_oracle_cert(
     .to_preimage()
     .into();
 
+    let threshold = config.threshold as usize;
+    let mut prev_id: Option<SignerID> = None;
     for (id, sig) in oc
         .signers
         .iter()
-        .zip(oc.signatures.iter().take(config.threshold as usize))
+        .take(threshold)
+        .zip(oc.signatures.iter().take(threshold))
     {
-        let key = match config.committee.get(id) {
-            Some(k) => k.clone(),
-            None => return Err(()),
-        };
-
-        if !super::lyquor_api::verify(msg.clone(), cipher, sig.clone(), Bytes::copy_from_slice(&key)).unwrap_or(false) {
+        if prev_id.map(|p| *id <= p).unwrap_or(false) {
+            // Non-canonical signer set: unsorted or duplicate.
+            return Err(());
+        }
+        prev_id = Some(*id);
+        let verified = config
+            .committee
+            .get(id)
+            .map(|key| {
+                super::lyquor_api::verify(msg.clone(), cipher, sig.clone(), Bytes::copy_from_slice(key))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if !verified {
             return Err(());
         }
     }
@@ -779,10 +926,6 @@ impl OracleDest {
     }
 
     fn update_config(&mut self, config: OracleConfigDest, config_hash: HashBytes) -> bool {
-        if config.committee.is_empty() {
-            // No signers.
-            return false;
-        }
         if config.threshold == 0 ||
             config.committee.len() > u16::MAX as usize ||
             config.committee.len() < config.threshold as usize
@@ -825,10 +968,21 @@ impl OracleDest {
     pub fn verify(&mut self, me: LyquidID, params: lyquor_primitives::CallParams, oc: &OracleCert) -> bool {
         // TODO: Should rollback any changes made to self if the OracleCert can't pass
         // verification.
+        // Mirrors eth/src/lib/oracle.sol::verify for the LVM destination path.
 
-        // Ensure the certificate targets this Lyquid
-        match &oc.header.target {
-            OracleTarget::LVM(id) => {
+        // Ensure this certificate belongs to the active sequence backend.
+        let backend = match lyquor_api::sequence_backend_id() {
+            Ok(id) => id,
+            Err(_) => return false,
+        };
+        if oc.header.target.seq_id != backend {
+            return false;
+        }
+
+        // Ensure this certificate targets this Lyquid (LVM destination path only).
+        // The EVM destination path checks `ethContract == address(this)` in oracle.sol.
+        match &oc.header.target.target {
+            OracleServiceTarget::LVM(id) => {
                 if *id != me {
                     // Target mismatch (possible Lyquid-level replay attempt).
                     return false;
@@ -837,7 +991,7 @@ impl OracleDest {
             _ => return false,
         }
 
-        // Verify the validity of the OracleCert.
+        // Verify certificate signatures/config hash against the signed preimage.
         let new_config = match verify_oracle_cert(oc, params, &self.config, &self.config_hash) {
             Ok(cfg) => cfg,
             Err(_) => {
@@ -846,6 +1000,7 @@ impl OracleDest {
             }
         };
 
+        // Apply piggybacked config update (if any) before nonce recording.
         if let Some(config) = new_config {
             // This certificate also piggybacks a config update (that's signed
             // together with the call payload, and therefore has also been
@@ -856,12 +1011,12 @@ impl OracleDest {
             }
         }
 
-        // Prevent the call from being used again.
+        // Record nonce to prevent replay.
         self.record_nonce(oc.header.epoch, oc.header.nonce.clone().into())
     }
 }
 
-/// Contexts that impls this trait are those that support calling `OracleSrc::certify()`.
+/// Contexts that implement this trait support calling [`OracleSrc::certify`].
 pub trait OracleCertifyContext: crate::runtime::internal::sealed::Sealed {
     fn get_lyquid_id(&self) -> LyquidID;
     fn get_node_id(&self) -> NodeID;

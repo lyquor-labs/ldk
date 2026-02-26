@@ -1,19 +1,31 @@
 use super::*;
 
-// TODO: add target chain ID
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
-pub enum OracleTarget {
+pub enum OracleServiceTarget {
     // Lyquor network fn
     LVM(LyquidID),
     // EVM-based sequence backend
-    EVM(Address),
+    EVM {
+        /// Final destination contract that the sequencing contract calls into.
+        target: Address,
+        /// Sequencing contract on the destination backend that must receive the cert.
+        eth_contract: Address,
+    },
+}
+
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct OracleTarget {
+    /// Service destination of the certified call.
+    pub target: OracleServiceTarget,
+    /// Sequence backend this target belongs to.
+    pub seq_id: SequenceBackendID,
 }
 
 impl OracleTarget {
     pub fn cipher(&self) -> Cipher {
-        match self {
-            Self::EVM(_) => Cipher::Secp256k1,
-            Self::LVM(_) => Cipher::Ed25519,
+        match self.target {
+            OracleServiceTarget::EVM { .. } => Cipher::Secp256k1,
+            OracleServiceTarget::LVM(_) => Cipher::Ed25519,
         }
     }
 }
@@ -91,6 +103,8 @@ pub mod eth {
         struct OracleHeader {
             bytes32 proposer;
             address target;
+            bytes32 seqId;
+            address ethContract;
             bytes32 configHash;
             uint32 epoch;
             bytes32 nonce;
@@ -108,6 +122,7 @@ pub mod eth {
 
         struct ValidatePreimage {
             OracleHeader header;
+            bytes32 topic; // keccak256(topic name)
             string method; // Invoked method of the contract.
             bytes input; // Raw input for the call.
             bool approval; // Should always be true signed by multi-sigs that make up the final cert.
@@ -147,12 +162,15 @@ pub mod eth {
         type Error = ();
 
         fn try_from(oh: super::OracleHeader) -> Result<Self, ()> {
+            let (target, eth_contract) = match oh.target.target {
+                super::OracleServiceTarget::LVM(_) => return Err(()),
+                super::OracleServiceTarget::EVM { target, eth_contract } => (target, eth_contract),
+            };
             Ok(OracleHeader {
                 proposer: <[u8; 32]>::from(oh.proposer).into(),
-                target: match oh.target {
-                    super::OracleTarget::LVM(_) => return Err(()),
-                    super::OracleTarget::EVM(t) => t,
-                },
+                target,
+                seqId: <[u8; 32]>::from(oh.target.seq_id).into(),
+                ethContract: eth_contract,
                 configHash: <[u8; 32]>::from(oh.config_hash).into(),
                 epoch: oh.epoch,
                 nonce: <[u8; 32]>::from(oh.nonce).into(),
@@ -164,7 +182,13 @@ pub mod eth {
         fn from(oh: OracleHeader) -> Self {
             Self {
                 proposer: <[u8; 32]>::from(oh.proposer).into(),
-                target: super::OracleTarget::EVM(oh.target),
+                target: super::OracleTarget {
+                    target: super::OracleServiceTarget::EVM {
+                        target: oh.target,
+                        eth_contract: oh.ethContract,
+                    },
+                    seq_id: <[u8; 32]>::from(oh.seqId).into(),
+                },
                 config_hash: <[u8; 32]>::from(oh.configHash).into(),
                 epoch: oh.epoch,
                 nonce: <[u8; 32]>::from(oh.nonce).into(),
@@ -191,8 +215,10 @@ pub mod eth {
     impl TryFrom<super::ValidatePreimage> for ValidatePreimage {
         type Error = ();
         fn try_from(om: super::ValidatePreimage) -> Result<Self, ()> {
+            let topic = om.params.group.split("::").next().unwrap_or(om.params.group.as_str());
             Ok(Self {
                 header: om.header.try_into()?,
+                topic: alloy_primitives::keccak256(topic.as_bytes()),
                 method: om.params.method,
                 input: om.params.input.into(),
                 approval: om.approval,

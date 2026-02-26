@@ -14,7 +14,7 @@ use typed_builder::TypedBuilder;
 
 mod id;
 pub mod oracle;
-pub use id::{LyquidID, LyquidNumber, NodeID, RequiredLyquid};
+pub use id::{LyquidID, LyquidNumber, NodeID, RequiredLyquid, SequenceBackendID, sequence_backend_id};
 
 // Custom serde module for Arc<Option<T>>
 pub mod arc_option_serde {

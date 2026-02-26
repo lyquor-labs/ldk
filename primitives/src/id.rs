@@ -4,7 +4,7 @@ use crate::hex::{self, FromHex};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
-use super::Address;
+use super::{Address, HashBytes};
 
 /// The ID of a node in the network.
 /// The ID is 35 bytes long, the first 32 bytes are the node's ed25519 public key,
@@ -347,9 +347,24 @@ impl std::str::FromStr for LyquidNumber {
     }
 }
 
+pub type SequenceBackendID = HashBytes;
+
+/// Sequence backend ID used in oracle headers.
+/// Equivalent Solidity expression:
+/// `keccak256(abi.encodePacked("lyquor_sequence_backend", uint64(block.chainid), bartender))`
+pub fn sequence_backend_id(chain_id: u64, bartender: Address) -> SequenceBackendID {
+    const PREFIX: &[u8] = b"lyquor_sequence_backend";
+    let mut preimage = Vec::with_capacity(PREFIX.len() + core::mem::size_of::<u64>() + 20);
+    preimage.extend_from_slice(PREFIX);
+    preimage.extend_from_slice(&chain_id.to_be_bytes());
+    preimage.extend_from_slice(bartender.as_ref());
+    crate::alloy_primitives::keccak256(&preimage).0.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hex::FromHex;
     use ed25519_dalek::SigningKey;
 
     #[test]
@@ -378,5 +393,15 @@ mod tests {
             let id = NodeID::from(x);
             assert_eq!(id.as_u64(), x, "NodeID <-> u64 roundtrip failed for {x}");
         }
+    }
+
+    #[test]
+    fn test_sequence_backend_id_matches_solidity_encode_packed() {
+        let chain_id = 31337u64;
+        let bartender = "0x1234567890123456789012345678901234567890".parse::<Address>().unwrap();
+        let got: [u8; 32] = sequence_backend_id(chain_id, bartender).into();
+        let expected =
+            <[u8; 32]>::from_hex("b417e31282dce8c6ab0de8213d3260c0b360c3d8df31043689e1b32a1a92be46").unwrap();
+        assert_eq!(got, expected);
     }
 }

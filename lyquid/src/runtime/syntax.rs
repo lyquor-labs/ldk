@@ -432,9 +432,10 @@ macro_rules! __lyquid_categorize_methods {
             instance(upc::prepare::oracle::two_phase::$name$($group)*) fn propose(
                 &ctx,
                 callee: Vec<NodeID>,
-                init: $crate::lyquor_primitives::Bytes
+                init: $crate::lyquor_primitives::Bytes,
+                nonce: $crate::lyquor_primitives::HashBytes
             ) -> LyquidResult<Vec<NodeID>> {
-                ctx.cache.set($crate::runtime::oracle::ProposalAggregation::new(init));
+                ctx.cache.set($crate::runtime::oracle::ProposalAggregation::new(init, nonce));
                 Ok(callee)
             }
 
@@ -450,7 +451,9 @@ macro_rules! __lyquid_categorize_methods {
                         resp,
                         &ctx.network.$name,
                         prefix_call!(("__lyquid_method_instance", (oracle::two_phase::$name)), aggregate),
-                        ctx.lyquid_id))
+                        ctx.lyquid_id,
+                        concat!(stringify!($name) $(, "::", stringify!($group))*),
+                        ctx.node_id))
                 }
                 Ok(None)
             }
@@ -465,25 +468,50 @@ macro_rules! __lyquid_categorize_methods {
                 $(let $params = input.$params;)*
                 let result: $rt = $body?;
                 let result = $crate::lyquor_primitives::Bytes::from($crate::lyquor_primitives::encode_object(&result));
-                ctx.network.$name.__post_propose(msg.init, result)
+                ctx.network.$name.__post_propose(
+                    ctx.lyquid_id,
+                    concat!(stringify!($name) $(, "::", stringify!($group))*),
+                    ctx.from,
+                    msg.init,
+                    msg.nonce,
+                    result
+                )
             }
 
-            instance(oracle::single_phase::$name::two_phase$($group)*) export(false) fn validate(&mut ctx, params: CallParams, extra: Bytes, _target: OracleTarget) -> LyquidResult<bool> {
+            instance(oracle::single_phase::$name::two_phase$($group)*) export(false) fn validate(
+                &mut ctx,
+                params: CallParams,
+                extra: Bytes,
+                _target: OracleTarget,
+                header: $crate::runtime::oracle::OracleHeader
+            ) -> LyquidResult<bool> {
                 // NOTE: We don't need to check `_target` here, because in a two-phase process, the
                 // target is determined by the user-defined aggregate function, and thus already
                 // implicitly checked during validate() (as it invokes aggregate() independently).
+                if !ctx.network.$name.__pre_validation_two_phase(&header, &extra) {
+                    return Ok(false)
+                }
 
                 let extra = match $crate::lyquor_primitives::decode_by_fields!(&extra,
                     init: Bytes,
+                    nonce: $crate::lyquor_primitives::HashBytes,
                     inputs: Vec<$crate::runtime::oracle::ProposalInput>
                 ) {
                     Some(extra) => extra,
                     None => return Ok(false),
                 };
 
-                // Check the validity of extra info.
+                let mut seen = $crate::runtime::prelude::new_hashset();
                 for input in &extra.inputs {
-                    if !input.verify(extra.init.clone(), ctx.network.$name)? {
+                    if !input.verify(
+                        ctx.lyquid_id,
+                        concat!(stringify!($name) $(, "::", stringify!($group))*),
+                        ctx.from,
+                        extra.init.clone(),
+                        extra.nonce,
+                        ctx.network.$name,
+                        &mut seen
+                    )? {
                         return Ok(false)
                     }
                 }
@@ -510,12 +538,12 @@ macro_rules! __lyquid_categorize_methods {
          }, {$($network_funcs)*}, {$($instance_funcs)*}, {$($internal_funcs)*});
      };
 
-    ({instance(oracle::single_phase::$name:ident$($group:tt)*) export($export:tt) fn validate(&mut $handle:ident, $params:ident: CallParams, $extra:ident: Bytes, $target:ident: OracleTarget) -> LyquidResult<bool> $body:block $($rest:tt)*},
+    ({instance(oracle::single_phase::$name:ident$(:: $group:ident)*) export($export:tt) fn validate(&mut $handle:ident, $params:ident: CallParams, $extra:ident: Bytes, $target:ident: OracleTarget $(, $header:ident: $header_ty:path)? ) -> LyquidResult<bool> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},
      {$($internal_funcs:tt)*}) => {
          $crate::__lyquid_categorize_methods!({
-            instance(upc::prepare::oracle::single_phase::$name$($group)*) fn validate(
+            instance(upc::prepare::oracle::single_phase::$name$(:: $group)*) fn validate(
                 &ctx, callee: Vec<NodeID>,
                 header: $crate::runtime::oracle::OracleHeader,
                 yay_msg: $crate::lyquor_primitives::Bytes,
@@ -526,7 +554,7 @@ macro_rules! __lyquid_categorize_methods {
                 Ok(callee)
             }
 
-            instance(upc::response::oracle::single_phase::$name$($group)*) fn validate(
+            instance(upc::response::oracle::single_phase::$name$(:: $group)*) fn validate(
                 &ctx,
                 resp: LyquidResult<$crate::runtime::oracle::ValidateResponse>
             ) -> LyquidResult<Option< Option<$crate::runtime::oracle::OracleCert> >> {
@@ -538,11 +566,17 @@ macro_rules! __lyquid_categorize_methods {
                 Ok(None)
             }
 
-            instance(upc::request::oracle::single_phase::$name$($group)*) fn validate(
+            instance(upc::request::oracle::single_phase::$name$(:: $group)*) fn validate(
                 &mut ctx,
                 msg: $crate::runtime::oracle::ValidateRequest
             ) -> LyquidResult<$crate::runtime::oracle::ValidateResponse> {
-                if !ctx.network.$name.__pre_validation(&msg.header, ctx.from) {
+                if !ctx.network.$name.__pre_validation(
+                    &msg.header,
+                    &msg.params,
+                    concat!(stringify!($name) $(, "::", stringify!($group))*),
+                    ctx.from,
+                    ctx.lyquid_id
+                ) {
                     return Err(LyquidError::LyquidRuntime("Mismatch config".into()))
                 }
 
@@ -550,6 +584,7 @@ macro_rules! __lyquid_categorize_methods {
                     let $params = msg.params.clone();
                     let $extra = msg.extra;
                     let $target = msg.header.target;
+                    $(let $header: $header_ty = msg.header;)?
                     let $handle = &mut ctx;
                     $body
                 })()?;

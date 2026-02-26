@@ -10,7 +10,7 @@ pub use lyquor_primitives::{
 };
 
 pub use super::lyquor_api;
-pub use super::oracle::{CertifiedCallParams, OracleTarget};
+pub use super::oracle::{CertifiedCallParams, OracleServiceTarget, OracleTarget};
 pub use super::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 pub use crate::{LyquidError, LyquidResult};
 
