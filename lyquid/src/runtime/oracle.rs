@@ -305,7 +305,7 @@ impl OracleSrc {
         return self.threshold
     }
 
-    fn certify_with_nonce_group(
+    fn certify_with_nonce(
         &self, ctx: &impl OracleCertifyContext, params: CertifiedCallParams, extra: Bytes, group: String,
         nonce_fn: impl FnOnce() -> Option<HashBytes>,
     ) -> LyquidResult<Option<CallParams>> {
@@ -395,9 +395,11 @@ impl OracleSrc {
         }))
     }
 
-    fn certify_with_nonce(
+    /// Generate a self-certified call bundle under the oracle topic to be sequenced by the target
+    /// network (sequence backend).
+    pub fn certify(
         &self, ctx: &impl OracleCertifyContext, params: CertifiedCallParams, extra: Bytes,
-        group_suffix: Option<&'static str>, nonce_fn: impl FnOnce() -> Option<HashBytes>,
+        group_suffix: Option<&'static str>,
     ) -> LyquidResult<Option<CallParams>> {
         let mut group: String = self.topic.into();
         if let Some(suffix) = group_suffix {
@@ -405,16 +407,7 @@ impl OracleSrc {
             write!(group, "::{suffix}")
                 .map_err(|_| LyquidError::LyquidRuntime("OracleSrc: failed to write buffer.".into()))?;
         }
-        self.certify_with_nonce_group(ctx, params, extra, group, nonce_fn)
-    }
-
-    /// Generate a self-certified call bundle under the oracle topic to be sequenced by the target
-    /// network (sequence backend).
-    pub fn certify(
-        &self, ctx: &impl OracleCertifyContext, params: CertifiedCallParams, extra: Bytes,
-        group_suffix: Option<&'static str>,
-    ) -> LyquidResult<Option<CallParams>> {
-        self.certify_with_nonce(ctx, params, extra, group_suffix, random_cert_nonce)
+        self.certify_with_nonce(ctx, params, extra, group, random_cert_nonce)
     }
 
     /// Generate a self-certified call bundle under the oracle topic to be sequenced by the target
@@ -508,7 +501,7 @@ impl OracleSrc {
                     output,
                 } = p;
                 let cert_nonce = derive_two_phase_cert_nonce(proposal_nonce);
-                self.certify_with_nonce_group(
+                self.certify_with_nonce(
                     ctx,
                     output,
                     encode_by_fields!(
