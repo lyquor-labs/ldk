@@ -1019,14 +1019,16 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         let mut cat_str = cat.to_string();
         let name = next_token_is_ident(&mut def_iter).expect("expect variable identifer");
         let name_str = name.to_string();
+        let mut oracle_var = false;
         let type_;
         let init;
 
         match cat_str.as_str() {
             "oracle" => {
-                cat_str = "network".to_string();
-                type_ = quote::quote! { runtime::oracle::OracleSrc };
-                init = quote::quote! { runtime::oracle::OracleSrc::new(#name_str) };
+                cat_str = "instance".to_string();
+                oracle_var = true;
+                type_ = quote::quote! { runtime::oracle::SrcWrapper };
+                init = quote::quote! { runtime::oracle::SrcWrapper::new(#name_str) };
             }
             _ => {
                 type_ = def_iter.next().expect("expect variable type").into();
@@ -1062,7 +1064,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
             #init
         }};
 
-        if cat == "instance" {
+        if cat_str == "instance" && !oracle_var {
             init = quote::quote! {runtime::sync::RwLock::new(#init)};
             type_ = quote::quote! {runtime::sync::RwLock<#type_>};
         }
@@ -1093,9 +1095,20 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         [quote::quote! {
             // the pointer (only need to do it once, upon initialization of the instance's
             // LiteMemory)
+            runtime::set_allocator_category(0x2);
             let ptr: *mut runtime::internal::BuiltinNetworkState = Box::leak(Box::new(runtime::internal::BuiltinNetworkState::new()));
             let bytes = (ptr as u64).to_be_bytes();
             internal_pa.set(StateCategory::Network, "network".as_bytes(), &bytes).expect(FAIL_WRITE_STATE);
+        }]
+    );
+    var_setup.extend(
+        [quote::quote! {
+            // the pointer (only need to do it once, upon initialization of the instance's
+            // LiteMemory)
+            runtime::set_allocator_category(0x1);
+            let ptr: *mut runtime::internal::BuiltinInstanceState = Box::leak(Box::new(runtime::internal::BuiltinInstanceState::new()));
+            let bytes = (ptr as u64).to_be_bytes();
+            internal_pa.set(StateCategory::Instance, "instance".as_bytes(), &bytes).expect(FAIL_WRITE_STATE);
         }]
     );
 
@@ -1114,6 +1127,24 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
                 let bytes = internal_pa.get(StateCategory::Network, "network".as_bytes())?.ok_or(LyquidError::Init)?;
                 let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| LyquidError::Init)?);
                 unsafe { &mut *(addr as *mut runtime::internal::BuiltinNetworkState) }
+            },
+        }]);
+
+    struct_fields
+        .entry("instance".to_string())
+        .or_insert_with(|| TokenStream::new())
+        .extend([quote::quote! {
+            pub __internal: &'static mut runtime::internal::BuiltinInstanceState,
+        }]);
+    struct_inits
+        .entry("instance".to_string())
+        .or_insert_with(|| TokenStream::new())
+        .extend([quote::quote! {
+            __internal: {
+                // retrieve the pointer for Box<T>
+                let bytes = internal_pa.get(StateCategory::Instance, "instance".as_bytes())?.ok_or(LyquidError::Init)?;
+                let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| LyquidError::Init)?);
+                unsafe { &mut *(addr as *mut runtime::internal::BuiltinInstanceState) }
             },
         }]);
 

@@ -275,6 +275,7 @@ pub mod lyquor_api {
         get_ed25519_address(pubkey: [u8; 32]) -> Option<Address>;
         eth_contract() -> Option<Address>;
         sequence_backend_id() -> lyquor_primitives::SequenceBackendID;
+        get_oracle_epoch(topic: String, target: lyquor_primitives::oracle::OracleTarget) -> Option<lyquor_primitives::oracle::OracleEpochInfo>;
         trigger(group: String, method: String, input: Vec<u8>, mode: lyquor_primitives::TriggerMode);
     );
 }
@@ -352,7 +353,7 @@ macro_rules! submit_certified_call {
 macro_rules! trigger {
     (($($group:ident)::*) $method:ident($($param:ident: $type:ty $(= $default:expr)?),*), $mode:expr) => {
         $crate::runtime::lyquor_api::trigger(
-            stringify!($($group)::*).to_string(),
+            $crate::__lyquid_group_string!($($group)::+).to_string(),
             stringify!($method).to_string(),
             $crate::prelude::encode_by_fields!($($param: $type $(= $default)?),*),
             $mode,

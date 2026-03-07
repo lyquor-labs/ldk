@@ -1,4 +1,4 @@
-use super::oracle::OracleDest;
+use super::oracle::{OracleDest, OracleSrc};
 use super::{
     __lyquid_volatile_alloc, __lyquid_volatile_dealloc, ImmutableInstanceContextImpl, InstanceContextImpl, lyquor_api,
 };
@@ -104,9 +104,60 @@ impl BuiltinNetworkState {
     }
 
     /// Get (and create if missing) the destination-chain oracle topic state for the given topic key.
-    pub fn oracle_dest(&mut self, topic: &'static str) -> &mut OracleDest {
+    pub fn oracle_dest(&mut self, topic: &str) -> &mut OracleDest {
         self.oracle.entry(topic.to_string()).or_insert_with(OracleDest::default)
     }
+
+    pub fn oracle_dest_epoch_info(&self, topic: &str) -> lyquor_primitives::oracle::OracleEpochInfo {
+        match self.oracle.get(topic) {
+            Some(dest) => lyquor_primitives::oracle::OracleEpochInfo {
+                epoch: dest.get_epoch(),
+                config_hash: dest.get_config_hash().clone(),
+            },
+            None => lyquor_primitives::oracle::OracleEpochInfo {
+                epoch: 0,
+                config_hash: [0; 32].into(),
+            },
+        }
+    }
+}
+
+pub struct BuiltinInstanceState {
+    oracle: super::HashMap<String, OracleSrc>,
+}
+
+impl BuiltinInstanceState {
+    pub fn new() -> Self {
+        Self {
+            oracle: super::new_hashmap(),
+        }
+    }
+
+    pub fn oracle_src(&self, topic: &str) -> Option<&OracleSrc> {
+        self.oracle.get(topic)
+    }
+
+    pub fn oracle_src_mut(&mut self, topic: &str) -> &mut OracleSrc {
+        self.oracle
+            .entry(topic.to_string())
+            .or_insert_with(|| OracleSrc::new(topic))
+    }
+
+    pub fn sync_known_oracle_targets(&mut self) {
+        for oracle in self.oracle.values_mut() {
+            oracle.sync_known_targets_on_load();
+        }
+    }
+}
+
+/// Returns built-in instance state initialized by runtime bootstrap.
+pub(crate) fn builtin_instance_state() -> LyquidResult<&'static mut BuiltinInstanceState> {
+    let internal_pa = PrefixedAccess::new(Vec::from(crate::INTERNAL_STATE_PREFIX));
+    let bytes = internal_pa
+        .get(StateCategory::Instance, "instance".as_bytes())?
+        .ok_or(LyquidError::Init)?;
+    let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| LyquidError::Init)?);
+    Ok(unsafe { &mut *(addr as *mut BuiltinInstanceState) })
 }
 
 // NOTE: limit the implementor of this trait to this LDK crate using sealed trait pattern

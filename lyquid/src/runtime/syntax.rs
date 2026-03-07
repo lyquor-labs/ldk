@@ -144,6 +144,9 @@ macro_rules! __lyquid_state_generate {
             pub type UpcRequestContext = $crate::runtime::upc::RequestContextImpl<NetworkState, InstanceState>;
             pub type UpcResponseContext = $crate::runtime::upc::ResponseContextImpl<NetworkState>;
         }
+
+        $crate::__lyquid_define_oracle_internal_methods!();
+        $crate::__lyquid_define_oracle_epoch_vote_handlers!($($token)*);
     }
 }
 
@@ -172,11 +175,12 @@ macro_rules! __lyquid_categorize_methods {
             {$($rest)*}, // recurisvely categorize the rest of the funcs
             {$($network_funcs)* // append this func to the end of network_funcs
                 oracle::certified::$first $(:: $tail)* (true, $export) fn $fn(oc: $crate::runtime::oracle::OracleCert, input_raw: $crate::prelude::Bytes) -> LyquidResult<$rt> {|ctx: $crate::CallContext| -> LyquidResult<$rt> {
-                    let topic = concat!(stringify!($first), $( "::", stringify!($tail) ),*);
+                    let topic = stringify!($first);
+                    let group = concat!(stringify!($first), $( "::", stringify!($tail) ),*);
                     let params = $crate::lyquor_primitives::CallParams {
                         origin: ctx.origin,
                         caller: ctx.caller,
-                        group: topic.to_string(),
+                        group: group.to_string(),
                         method: stringify!($fn).to_string(),
                         input: input_raw.clone(),
                         abi: $crate::lyquor_primitives::InputABI::Lyquor,
@@ -433,9 +437,14 @@ macro_rules! __lyquid_categorize_methods {
                 &ctx,
                 callee: Vec<NodeID>,
                 init: $crate::lyquor_primitives::Bytes,
-                nonce: $crate::lyquor_primitives::HashBytes
+                nonce: $crate::lyquor_primitives::HashBytes,
+                vote_config: $crate::runtime::oracle::OracleConfig
             ) -> LyquidResult<Vec<NodeID>> {
-                ctx.cache.set($crate::runtime::oracle::ProposalAggregation::new(init, nonce));
+                ctx.cache.set($crate::runtime::oracle::ProposalAggregation::new(
+                    init,
+                    nonce,
+                    vote_config,
+                ));
                 Ok(callee)
             }
 
@@ -449,9 +458,9 @@ macro_rules! __lyquid_categorize_methods {
                     return Ok(cache.add_response(
                         ctx.from,
                         resp,
-                        &ctx.network.$name,
                         prefix_call!(("__lyquid_method_instance", (oracle::two_phase::$name)), aggregate),
                         ctx.lyquid_id,
+                        stringify!($name),
                         concat!(stringify!($name) $(, "::", stringify!($group))*),
                         ctx.node_id))
                 }
@@ -468,7 +477,7 @@ macro_rules! __lyquid_categorize_methods {
                 $(let $params = input.$params;)*
                 let result: $rt = $body?;
                 let result = $crate::lyquor_primitives::Bytes::from($crate::lyquor_primitives::encode_object(&result));
-                ctx.network.$name.__post_propose(
+                $crate::runtime::oracle::SrcWrapper::new(stringify!($name)).__post_propose(
                     ctx.lyquid_id,
                     concat!(stringify!($name) $(, "::", stringify!($group))*),
                     ctx.from,
@@ -488,37 +497,23 @@ macro_rules! __lyquid_categorize_methods {
                 // NOTE: We don't need to check `_target` here, because in a two-phase process, the
                 // target is determined by the user-defined aggregate function, and thus already
                 // implicitly checked during validate() (as it invokes aggregate() independently).
-                if !ctx.network.$name.__pre_validation_two_phase(&header, &extra) {
-                    return Ok(false)
-                }
-
-                let extra = match $crate::lyquor_primitives::decode_by_fields!(&extra,
-                    init: Bytes,
-                    nonce: $crate::lyquor_primitives::HashBytes,
-                    inputs: Vec<$crate::runtime::oracle::ProposalInput>
-                ) {
-                    Some(extra) => extra,
-                    None => return Ok(false),
-                };
-
-                let mut seen = $crate::runtime::prelude::new_hashset();
-                for input in &extra.inputs {
-                    if !input.verify(
+                let oracle = ctx.instance.__internal.oracle_src_mut(stringify!($name));
+                let (init, _nonce, inputs) = match $crate::runtime::oracle::SrcWrapper::new(stringify!($name))
+                    .__pre_validation_two_phase(
+                        oracle,
+                        &header,
+                        &extra,
                         ctx.lyquid_id,
                         concat!(stringify!($name) $(, "::", stringify!($group))*),
                         ctx.from,
-                        extra.init.clone(),
-                        extra.nonce,
-                        ctx.network.$name,
-                        &mut seen
                     )? {
-                        return Ok(false)
-                    }
-                }
+                        Some(v) => v,
+                        None => return Ok(false),
+                    };
 
                 let agg_ctx = $crate::runtime::oracle::ProposalAggregationContext {
-                    init: &extra.init,
-                    inputs: &extra.inputs,
+                    init: &init,
+                    inputs: &inputs,
                     lyquid_id: ctx.lyquid_id,
                 };
 
@@ -546,11 +541,16 @@ macro_rules! __lyquid_categorize_methods {
             instance(upc::prepare::oracle::single_phase::$name$(:: $group)*) fn validate(
                 &ctx, callee: Vec<NodeID>,
                 header: $crate::runtime::oracle::OracleHeader,
-                yay_msg: $crate::lyquor_primitives::Bytes,
-                nay_msg: $crate::lyquor_primitives::Bytes
+                yea_msg: $crate::lyquor_primitives::Bytes,
+                nay_msg: $crate::lyquor_primitives::Bytes,
+                vote_config: $crate::runtime::oracle::OracleConfig
             ) -> LyquidResult<Vec<NodeID>> {
                 ctx.cache.set($crate::runtime::oracle::ValidateAggregation::new(
-                    header, yay_msg, nay_msg));
+                    header,
+                    yea_msg,
+                    nay_msg,
+                    vote_config,
+                ));
                 Ok(callee)
             }
 
@@ -561,7 +561,7 @@ macro_rules! __lyquid_categorize_methods {
                 let cache: &mut $crate::runtime::oracle::ValidateAggregation =
                     ctx.cache.get_mut().expect("Oracle: aggregation cache should have been set.");
                 if let Ok(resp) = resp {
-                    return Ok(cache.add_response(ctx.from, resp, &ctx.network.$name))
+                    return Ok(cache.add_response(ctx.from, resp))
                 }
                 Ok(None)
             }
@@ -570,26 +570,35 @@ macro_rules! __lyquid_categorize_methods {
                 &mut ctx,
                 msg: $crate::runtime::oracle::ValidateRequest
             ) -> LyquidResult<$crate::runtime::oracle::ValidateResponse> {
-                if !ctx.network.$name.__pre_validation(
+                let expected_group = concat!(stringify!($name) $(, "::", stringify!($group))*);
+                let src = $crate::runtime::oracle::SrcWrapper::new(stringify!($name));
+                let oracle = ctx.instance.__internal.oracle_src_mut(stringify!($name));
+                if !src.__pre_validation(
+                    oracle,
                     &msg.header,
                     &msg.params,
-                    concat!(stringify!($name) $(, "::", stringify!($group))*),
+                    expected_group,
                     ctx.from,
                     ctx.lyquid_id
                 ) {
                     return Err(LyquidError::LyquidRuntime("Mismatch config".into()))
                 }
 
-                let approval = (|| -> LyquidResult<bool> {
-                    let $params = msg.params.clone();
-                    let $extra = msg.extra;
-                    let $target = msg.header.target;
-                    $(let $header: $header_ty = msg.header;)?
-                    let $handle = &mut ctx;
-                    $body
-                })()?;
+                let approval = if src.__is_epoch_advance_params(&msg.params) {
+                    // Epoch-advance is protocol-level and does not invoke user call semantics.
+                    true
+                } else {
+                    (|| -> LyquidResult<bool> {
+                        let $params = msg.params.clone();
+                        let $extra = msg.extra.clone();
+                        let $target = msg.header.target;
+                        $(let $header: $header_ty = msg.header;)?
+                        let $handle = &mut ctx;
+                        $body
+                    })()?
+                };
 
-                ctx.network.$name.__post_validation(msg.header, msg.params, approval)
+                src.__post_validation(msg.header, msg.params, approval)
             }
 
             $($rest)*
@@ -846,8 +855,7 @@ macro_rules! __lyquid_emit_method_fn {
     (false, $prefix:tt, ($($group:ident)::*) , $fn:ident, ($($name:ident: $type:ty),*), $rt:ty, $body:block) => {
         #[prefix_item($prefix, ($($group)::*))]
         #[unsafe(no_mangle)]
-        fn $fn(base: u32, len: u32, abi: u32) -> u64 {
-            let _ = abi;
+        fn $fn(base: u32, len: u32, _abi: u32) -> u64 {
             let raw = unsafe { HostInput::new(base, len) };
             let output = $crate::__lyquid_invoke_lyquor!(raw, ($($name: $type),*), $rt, $body);
             // TODO: possible improvement to not copy this already WASM-allocated vector? But

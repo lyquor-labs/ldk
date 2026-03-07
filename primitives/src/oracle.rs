@@ -45,6 +45,12 @@ pub struct OracleHeader {
     pub nonce: HashBytes,
 }
 
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct OracleEpochInfo {
+    pub epoch: u32,
+    pub config_hash: HashBytes,
+}
+
 pub type SignerID = u32;
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -63,6 +69,13 @@ impl OracleConfig {
     pub fn to_hash(&self) -> Hash {
         blake3::hash(&encode_object(self))
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct OracleConfigDelta {
+    pub upsert: Vec<OracleSigner>,
+    pub remove: Vec<SignerID>,
+    pub threshold: Option<u16>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -88,13 +101,39 @@ impl ValidatePreimage {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleCert {
     pub header: OracleHeader,
-    /// If Some, a new config is agreed upon for this and following certificates, and becomes
-    /// effective until the next update.
-    pub new_config: Option<OracleConfig>,
     /// Signers for the signatures in order.
     pub signers: Vec<SignerID>,
     /// Vote signatures.
     pub signatures: Vec<Bytes>,
+}
+
+/// Oracle call groups are represented as `<topic>[::<suffix...>]`.
+#[inline]
+pub fn topic_from_group(group: &str) -> &str {
+    group.split_once("::").map(|(topic, _)| topic).unwrap_or(group)
+}
+
+/// Transport prefix used by the sequencing contract when forwarding certified calls.
+pub const ORACLE_CERTIFIED_GROUP_PREFIX: &str = "oracle::certified::";
+
+/// Convert a dispatch-time certified call group into its topic key.
+///
+/// The input may be either:
+/// - a raw oracle group (`<topic>[::<suffix...>]`), or
+/// - a sequencer-dispatched group (`oracle::certified::<topic>[::<suffix...>]`).
+#[inline]
+pub fn topic_from_dispatch_group(group: &str) -> &str {
+    let group = group.strip_prefix(ORACLE_CERTIFIED_GROUP_PREFIX).unwrap_or(group);
+    topic_from_group(group)
+}
+
+/// Build a full oracle group string from topic and optional suffix.
+#[inline]
+pub fn group_with_topic_suffix(topic: &str, suffix: Option<&str>) -> String {
+    match suffix {
+        Some(s) if !s.is_empty() => format!("{topic}::{s}"),
+        _ => topic.to_string(),
+    }
 }
 
 pub mod eth {
@@ -119,6 +158,13 @@ pub mod eth {
 
         struct OracleConfig {
             OracleSigner[] committee;
+            uint16 threshold;
+        }
+
+        struct OracleConfigDelta {
+            OracleSigner[] upsert;
+            uint32[] remove;
+            bool thresholdChanged;
             uint16 threshold;
         }
 
@@ -154,6 +200,17 @@ pub mod eth {
             Self {
                 committee: Default::default(),
                 threshold: Default::default(),
+            }
+        }
+    }
+
+    impl Default for OracleConfigDelta {
+        fn default() -> Self {
+            Self {
+                upsert: Default::default(),
+                remove: Default::default(),
+                thresholdChanged: false,
+                threshold: 0,
             }
         }
     }
@@ -209,33 +266,28 @@ pub mod eth {
     impl TryFrom<super::ValidatePreimage> for ValidatePreimage {
         type Error = ();
         fn try_from(om: super::ValidatePreimage) -> Result<Self, ()> {
-            let topic = alloy_primitives::keccak256(
-                om.params
-                    .group
-                    .split("::")
-                    .next()
-                    .unwrap_or(om.params.group.as_str())
-                    .as_bytes(),
-            );
-            let group = alloy_primitives::keccak256(om.params.group.as_bytes());
+            let params = om.params;
+            let topic = super::topic_from_group(params.group.as_str());
+            let topic_hash = alloy_primitives::keccak256(topic.as_bytes());
+            let group_hash = alloy_primitives::keccak256(params.group.as_bytes());
             let (target, eth_contract) = match om.header.target.target {
                 super::OracleServiceTarget::LVM(_) => return Err(()),
                 super::OracleServiceTarget::EVM { target, eth_contract } => (target, eth_contract),
             };
             let params = CallParams {
-                origin: om.params.origin,
-                caller: om.params.caller,
-                group: om.params.group,
-                method: om.params.method,
-                input: om.params.input.into(),
-                abi_: match om.params.abi {
+                origin: params.origin,
+                caller: params.caller,
+                group: params.group,
+                method: params.method,
+                input: params.input.into(),
+                abi_: match params.abi {
                     super::InputABI::Lyquor => ABI::Lyquor,
                     super::InputABI::Eth => ABI::Eth,
                 },
             };
             let header = OracleHeader {
-                topic: topic.into(),
-                group: group.into(),
+                topic: topic_hash.into(),
+                group: group_hash.into(),
                 proposer: <[u8; 32]>::from(om.header.proposer).into(),
                 target,
                 seqId: <[u8; 32]>::from(om.header.target.seq_id).into(),
@@ -244,11 +296,34 @@ pub mod eth {
                 epoch: om.header.epoch,
                 nonce: <[u8; 32]>::from(om.header.nonce).into(),
             };
+
             Ok(Self {
                 header,
                 params,
                 approval: om.approval,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn topic_from_group_uses_first_segment() {
+        assert_eq!(topic_from_group("price_feed"), "price_feed");
+        assert_eq!(topic_from_group("price_feed::two_phase"), "price_feed");
+    }
+
+    #[test]
+    fn topic_from_dispatch_group_accepts_both_forms() {
+        assert_eq!(topic_from_dispatch_group("price_feed"), "price_feed");
+        assert_eq!(topic_from_dispatch_group("price_feed::two_phase"), "price_feed");
+        assert_eq!(topic_from_dispatch_group("oracle::certified::price_feed"), "price_feed");
+        assert_eq!(
+            topic_from_dispatch_group("oracle::certified::price_feed::two_phase"),
+            "price_feed"
+        );
     }
 }
