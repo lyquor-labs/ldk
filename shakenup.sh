@@ -183,7 +183,7 @@ setup_rustup() {
     log_step "Installing rustup..."
     log_info "Lyquor tools require rustup for Rust toolchain management"
     ask_user "Install rustup now?" || { log_error "rustup required for Lyquor development"; exit 1; }
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.93.0 --profile minimal --no-modify-path -y
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.94.0 --profile minimal --no-modify-path -y
     export PATH="$HOME/.cargo/bin:$PATH"
 
     # Create symlinks for rustup and cargo in shakenup bin directory
@@ -202,21 +202,21 @@ setup_rust_toolchain() {
 
     local needs_setup=false
 
-    if ! rustup toolchain list | grep -q "^1.93.0"; then
-        log_step "Installing Rust 1.93.0 toolchain..."
-        rustup toolchain install 1.93.0
+    if ! rustup toolchain list | grep -q "^1.94.0"; then
+        log_step "Installing Rust 1.94.0 toolchain..."
+        rustup toolchain install 1.94.0
         needs_setup=true
     fi
 
-    rustup default 1.93.0 >/dev/null 2>&1 || {
-        log_error "Failed to set Rust 1.93.0 as default toolchain"
+    rustup default 1.94.0 >/dev/null 2>&1 || {
+        log_error "Failed to set Rust 1.94.0 as default toolchain"
         exit 1
     }
 
     if $needs_setup; then
-        log_success "Rust 1.93.0 toolchain configured"
+        log_success "Rust 1.94.0 toolchain configured"
     else
-        log_success "Rust 1.93.0 toolchain ready"
+        log_success "Rust 1.94.0 toolchain ready"
     fi
 }
 
@@ -226,9 +226,9 @@ setup_wasm_target() {
     local needs_setup=false
 
     # Check wasm32 target
-    if ! rustup target list --installed --toolchain 1.93.0 2>/dev/null | grep -q "^wasm32-unknown-unknown"; then
+    if ! rustup target list --installed --toolchain 1.94.0 2>/dev/null | grep -q "^wasm32-unknown-unknown"; then
         log_step "Adding wasm32 target..."
-        rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+        rustup target add wasm32-unknown-unknown --toolchain 1.94.0
         needs_setup=true
     fi
 
@@ -342,8 +342,8 @@ SHAKENUP_DIR="\${SHAKENUP_DIR:-\$HOME/.shakenup}"
 echo "Shakenup Development Environment Status"
 echo "======================================"
 command -v rustc >/dev/null && {
-    echo "✓ Rust: \$(rustc +1.93.0 --version 2>/dev/null || rustc --version)"
-    if rustup target list --installed --toolchain 1.93.0 2>/dev/null | grep -q "^wasm32-unknown-unknown"; then
+    echo "✓ Rust: \$(rustc +1.94.0 --version 2>/dev/null || rustc --version)"
+    if rustup target list --installed --toolchain 1.94.0 2>/dev/null | grep -q "^wasm32-unknown-unknown"; then
         echo "✓ WASM: available (wasm32 target)"
     else
         echo "✗ WASM: missing (need wasm32 target)"
