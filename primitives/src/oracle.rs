@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum OracleServiceTarget {
     // Lyquor network fn
     LVM(LyquidID),
@@ -13,7 +13,7 @@ pub enum OracleServiceTarget {
     },
 }
 
-#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub struct OracleTarget {
     /// Service destination of the certified call.
     pub target: OracleServiceTarget,

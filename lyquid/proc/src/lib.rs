@@ -1027,8 +1027,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
             "oracle" => {
                 cat_str = "instance".to_string();
                 oracle_var = true;
-                type_ = quote::quote! { runtime::oracle::SrcWrapper };
-                init = quote::quote! { runtime::oracle::SrcWrapper::new(#name_str) };
+                type_ = quote::quote! { runtime::oracle::SrcWrapper<'static> };
+                init = quote::quote! { runtime::oracle::SrcWrapper::new(stringify!(#name)) };
             }
             _ => {
                 type_ = def_iter.next().expect("expect variable type").into();

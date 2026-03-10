@@ -1,6 +1,6 @@
 //! Oracle certification protocol flows (single-phase / two-phase / epoch-advance).
 
-use super::source::{OracleSrc, PendingEpochAdvance, Signer, get_config};
+use super::source::{OracleSrc, Signer};
 use super::*;
 use lyquor_primitives::oracle::{OracleConfigDelta as OracleConfigDeltaWire, ValidatePreimage, eth};
 use lyquor_primitives::{Address, Bytes, CallParams, Cipher, Hash, HashBytes, InputABI};
@@ -172,14 +172,6 @@ fn derive_two_phase_cert_nonce(proposal_nonce: HashBytes) -> HashBytes {
     blake3::hash(&<[u8; 32]>::from(proposal_nonce)).into()
 }
 
-pub(super) fn is_epoch_advance_params(topic: &str, params: &CallParams) -> bool {
-    params.origin == Address::ZERO &&
-        params.caller == Address::ZERO &&
-        params.abi == InputABI::Lyquor &&
-        params.group == topic &&
-        params.method == LVM_ORACLE_ON_EPOCH_ADVANCE_METHOD
-}
-
 #[inline]
 fn is_epoch_validate_group(topic: &str, group: &str) -> bool {
     group
@@ -188,7 +180,7 @@ fn is_epoch_validate_group(topic: &str, group: &str) -> bool {
         .is_some_and(|suffix| suffix == ORACLE_EPOCH_VALIDATE_GROUP_SUFFIX)
 }
 
-impl SrcWrapper {
+impl<'a> SrcWrapper<'a> {
     fn certify_with_nonce<S: crate::runtime::internal::StateAccessor, I: crate::runtime::internal::StateAccessor>(
         &self, ctx: &mut crate::runtime::InstanceContextImpl<S, I>, params: CertifiedCallParams, extra: Bytes,
         group: String, nonce_fn: impl FnOnce() -> Option<HashBytes>,
@@ -206,21 +198,16 @@ impl SrcWrapper {
             input: params.input,
             abi,
         };
-        let (callee, source_epoch, config_hash, vote_config) = {
-            let oracle = ctx.instance_internal_state_mut().oracle_src_mut(self.topic());
-            let target = params.target.target;
-            let state = oracle.state_by_target(target);
-            let config = &state.current;
-            if !config.is_valid() {
-                return Ok(None);
-            }
-            (
-                config.committee.keys().cloned().collect::<Vec<_>>(),
-                config.epoch,
-                state.current_hash,
-                config.clone(),
-            )
-        };
+        let source = ctx
+            .instance_internal_state_mut()
+            .oracle_src_mut(self.topic())
+            .target_state_mut(params.target.target);
+        let config = source.current_config().clone();
+        if !config.is_valid() {
+            return Ok(None);
+        }
+        let config_hash = *source.current_config_hash();
+        let callee = config.committee.keys().cloned().collect::<Vec<_>>();
 
         // Use source-side epoch and derive a nonce per call.
         let nonce =
@@ -229,7 +216,7 @@ impl SrcWrapper {
             proposer: ctx.node_id,
             target: params.target,
             config_hash: config_hash.into(),
-            epoch: source_epoch,
+            epoch: config.epoch,
             nonce,
         };
 
@@ -240,7 +227,7 @@ impl SrcWrapper {
             call_params.clone(),
             extra,
             callee,
-            vote_config,
+            config,
         )?;
 
         Ok(cert.map(move |cert| {
@@ -345,14 +332,15 @@ impl SrcWrapper {
         group_suffix: Option<&'static str>,
     ) -> LyquidResult<Option<CallParams>> {
         let lyquid = ctx.lyquid_id;
-        let (callee, vote_config) = {
-            let local = ctx.instance_internal_state_mut().oracle_src_mut(self.topic());
-            let config = &local.state_by_target(target).current;
-            if !config.is_valid() {
-                return Ok(None);
-            }
-            (config.committee.keys().cloned().collect::<Vec<_>>(), config.clone())
-        };
+        let source = ctx
+            .instance_internal_state_mut()
+            .oracle_src_mut(self.topic())
+            .target_state_mut(target);
+        let config = source.current_config().clone();
+        if !config.is_valid() {
+            return Ok(None);
+        }
+        let callee = config.committee.keys().cloned().collect::<Vec<_>>();
         let nonce = Hash::from_slice(&lyquor_api::random_bytes(32)?)
             .map_err(|_| LyquidError::LyquidRuntime("SrcWrapper: failed to obtain proposal nonce.".into()))?
             .into();
@@ -370,7 +358,7 @@ impl SrcWrapper {
                     callee: Vec<NodeID> = callee,
                     init: Bytes = init.clone(),
                     nonce: HashBytes = nonce,
-                    vote_config: OracleConfig = vote_config
+                    vote_config: OracleConfig = config
                 )
                 .into(),
             ),
@@ -408,10 +396,6 @@ impl SrcWrapper {
         }
     }
 
-    pub fn __is_epoch_advance_params(&self, params: &CallParams) -> bool {
-        is_epoch_advance_params(self.topic(), params)
-    }
-
     pub fn __pre_validation(
         &self, oracle: &mut OracleSrc, header: &OracleHeader, params: &CallParams, expected_group: &str, from: NodeID,
         lyquid_id: LyquidID,
@@ -419,15 +403,12 @@ impl SrcWrapper {
         if from != header.proposer {
             return false;
         }
-        let state = oracle.state_by_target(header.target.target);
-        let hash_ok = if self.__is_epoch_advance_params(params) {
+        let state = oracle.target_state_mut(header.target.target);
+        let hash_ok = if is_epoch_advance_params(self.topic(), params) {
             if !is_epoch_validate_group(self.topic(), expected_group) {
                 return false;
             }
-            if get_config(header.epoch, &state.current, &state.staging).is_none() {
-                return false;
-            }
-            state.matches_pending(header.epoch, &header.config_hash)
+            state.pre_validate_epoch_advance(header.epoch, &header.config_hash)
         } else {
             let abi_ok = match header.target.target {
                 OracleServiceTarget::LVM(_) => params.abi == InputABI::Lyquor,
@@ -442,10 +423,10 @@ impl SrcWrapper {
             if params.group != expected_group {
                 return false;
             }
-            if header.epoch != state.current.epoch {
+            if header.epoch != state.current_config().epoch {
                 return false;
             }
-            state.current_hash == *header.config_hash
+            *state.current_config_hash() == *header.config_hash
         };
         // Verify if the configuration in the proposal is consistent with the local state.
         if !hash_ok {
@@ -478,7 +459,7 @@ impl SrcWrapper {
         if derive_two_phase_cert_nonce(payload.nonce) != header.nonce {
             return Ok(None);
         }
-        let config = &oracle.state_by_target(header.target.target).current;
+        let config = &oracle.target_state_mut(header.target.target).current_config();
         let mut seen = new_hashset();
         for input in &payload.inputs {
             if !input.verify(
@@ -541,31 +522,17 @@ impl SrcWrapper {
     ) -> LyquidResult<Option<CallParams>> {
         let validate_group =
             lyquor_primitives::oracle::group_with_topic_suffix(self.topic(), Some(ORACLE_EPOCH_VALIDATE_GROUP_SUFFIX));
-        let (source_epoch, callee, config_hash, vote_config, config_delta) = {
-            let oracle = ctx.instance_internal_state_mut().oracle_src_mut(self.topic());
-            let state = oracle.state_by_target(target.target);
-            let Some((source_epoch, next_config, delta, config_hash)) = state.epoch_advance_candidate() else {
-                return Ok(None);
-            };
-            if !next_config.is_valid() {
-                return Ok(None);
-            }
-            let config = match get_config(source_epoch, &state.current, &next_config) {
-                Some(v) => v,
-                None => return Ok(None),
-            };
-            let callee = config.committee.keys().cloned().collect::<Vec<_>>();
-            let vote_config = config.clone();
-            if state.pending.is_none() {
-                state.pending = Some(PendingEpochAdvance {
-                    epoch: source_epoch,
-                    delta: state.staging_delta.clone(),
-                    delta_wire: delta.clone(),
-                    config_hash,
-                });
-            }
-            (source_epoch, callee, config_hash, vote_config, delta)
+        let source = ctx
+            .instance_internal_state_mut()
+            .oracle_src_mut(self.topic())
+            .target_state_mut(target.target);
+
+        let (epoch, config, delta, config_hash) = match source.staging_delta() {
+            Some(d) => d,
+            None => return Ok(None),
         };
+        let config = config.clone();
+        let callee = config.committee.keys().cloned().collect::<Vec<_>>();
 
         let nonce = super::random_cert_nonce()
             .ok_or_else(|| LyquidError::LyquidRuntime("SrcWrapper: failed to generate nonce.".into()))?;
@@ -575,7 +542,7 @@ impl SrcWrapper {
             proposer: ctx.node_id,
             target,
             config_hash: config_hash.into(),
-            epoch: source_epoch,
+            epoch,
             nonce,
         };
         let mut params = CallParams {
@@ -585,7 +552,7 @@ impl SrcWrapper {
             // single-phase route used for voting.
             group: topic.clone(),
             method: LVM_ORACLE_ON_EPOCH_ADVANCE_METHOD.into(),
-            input: encode_by_fields!(config_delta: OracleConfigDeltaWire = config_delta).into(),
+            input: encode_by_fields!(config_delta: OracleConfigDeltaWire = delta).into(),
             abi: InputABI::Lyquor,
         };
         let cert = self.collect_cert(
@@ -595,7 +562,7 @@ impl SrcWrapper {
             params.clone(),
             Bytes::new(),
             callee,
-            vote_config,
+            config,
         )?;
         Ok(cert.map(move |cert| {
             let payload: Bytes =

@@ -584,7 +584,7 @@ macro_rules! __lyquid_categorize_methods {
                     return Err(LyquidError::LyquidRuntime("Mismatch config".into()))
                 }
 
-                let approval = if src.__is_epoch_advance_params(&msg.params) {
+                let approval = if $crate::runtime::oracle::is_epoch_advance_params(src.topic(), &msg.params) {
                     // Epoch-advance is protocol-level and does not invoke user call semantics.
                     true
                 } else {

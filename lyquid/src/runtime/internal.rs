@@ -143,9 +143,9 @@ impl BuiltinInstanceState {
             .or_insert_with(|| OracleSrc::new(topic))
     }
 
-    pub fn sync_known_oracle_targets(&mut self) {
+    pub fn oracle_src_sync_targets(&mut self) {
         for oracle in self.oracle.values_mut() {
-            oracle.sync_known_targets_on_load();
+            oracle.sync_targets();
         }
     }
 }

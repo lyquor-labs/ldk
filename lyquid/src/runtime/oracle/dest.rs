@@ -3,7 +3,6 @@
 //! Destination state is authoritative for oracle settlement: config, epoch, and nonce set are
 //! enforced here to gate certified calls.
 
-use super::protocol::is_epoch_advance_params;
 use super::*;
 use lyquor_primitives::oracle::{
     OracleConfig as OracleConfigWire, OracleConfigDelta as OracleConfigDeltaWire, OracleSigner, ValidatePreimage,
