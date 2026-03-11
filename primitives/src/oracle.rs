@@ -148,11 +148,13 @@ pub mod eth {
             address key;
         }
 
+        #[derive(Default)]
         struct OracleConfig {
             OracleSigner[] committee;
             uint16 threshold;
         }
 
+        #[derive(Default)]
         struct OracleConfigDelta {
             OracleSigner[] upsert;
             uint32[] remove;
@@ -183,27 +185,7 @@ pub mod eth {
 
     impl OracleConfig {
         pub fn to_hash(&self) -> super::Hash {
-            alloy_primitives::keccak256(&OracleConfig::abi_encode(self)).0.into()
-        }
-    }
-
-    impl Default for OracleConfig {
-        fn default() -> Self {
-            Self {
-                committee: Default::default(),
-                threshold: Default::default(),
-            }
-        }
-    }
-
-    impl Default for OracleConfigDelta {
-        fn default() -> Self {
-            Self {
-                upsert: Default::default(),
-                remove: Default::default(),
-                thresholdChanged: false,
-                threshold: 0,
-            }
+            alloy_primitives::keccak256(OracleConfig::abi_encode(self)).0.into()
         }
     }
 
@@ -239,7 +221,7 @@ pub mod eth {
         }
 
         pub fn to_hash(&self) -> super::Hash {
-            alloy_primitives::keccak256(&self.to_preimage()).0.into()
+            alloy_primitives::keccak256(self.to_preimage()).0.into()
         }
     }
 
@@ -272,7 +254,7 @@ pub mod eth {
                         key: s.key.as_ref().try_into().unwrap(),
                     })
                     .collect(),
-                threshold: oc.threshold as u16,
+                threshold: oc.threshold,
             }
         }
     }
@@ -337,8 +319,8 @@ pub mod eth {
                 },
             };
             let header = OracleHeader {
-                topic: topic_hash.into(),
-                group: group_hash.into(),
+                topic: topic_hash,
+                group: group_hash,
                 proposer: <[u8; 32]>::from(om.header.proposer).into(),
                 target,
                 seqId: <[u8; 32]>::from(om.header.target.seq_id).into(),

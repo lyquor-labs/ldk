@@ -17,7 +17,7 @@ impl NodeID {
         let mut checksum = [0; 3];
         // Calculate SHA-256 hash of the ID
         let mut hash = sha2::Sha256::default();
-        hash.update(&id);
+        hash.update(id);
         let hash = hash.finalize();
         // Take the first two bytes of the hash as the checksum
         checksum[0] = hash[0];
