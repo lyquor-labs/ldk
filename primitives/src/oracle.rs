@@ -127,16 +127,8 @@ pub fn topic_from_dispatch_group(group: &str) -> &str {
     topic_from_group(group)
 }
 
-/// Build a full oracle group string from topic and optional suffix.
-#[inline]
-pub fn group_with_topic_suffix(topic: &str, suffix: Option<&str>) -> String {
-    match suffix {
-        Some(s) if !s.is_empty() => format!("{topic}::{s}"),
-        _ => topic.to_string(),
-    }
-}
-
 pub mod eth {
+    use crate::{Address, decode_by_fields};
     use alloy_sol_types::{SolType, sol};
     sol! {
         struct OracleHeader {
@@ -215,6 +207,28 @@ pub mod eth {
         }
     }
 
+    impl TryFrom<super::OracleConfigDelta> for OracleConfigDelta {
+        type Error = ();
+
+        fn try_from(delta: super::OracleConfigDelta) -> Result<Self, Self::Error> {
+            let upsert = delta
+                .upsert
+                .into_iter()
+                .map(|signer| {
+                    let key = signer.key.as_ref().try_into().map_err(|_| ())?;
+                    Ok(OracleSigner { id: signer.id, key })
+                })
+                .collect::<Result<Vec<_>, ()>>()?;
+
+            Ok(Self {
+                upsert,
+                remove: delta.remove,
+                thresholdChanged: delta.threshold.is_some(),
+                threshold: delta.threshold.unwrap_or(0),
+            })
+        }
+    }
+
     impl ValidatePreimage {
         const PREFIX: &'static [u8] = b"lyquor_validate_preimage_v1\0";
 
@@ -263,11 +277,48 @@ pub mod eth {
         }
     }
 
+    impl From<OracleConfig> for super::OracleConfig {
+        fn from(oc: OracleConfig) -> Self {
+            Self {
+                committee: oc
+                    .committee
+                    .into_iter()
+                    .map(|s| super::OracleSigner {
+                        id: s.id,
+                        key: s.key.to_vec().into(),
+                    })
+                    .collect(),
+                threshold: oc.threshold,
+            }
+        }
+    }
+
     impl TryFrom<super::ValidatePreimage> for ValidatePreimage {
         type Error = ();
         fn try_from(om: super::ValidatePreimage) -> Result<Self, ()> {
             let params = om.params;
-            let topic = super::topic_from_group(params.group.as_str());
+            let is_epoch_advance = params.origin == Address::ZERO &&
+                params.caller == Address::ZERO &&
+                params.abi == super::InputABI::Lyquor &&
+                params.group == "oracle::internal" &&
+                params.method == "__lyquor_oracle_on_epoch_advance";
+            let (topic, input) = if is_epoch_advance {
+                let payload = decode_by_fields!(
+                    params.input.as_ref(),
+                    topic: String,
+                    config_delta: super::OracleConfigDelta
+                )
+                .ok_or(())?;
+                let config_delta = OracleConfigDelta::try_from(payload.config_delta)?;
+                let topic = payload.topic;
+                let input = OracleConfigDelta::abi_encode(&config_delta);
+                (topic, input)
+            } else {
+                (
+                    super::topic_from_group(params.group.as_str()).to_string(),
+                    params.input.to_vec(),
+                )
+            };
             let topic_hash = alloy_primitives::keccak256(topic.as_bytes());
             let group_hash = alloy_primitives::keccak256(params.group.as_bytes());
             let (target, eth_contract) = match om.header.target.target {
@@ -279,7 +330,7 @@ pub mod eth {
                 caller: params.caller,
                 group: params.group,
                 method: params.method,
-                input: params.input.into(),
+                input: input.into(),
                 abi_: match params.abi {
                     super::InputABI::Lyquor => ABI::Lyquor,
                     super::InputABI::Eth => ABI::Eth,

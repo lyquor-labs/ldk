@@ -1,76 +1,68 @@
-//! Runtime oracle support for the NEAT protocol (Nonce-Epoch Autonomous Target Routing).
+//! NEAT: Runtime Oracle Protocol
 //!
-//! ## State ownership and safety model
-//! - Source does **not** own authoritative on-chain oracle state.
-//! - Target owns and enforces oracle state on-chain (`config`, `epoch`, nonce set).
-//! - Source keeps only a local instance-state cache for voting/liveness heuristics.
-//!   LDK users can customize this behavior from instance functions (for example `add_node`,
-//!   `remove_node`, and `set_threshold`).
-//! - Safety is decided at Target verification time via threshold-signature checks plus
-//!   epoch/nonce replay protection.
+//! Implementation of NEAT (Nonce-Epoch Autonomous Target Routing), a software-defined,
+//! self-governed oracle protocol.
 //!
-//! A nonce is single-use within an epoch, so a certified call cannot be replayed after acceptance.
+//! ## State Model
+//! - Source-side oracle state is a local instance-state cache. It drives proposal, validation, and
+//!   staging of committee changes, but it is not authoritative.
+//! - Destination state is authoritative. Each target topic owns the active config, config hash,
+//!   epoch, and replay-protection nonce set.
+//! - Safety is decided only at destination verification time: certificate signatures, target
+//!   binding, config binding, epoch transition rules, and nonce replay checks are enforced there.
 //!
-//! ## Runtime call flow
-//! Shared forward envelope:
+//! A certified call nonce is single-use within an epoch, so an accepted call cannot be replayed.
+//!
+//! ## Forward Path
+//! Source produces a certified envelope and submits it through FCO:
 //! ```text
-//! +---------------+      +-----+      +--------------------------------------+
-//! | Source Lyquid | ---> | FCO | ---> | __lyquor_submit_certified_calls(...) |
-//! +---------------+      +-----+      +--------------------------------------+
+//! Source Lyquid -> FCO -> __lyquor_submit_certified_calls(...)
 //! ```
 //!
-//! Normal certified settlement (input carries raw input of the call + cert):
-//! ```text
-//! +------------------------------------+    +------------------------------------------+
-//! | LVM: emit Slot with                | or | EVM: decode raw input + cert from        |
-//! | oracle::certified::<topic>::...    |    | the same CallParams.input, then          |
-//! |                                    |    | call ethCertifiedCall(...)               |
-//! +------------------------------------+    +------------------------------------------+
-//! ```
+//! The certified envelope shape is independent of the execution target:
+//! - `CallParams.input = (cert, input_raw)`
+//! - `input_raw` is the signed payload for the destination path
 //!
-//! Epoch-advance settlement (input carries raw input of the delta + cert):
-//! ```text
-//! +------------------------------------+    +------------------------------------------+
-//! | LVM: emit Slot with                | or | EVM: decode raw input + cert from        |
-//! | oracle::internal::__lyquor_...     |    | the same CallParams.input, then          |
-//! |                                    |    | call ethCertifiedCall(...)               |
-//! +------------------------------------+    +------------------------------------------+
-//! ```
-//! - Target verifies cert + epoch/nonce replay checks in both routes.
-//! - Only epoch-advance settlement applies a config delta.
+//! There are two settlement routes:
+//! - **Normal certified call**:
+//!   destination verifies the cert against the active config, requires the current epoch, and then
+//!   executes the user call.
+//! - **Epoch advance**:
+//!   destination is the only path that may advance to the next epoch. It verifies the cert against
+//!   the current config, may apply a staged config delta, and does not execute a user call body.
 //!
-//! Push notification path (Target -> Source nudge):
-//! ```text
-//! +---------------------------------+    +-----+    +------------------------------+
-//! | Target emits OracleEpochAdvance | -> | FCO | -> | __lyquor_oracle_sync_targets |
-//! +---------------------------------+    +-----+    +------------------------------+
-//! ```
-//! - Unified signal surface: backend watches the same `OracleEpochAdvance` event for both targets
-//!   and drives the same FCO notification pipeline.
-//! - Emit-point difference: for EVM targets the event is emitted in `ethCertifiedCall(...)` after
-//!   verification; for LVM targets it is emitted on the submit path before destination Lyquid
-//!   verification/execution.
-//! - Common pipeline:
-//!   `sequencer::eth::SlotCrawler` -> `Sequence::notify_oracle_epoch_advance()` ->
-//!   `fco::NotifyOracleEpochAdvance` -> `node::LyquidProcess(OnOracleEpochAdvance)` ->
-//!   `__lyquor_oracle_sync_targets`.
-//! - LVM tradeoff: push nudge is decoupled from destination execution/verification, so Source may
-//!   run an extra sync before destination state lands. Safety still holds because reconciliation
-//!   accepts only backend-reported epoch/config-hash-consistent states.
+//! Epoch advance is intentionally a protocol-internal route:
+//! - signed params use `group = "oracle::internal"`
+//! - method = `__lyquor_oracle_on_epoch_advance`
+//! - payload = `(topic, config_delta)`
+//! - `config_delta` may be empty for an explicit rollover without reconfiguration; destination
+//!   still requires the usual next-epoch nonce threshold in that case.
 //!
-//! Pull path (`get_oracle_epoch(topic, target)`):
-//! ```text
-//! +-------------+      +------+      +---------------------------+
-//! | VM host API | ---> | FCO  | ---> | Target query bifurcation  |
-//! +-------------+      +------+      +---------------------------+
-//!                                                 | LVM: __lyquor_oracle_... |
-//!                                                 | EVM: SlotCrawler eth_call |
-//!                                                 +---------------------------+
-//! ```
+//! ## Backend vs Target
+//! A sequencing backend is the source of ordering/finality for certified calls. A target is where
+//! the certified call is actually executed.
+//!
+//! Under one sequencing backend, NEAT supports two execution targets:
+//! - LVM target:
+//!   the submitted slot preserves the Lyquor call and the destination runtime verifies it through
+//!   [`OracleDest`] before mutating state.
+//! - EVM target:
+//!   the sequencing contract decodes the same `(cert, input_raw)` envelope and routes it through
+//!   `ethCertifiedCall(...)`, where Solidity mirrors the destination verification/update logic.
+//!
+//! ## Source Validation and Sync
+//! - Source pre-validation checks that the proposed destination call matches the local staged view
+//!   for the topic/target before signing.
+//! - Destination emits `OracleEpochAdvance` as a nudge so source instances know to refresh their
+//!   local cache.
+//! - For verified EVM dispatch, the event carries the canonical topic hash.
+//! - For the raw LVM fallback path, the event carries `keccak256(group)` because the contract
+//!   cannot decode the Lyquor payload topic there.
+//! - Source reconciliation still trusts only sequencing-backend-reported target state via
+//!   `get_oracle_epoch(topic, target)`, which currently returns `(epoch, config_hash)`.
 
 use super::internal::StateAccessor;
 use super::prelude::*;
-use lyquor_primitives::HashBytes;
 pub use lyquor_primitives::oracle::OracleConfigDelta as OracleConfigDeltaWire;
 pub use lyquor_primitives::oracle::{
     OracleCert, OracleEpochInfo, OracleHeader, OracleServiceTarget, OracleTarget, SignerID,
@@ -87,8 +79,8 @@ pub use protocol::{
 };
 pub use source::{OracleConfig, OracleSrc, SrcWrapper};
 
-pub(crate) const LVM_ORACLE_ON_EPOCH_ADVANCE_METHOD: &str = "__lyquor_oracle_on_epoch_advance";
-pub(crate) const ORACLE_EPOCH_VALIDATE_GROUP_SUFFIX: &str = "__epoch";
+pub(crate) const ADVANCE_EPOCH_METHOD: &str = "__lyquor_oracle_on_epoch_advance";
+pub(crate) const ADVANCE_EPOCH_GROUP_SUFFIX: &str = "__epoch";
 
 pub fn oracle_target_evm_from_address(contract: Address) -> LyquidResult<OracleTarget> {
     if contract == Address::ZERO {
@@ -121,20 +113,6 @@ pub fn oracle_target_lvm_from_address(lyquid_id: Address) -> LyquidResult<Oracle
         target: OracleServiceTarget::LVM(lyquid_id.into()),
         seq_id,
     })
-}
-
-pub fn is_epoch_advance_params(topic: &str, params: &CallParams) -> bool {
-    params.origin == Address::ZERO &&
-        params.caller == Address::ZERO &&
-        params.abi == lyquor_primitives::InputABI::Lyquor &&
-        params.group == topic &&
-        params.method == LVM_ORACLE_ON_EPOCH_ADVANCE_METHOD
-}
-
-pub(crate) fn random_cert_nonce() -> Option<HashBytes> {
-    let bytes = lyquor_api::random_bytes(32).ok()?;
-    let hash = Hash::from_slice(&bytes).ok()?;
-    Some(hash.into())
 }
 
 /// Read-only access to Source-side oracle cache in builtin instance state.
@@ -187,8 +165,7 @@ macro_rules! __lyquid_define_oracle_internal_methods {
             ctx: &mut _, topic: String,
         ) -> LyquidResult<(u64, $crate::lyquor_primitives::B256)> {
             let info = ctx.network.__internal.oracle_dest_epoch_info(topic.as_str());
-            let config_hash: [u8; 32] = info.config_hash.into();
-            Ok((info.epoch as u64, config_hash.into()))
+            Ok((info.epoch as u64, <[u8; 32]>::from(info.config_hash).into()))
         }
 
         // Propose to advance the epoch and submit all staged changes to the oracle target state.
@@ -235,37 +212,20 @@ macro_rules! __lyquid_define_oracle_internal_methods {
         #[$crate::method::network(group = oracle::internal)]
         fn __lyquor_oracle_on_epoch_advance(
             ctx: &mut _,
-            topic: String,
-            payload: $crate::lyquor_primitives::Bytes
+            cert: $crate::runtime::oracle::OracleCert,
+            input_raw: $crate::lyquor_primitives::Bytes,
         ) -> LyquidResult<bool> {
-            let wrapped = $crate::lyquor_primitives::decode_by_fields!(
-                payload.as_ref(),
-                cert: $crate::runtime::oracle::OracleCert,
-                input_raw: $crate::lyquor_primitives::Bytes
-            )
-            .ok_or($crate::LyquidError::LyquorInput)?;
-            if $crate::lyquor_primitives::decode_by_fields!(
-                wrapped.input_raw.as_ref(),
+            let payload = $crate::lyquor_primitives::decode_by_fields!(
+                input_raw.as_ref(),
+                topic: String,
                 config_delta: $crate::runtime::oracle::OracleConfigDeltaWire
             )
-            .is_none()
-            {
-                return Err($crate::LyquidError::LyquorInput);
-            }
-            let params = $crate::lyquor_primitives::CallParams {
-                // Bind verification to the topic key supplied by the routed call.
-                origin: $crate::lyquor_primitives::Address::ZERO,
-                caller: $crate::lyquor_primitives::Address::ZERO,
-                group: topic.clone(),
-                method: "__lyquor_oracle_on_epoch_advance".into(),
-                input: wrapped.input_raw,
-                abi: $crate::lyquor_primitives::InputABI::Lyquor,
-            };
+            .ok_or($crate::LyquidError::LyquorInput)?;
             if !ctx
                 .network
                 .__internal
-                .oracle_dest(topic.as_str())
-                .verify(ctx.lyquid_id, params, &wrapped.cert)
+                .oracle_dest(payload.topic.as_str())
+                .verify_epoch_advance(ctx.lyquid_id, payload.topic.as_str(), &payload.config_delta, &cert)
             {
                 return Err($crate::LyquidError::InputCert);
             }

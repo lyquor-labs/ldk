@@ -44,7 +44,7 @@ pub struct OracleConfig {
 }
 
 impl OracleConfig {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             committee: new_hashmap(),
             threshold: 0,
@@ -53,7 +53,7 @@ impl OracleConfig {
     }
 
     #[inline]
-    pub(crate) fn is_valid(&self) -> bool {
+    pub fn is_valid(&self) -> bool {
         self.threshold != 0 &&
             self.committee.len() <= u16::MAX as usize &&
             self.committee.len() >= self.threshold as usize
@@ -61,7 +61,7 @@ impl OracleConfig {
 
     fn to_wire(&self, cipher: Cipher) -> OracleConfigWire {
         let mut committee: Vec<_> = self.committee.iter().map(|(_, s)| s.to_wire(cipher)).collect();
-        // The canonical representation of a committee set is sorted by nodes' IDs.
+        // The canonical representation of a committee set is sorted by signer IDs.
         committee.sort_by_key(|s| s.id);
         OracleConfigWire {
             committee,
@@ -208,36 +208,58 @@ impl TargetState {
     }
 
     fn add_node(&mut self, id: NodeID, signer: Signer) -> bool {
-        match self.staging_delta.committee.entry(id) {
-            Entry::Occupied(mut change) => match change.get() {
-                CommitteeChange::Upsert(_) => return false,
-                CommitteeChange::Remove(_) => {
-                    *change.get_mut() = CommitteeChange::Upsert(signer);
-                }
-            },
-            Entry::Vacant(change) => {
-                change.insert(CommitteeChange::Upsert(signer));
-            }
+        if self.staging.committee.contains_key(&id) {
+            return false;
         }
-        self.staging.committee.insert(id, signer);
+
+        if let Some(existing) = self.current.committee.get(&id).copied() {
+            match self.staging_delta.committee.get(&id) {
+                Some(CommitteeChange::Remove(_)) => {
+                    self.staging_delta.committee.remove(&id);
+                    self.staging.committee.insert(id, existing);
+                }
+                _ => return false,
+            }
+        } else {
+            match self.staging_delta.committee.entry(id) {
+                Entry::Occupied(mut change) => match change.get() {
+                    CommitteeChange::Upsert(_) => return false,
+                    CommitteeChange::Remove(_) => {
+                        *change.get_mut() = CommitteeChange::Upsert(signer);
+                    }
+                },
+                Entry::Vacant(change) => {
+                    change.insert(CommitteeChange::Upsert(signer));
+                }
+            }
+            self.staging.committee.insert(id, signer);
+        }
         self.invalidate_staging_cache();
         true
     }
 
     fn remove_node(&mut self, id: NodeID) -> bool {
+        if !self.staging.committee.contains_key(&id) {
+            return false;
+        }
+
+        let existing = self.current.committee.get(&id).copied();
         match self.staging_delta.committee.entry(id) {
             Entry::Occupied(mut change) => match change.get() {
                 CommitteeChange::Remove(_) => return false,
-                CommitteeChange::Upsert(signer) => {
-                    if self.staging.committee.contains_key(&id) {
-                        *change.get_mut() = CommitteeChange::Remove(signer.id);
+                CommitteeChange::Upsert(_) => {
+                    if let Some(existing) = existing {
+                        *change.get_mut() = CommitteeChange::Remove(existing.id);
                     } else {
                         change.remove();
                     }
                 }
             },
-            Entry::Vacant(_) => {
-                return false;
+            Entry::Vacant(change) => {
+                let Some(existing) = existing else {
+                    return false;
+                };
+                change.insert(CommitteeChange::Remove(existing.id));
             }
         }
         self.staging.committee.remove(&id);
@@ -262,8 +284,8 @@ impl TargetState {
         &self.current_hash
     }
 
-    pub fn staging_delta(&mut self) -> Option<(u32, &OracleConfig, OracleConfigDeltaWire, Hash)> {
-        if !self.staging.is_valid() || self.staging_delta.is_empty() {
+    pub fn epoch_advance(&mut self) -> Option<(u32, &OracleConfig, OracleConfigDeltaWire, Hash)> {
+        if !self.staging.is_valid() {
             return None;
         }
 
@@ -282,12 +304,21 @@ impl TargetState {
         ))
     }
 
-    pub fn pre_validate_epoch_advance(&mut self, epoch: u32, config_hash: &Hash) -> bool {
+    pub fn staging_delta(&mut self) -> Option<(u32, &OracleConfig, OracleConfigDeltaWire, Hash)> {
+        if self.staging_delta.is_empty() {
+            return None;
+        }
+        self.epoch_advance()
+    }
+
+    pub fn validate_epoch_advance(
+        &mut self, epoch: u32, config_hash: &Hash, config_delta: &OracleConfigDeltaWire,
+    ) -> bool {
         if !self.staging.is_valid() || epoch != self.staging.epoch {
             return false;
         }
         self.ensure_staging_cache();
-        if &self.staging_hash != config_hash {
+        if &self.staging_hash != config_hash || &self.staging_delta_wire != config_delta {
             return false;
         }
         true
@@ -366,6 +397,17 @@ impl OracleSrc {
 
     fn set_threshold(&mut self, target: OracleServiceTarget, new_thres: u16) {
         self.target_state_mut(target).set_threshold(new_thres);
+    }
+
+    pub fn validate_epoch_advance(
+        &mut self, target: OracleServiceTarget, topic: &str, epoch: u32, config_hash: &Hash,
+        config_delta: &OracleConfigDeltaWire,
+    ) -> bool {
+        if self.topic != topic {
+            return false;
+        }
+        self.target_state_mut(target)
+            .validate_epoch_advance(epoch, config_hash, config_delta)
     }
 }
 

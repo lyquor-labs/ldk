@@ -438,12 +438,12 @@ macro_rules! __lyquid_categorize_methods {
                 callee: Vec<NodeID>,
                 init: $crate::lyquor_primitives::Bytes,
                 nonce: $crate::lyquor_primitives::HashBytes,
-                vote_config: $crate::runtime::oracle::OracleConfig
+                config: $crate::runtime::oracle::OracleConfig
             ) -> LyquidResult<Vec<NodeID>> {
                 ctx.cache.set($crate::runtime::oracle::ProposalAggregation::new(
                     init,
                     nonce,
-                    vote_config,
+                    config,
                 ));
                 Ok(callee)
             }
@@ -543,13 +543,13 @@ macro_rules! __lyquid_categorize_methods {
                 header: $crate::runtime::oracle::OracleHeader,
                 yea_msg: $crate::lyquor_primitives::Bytes,
                 nay_msg: $crate::lyquor_primitives::Bytes,
-                vote_config: $crate::runtime::oracle::OracleConfig
+                config: $crate::runtime::oracle::OracleConfig
             ) -> LyquidResult<Vec<NodeID>> {
                 ctx.cache.set($crate::runtime::oracle::ValidateAggregation::new(
                     header,
                     yea_msg,
                     nay_msg,
-                    vote_config,
+                    config,
                 ));
                 Ok(callee)
             }
@@ -573,7 +573,7 @@ macro_rules! __lyquid_categorize_methods {
                 let expected_group = concat!(stringify!($name) $(, "::", stringify!($group))*);
                 let src = $crate::runtime::oracle::SrcWrapper::new(stringify!($name));
                 let oracle = ctx.instance.__internal.oracle_src_mut(stringify!($name));
-                if !src.__pre_validation(
+                let epoch_advance = match src.__pre_validation(
                     oracle,
                     &msg.header,
                     &msg.params,
@@ -581,13 +581,11 @@ macro_rules! __lyquid_categorize_methods {
                     ctx.from,
                     ctx.lyquid_id
                 ) {
-                    return Err(LyquidError::LyquidRuntime("Mismatch config".into()))
-                }
+                    Some(skip) => skip,
+                    None => return Err(LyquidError::LyquidRuntime("Mismatch config".into()))
+                };
 
-                let approval = if $crate::runtime::oracle::is_epoch_advance_params(src.topic(), &msg.params) {
-                    // Epoch-advance is protocol-level and does not invoke user call semantics.
-                    true
-                } else {
+                let approval = epoch_advance || {
                     (|| -> LyquidResult<bool> {
                         let $params = msg.params.clone();
                         let $extra = msg.extra.clone();
