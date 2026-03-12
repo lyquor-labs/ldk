@@ -59,7 +59,8 @@
 //! - For the raw LVM fallback path, the event carries `keccak256(group)` because the contract
 //!   cannot decode the Lyquor payload topic there.
 //! - Source reconciliation still trusts only sequencing-backend-reported target state via
-//!   `get_oracle_epoch(topic, target)`, which currently returns `(epoch, config_hash)`.
+//!   `get_oracle_epoch(topic, target, full_config)`, which returns `(epoch, config_hash)` and may
+//!   additionally include the authoritative target config.
 
 use super::internal::StateAccessor;
 use super::prelude::*;
@@ -162,10 +163,30 @@ macro_rules! __lyquid_define_oracle_internal_methods {
         // Get the epoch info from the internal OracleDest state (executed at the target Lyquid).
         #[$crate::method::instance(export = eth)]
         fn __lyquor_oracle_dest_epoch_info(
-            ctx: &mut _, topic: String,
-        ) -> LyquidResult<(u64, $crate::lyquor_primitives::B256)> {
-            let info = ctx.network.__internal.oracle_dest_epoch_info(topic.as_str());
-            Ok((info.epoch as u64, <[u8; 32]>::from(info.config_hash).into()))
+            ctx: &mut _, topic: String, full_config: bool,
+        ) -> LyquidResult<(
+            u64,
+            $crate::lyquor_primitives::B256,
+            Vec<u32>,
+            Vec<$crate::lyquor_primitives::Bytes>,
+            u16
+        )> {
+            let info = ctx.network.__internal.oracle_dest_epoch_info(topic.as_str(), full_config);
+            let (committee_ids, committee_keys, threshold) = match info.config {
+                Some(config) => {
+                    let committee_ids = config.committee.iter().map(|signer| signer.id).collect();
+                    let committee_keys = config.committee.into_iter().map(|signer| signer.key).collect();
+                    (committee_ids, committee_keys, config.threshold)
+                }
+                None => (Vec::new(), Vec::new(), 0),
+            };
+            Ok((
+                info.epoch as u64,
+                <[u8; 32]>::from(info.config_hash).into(),
+                committee_ids,
+                committee_keys,
+                threshold,
+            ))
         }
 
         // Propose to advance the epoch and submit all staged changes to the oracle target state.

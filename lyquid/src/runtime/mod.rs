@@ -272,10 +272,11 @@ pub mod lyquor_api {
         systime() -> u64;
         http_request(request: http::Request, options: Option<http::RequestOptions>) -> http::Response;
         check_ed25519_pubkey(pubkey: [u8; 32], qx: U256, qy: U256) -> bool;
-        get_ed25519_address(pubkey: [u8; 32]) -> Option<Address>;
+        get_address_by_ed25519(pubkey: [u8; 32]) -> Option<Address>;
+        get_ed25519_by_address(address: Address) -> Option<NodeID>;
         eth_contract() -> Option<Address>;
         sequence_backend_id() -> lyquor_primitives::SequenceBackendID;
-        get_oracle_epoch(topic: String, target: lyquor_primitives::oracle::OracleTarget) -> Option<lyquor_primitives::oracle::OracleEpochInfo>;
+        get_oracle_epoch(topic: String, target: lyquor_primitives::oracle::OracleTarget, full_config: bool) -> Option<lyquor_primitives::oracle::OracleEpochInfo>;
         trigger(group: String, method: String, input: Vec<u8>, mode: lyquor_primitives::TriggerMode);
     );
 }

@@ -108,15 +108,24 @@ impl BuiltinNetworkState {
         self.oracle.entry(topic.to_string()).or_insert_with(OracleDest::default)
     }
 
-    pub fn oracle_dest_epoch_info(&self, topic: &str) -> lyquor_primitives::oracle::OracleEpochInfo {
+    pub fn oracle_dest_epoch_info(&self, topic: &str, full_config: bool) -> lyquor_primitives::oracle::OracleEpochInfo {
         match self.oracle.get(topic) {
-            Some(dest) => lyquor_primitives::oracle::OracleEpochInfo {
-                epoch: dest.get_epoch(),
-                config_hash: dest.get_config_hash().clone(),
-            },
+            Some(dest) => {
+                let config_hash = dest.get_config_hash().clone();
+                lyquor_primitives::oracle::OracleEpochInfo {
+                    epoch: dest.get_epoch(),
+                    config: if full_config && config_hash != [0; 32].into() {
+                        Some(dest.get_config())
+                    } else {
+                        None
+                    },
+                    config_hash,
+                }
+            }
             None => lyquor_primitives::oracle::OracleEpochInfo {
                 epoch: 0,
                 config_hash: [0; 32].into(),
+                config: None,
             },
         }
     }

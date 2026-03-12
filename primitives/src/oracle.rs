@@ -45,10 +45,11 @@ pub struct OracleHeader {
     pub nonce: HashBytes,
 }
 
-#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleEpochInfo {
     pub epoch: u32,
     pub config_hash: HashBytes,
+    pub config: Option<OracleConfig>,
 }
 
 pub type SignerID = u32;

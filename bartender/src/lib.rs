@@ -1,3 +1,4 @@
+use hashbrown::hash_map::Entry;
 use lyquid::prelude::*;
 use lyquor_primitives::{B256, RegisterEvent};
 use serde::Serialize;
@@ -29,7 +30,8 @@ struct LyquidMetadataOutput {
 state! {
     network lyquid_registry: HashMap<LyquidID, LyquidMetadata> = new_hashmap();
     network owner_nonce: HashMap<Address, u64> = new_hashmap();
-    network eth_addrs: HashMap<Address, LyquidID> = new_hashmap();
+    network lyquid_ids: HashMap<Address, LyquidID> = new_hashmap();
+    network node_ids: HashMap<Address, NodeID> = new_hashmap();
     network node_registry: HashMap<NodeID, NodeMetadata> = new_hashmap();
 }
 
@@ -65,7 +67,7 @@ fn update_eth_addr(
     image_digest: B256, deps: Vec<LyquidID>,
 ) -> Option<LyquidID> {
     // otherwise we need to find the existing lyquid
-    let id = *ctx.network.eth_addrs.get(&old)?;
+    let id = *ctx.network.lyquid_ids.get(&old)?;
     let metadata = ctx.network.lyquid_registry.get_mut(&id)?;
     if metadata.owner == owner && metadata.deploy_history.last()?.contract == old {
         metadata.deploy_history.push(DeployInfo {
@@ -100,7 +102,7 @@ fn register(
     // Convert dependency addresses to LyquidIDs
     let deps: Vec<LyquidID> = deps
         .iter()
-        .filter_map(|addr| ctx.network.eth_addrs.get(addr).copied())
+        .filter_map(|addr| ctx.network.lyquid_ids.get(addr).copied())
         .collect();
     let repo_hint = if repo_hint.is_empty() { None } else { Some(repo_hint) };
 
@@ -128,31 +130,55 @@ fn register(
     .ok_or(LyquidError::LyquidRuntime("invalid register call".into()))?;
     lyquid::println!("register {id} (owner={owner}, contract={contract}, deps={:?})", deps);
     lyquid::log!(Register, &RegisterEvent { id, deps });
-    ctx.network.eth_addrs.insert(contract, id);
+    ctx.network.lyquid_ids.insert(contract, id);
     Ok(true)
 }
 
 #[method::network(export = eth)]
-fn set_ed25519_address(ctx: &mut _, pubkey: B256, qx: U256, qy: U256, addr: Address) -> LyquidResult<bool> {
+fn set_ed25519_address(ctx: &mut _, pubkey: B256, qx: U256, qy: U256, address: Address) -> LyquidResult<bool> {
     let pubkey_bytes: [u8; 32] = *pubkey.as_ref();
     if !lyquor_api::check_ed25519_pubkey(pubkey_bytes, qx, qy)? {
         // Mismatching pubkey/qx/qy info.
-        return Ok(false)
+        return Ok(false);
     }
     let id = NodeID::from(pubkey_bytes);
-    lyquid::println!("set_ed25519_address {id} => {addr}");
-    ctx.network
-        .node_registry
-        .entry(id)
-        .or_insert_with(|| NodeMetadata { addr: Address::ZERO })
-        .addr = addr;
+    let old_address = match ctx.network.node_registry.entry(id) {
+        Entry::Occupied(mut entry) => {
+            if entry.get().addr == address {
+                return Ok(true);
+            }
+            let old_address = entry.get().addr;
+            entry.get_mut().addr = address;
+            Some(old_address)
+        }
+        Entry::Vacant(entry) => {
+            entry.insert(NodeMetadata { addr: address });
+            None
+        }
+    };
+    lyquid::println!("set_ed25519_address {id} => {address}");
+    if let Some(old_address) = old_address {
+        ctx.network.node_ids.remove(&old_address);
+    }
+    if let Some(other_id) = ctx.network.node_ids.insert(address, id) &&
+        other_id != id
+    {
+        ctx.network.node_registry.remove(&other_id);
+    }
     Ok(true)
 }
 
 #[method::instance]
-fn get_ed25519_address(ctx: &_, id: NodeID) -> LyquidResult<Option<Address>> {
+fn get_address_by_ed25519(ctx: &_, id: NodeID) -> LyquidResult<Option<Address>> {
     let ret = ctx.network.node_registry.get(&id).map(|r| r.addr);
-    lyquid::println!("get_ed25519_address {id} = {ret:?}");
+    lyquid::println!("get_address_by_ed25519 {id} = {ret:?}");
+    Ok(ret)
+}
+
+#[method::instance]
+fn get_ed25519_by_address(ctx: &_, address: Address) -> LyquidResult<Option<NodeID>> {
+    let ret = ctx.network.node_ids.get(&address).copied();
+    lyquid::println!("get_ed25519_by_address {address} = {ret:?}");
     Ok(ret)
 }
 
@@ -189,14 +215,14 @@ fn get_last_lyquid_deployment_info(ctx: &_, id: LyquidID) -> LyquidResult<Option
 
 #[method::instance]
 fn get_lyquid_id_by_eth_addr(ctx: &_, addr: Address) -> LyquidResult<Option<LyquidID>> {
-    Ok(ctx.network.eth_addrs.get(&addr).copied())
+    Ok(ctx.network.lyquid_ids.get(&addr).copied())
 }
 
 #[method::instance]
 fn get_eth_addr(ctx: &_, id: LyquidID, ln_image: u32) -> LyquidResult<Option<Address>> {
     Ok(ctx.network.lyquid_registry.get(&id).and_then(|e| {
         if ln_image < 1 {
-            return None
+            return None;
         }
         let ln_image = ln_image as usize - 1;
         if ln_image < e.deploy_history.len() {

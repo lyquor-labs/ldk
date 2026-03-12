@@ -6,7 +6,7 @@
 use super::*;
 use hashbrown::hash_map::Entry;
 use lyquor_primitives::oracle::{
-    OracleConfig as OracleConfigWire, OracleConfigDelta as OracleConfigDeltaWire, OracleSigner, eth,
+    OracleConfig as OracleConfigWire, OracleConfigDelta as OracleConfigDeltaWire, OracleEpochInfo, OracleSigner, eth,
 };
 use lyquor_primitives::{Address, Bytes, Cipher, Hash};
 use serde::{Deserialize, Serialize};
@@ -73,6 +73,45 @@ impl OracleConfig {
     fn empty() -> &'static Self {
         static EMPTY: std::sync::OnceLock<OracleConfig> = std::sync::OnceLock::new();
         EMPTY.get_or_init(Self::new)
+    }
+
+    fn from_wire(config: &OracleConfigWire, cipher: Cipher, epoch: u32) -> Option<Self> {
+        let mut committee = new_hashmap();
+        for signer in config.committee.iter() {
+            let (node_id, key_lvm, key_evm) = match cipher {
+                Cipher::Ed25519 => {
+                    let key_lvm: [u8; 32] = signer.key.as_ref().try_into().ok()?;
+                    let key_evm = lyquor_api::get_address_by_ed25519(key_lvm)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(Address::ZERO);
+                    (NodeID::from(key_lvm), key_lvm, key_evm)
+                }
+                Cipher::Secp256k1 => {
+                    let key_evm = Address::from_slice(signer.key.as_ref());
+                    let node_id = lyquor_api::get_ed25519_by_address(key_evm).ok().flatten()?;
+                    (node_id, node_id.0, key_evm)
+                }
+            };
+            if committee
+                .insert(
+                    node_id,
+                    Signer {
+                        id: signer.id,
+                        key_lvm,
+                        key_evm,
+                    },
+                )
+                .is_some()
+            {
+                return None;
+            }
+        }
+        Some(Self {
+            committee,
+            threshold: config.threshold,
+            epoch,
+        })
     }
 }
 
@@ -182,21 +221,46 @@ impl TargetState {
         }
     }
 
+    // Returns true only when the cheap epoch/hash path was insufficient and caller should retry
+    // with full config.
     fn on_epoch_update(&mut self, target_state: OracleEpochInfo) -> bool {
         let target_epoch = target_state.epoch;
         let target_hash: Hash = <[u8; 32]>::from(target_state.config_hash).into();
-        // Ignore stale epoch.
         if target_epoch < self.current.epoch {
             return false;
         }
-        // Same epoch: only hash-consistency check.
+
+        if let Some(config_wire) = target_state.config {
+            let actual_hash = match self.cipher {
+                Cipher::Ed25519 => config_wire.to_hash(),
+                Cipher::Secp256k1 => eth::OracleConfig::from(config_wire.clone()).to_hash(),
+            };
+            if actual_hash != target_hash {
+                return false;
+            }
+            let Some(config) = OracleConfig::from_wire(&config_wire, self.cipher, target_epoch) else {
+                return false;
+            };
+            if target_epoch == self.current.epoch && target_hash == self.current_hash {
+                return false;
+            }
+
+            self.current = config;
+            self.current_hash = target_hash;
+            self.staging_delta = OracleConfigDelta::default();
+            self.staging = self.current.clone();
+            self.staging.epoch = self.current.epoch.wrapping_add(1);
+            self.invalidate_staging_cache();
+            return false;
+        }
+
         if target_epoch == self.current.epoch {
-            return self.current_hash == target_hash;
+            return self.current_hash != target_hash;
         }
 
         self.ensure_staging_cache();
         if target_epoch != self.staging.epoch || target_hash != self.staging_hash {
-            return false;
+            return true;
         }
 
         self.current = self.staging.clone();
@@ -204,7 +268,7 @@ impl TargetState {
         self.staging_delta = OracleConfigDelta::default();
         self.staging.epoch = self.current.epoch.wrapping_add(1);
         self.invalidate_staging_cache();
-        true
+        false
     }
 
     fn add_node(&mut self, id: NodeID, signer: Signer) -> bool {
@@ -334,8 +398,8 @@ impl OracleSrc {
         }
     }
 
-    fn get_oracle_epoch(&self, target: OracleTarget) -> LyquidResult<Option<OracleEpochInfo>> {
-        lyquor_api::get_oracle_epoch(self.topic.clone(), target)
+    fn get_oracle_epoch(&self, target: OracleTarget, full_config: bool) -> LyquidResult<Option<OracleEpochInfo>> {
+        lyquor_api::get_oracle_epoch(self.topic.clone(), target, full_config)
     }
 
     pub fn target_state_mut(&mut self, target: OracleServiceTarget) -> &mut TargetState {
@@ -345,7 +409,7 @@ impl OracleSrc {
         let target = OracleTarget { target, seq_id };
         self.targets.entry(target).or_insert_with(|| {
             let mut state = TargetState::new(&target);
-            let info = lyquor_api::get_oracle_epoch(self.topic.clone(), target);
+            let info = lyquor_api::get_oracle_epoch(self.topic.clone(), target, true);
             if let Ok(Some(target_state)) = info {
                 state.on_epoch_update(target_state);
             }
@@ -364,10 +428,19 @@ impl OracleSrc {
     pub fn sync_targets(&mut self) {
         let keys = self.targets.keys().copied().collect::<Vec<_>>();
         for target in keys {
-            if let Ok(Some(target_state)) = self.get_oracle_epoch(target) {
-                if let Some(state) = self.targets.get_mut(&target) {
-                    state.on_epoch_update(target_state);
+            let needs_full_config = if let Ok(Some(target_state)) = self.get_oracle_epoch(target, false) {
+                match self.targets.get_mut(&target) {
+                    Some(state) => state.on_epoch_update(target_state),
+                    None => false,
                 }
+            } else {
+                false
+            };
+            if needs_full_config &&
+                let Ok(Some(target_state)) = self.get_oracle_epoch(target, true) &&
+                let Some(state) = self.targets.get_mut(&target)
+            {
+                state.on_epoch_update(target_state);
             }
         }
     }
@@ -376,7 +449,7 @@ impl OracleSrc {
         let key_lvm = id.0;
         let key_evm = match target {
             OracleServiceTarget::LVM(_) => Address::ZERO,
-            OracleServiceTarget::EVM { .. } => match lyquor_api::get_ed25519_address(key_lvm).ok().flatten() {
+            OracleServiceTarget::EVM { .. } => match lyquor_api::get_address_by_ed25519(key_lvm).ok().flatten() {
                 Some(addr) => addr,
                 None => return false,
             },
