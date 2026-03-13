@@ -453,7 +453,7 @@ macro_rules! __lyquid_categorize_methods {
                 resp: LyquidResult<$crate::runtime::oracle::ProposeResponse>
             ) -> LyquidResult<Option< Option<$crate::runtime::oracle::Proposal> >> {
                 let cache: &mut $crate::runtime::oracle::ProposalAggregation =
-                    ctx.cache.get_mut().expect("Oracle: proposal aggregation cache should have been set.");
+                    ctx.cache.get_mut().expect("NEAT: proposal aggregation cache should have been set.");
                 if let Ok(resp) = resp {
                     return Ok(cache.add_response(
                         ctx.from,
@@ -477,7 +477,7 @@ macro_rules! __lyquid_categorize_methods {
                 $(let $params = input.$params;)*
                 let result: $rt = $body?;
                 let result = $crate::lyquor_primitives::Bytes::from($crate::lyquor_primitives::encode_object(&result));
-                $crate::runtime::oracle::SrcWrapper::new(stringify!($name)).__post_propose(
+                ctx.network.$name.clone().__post_propose(
                     ctx.lyquid_id,
                     concat!(stringify!($name) $(, "::", stringify!($group))*),
                     ctx.from,
@@ -497,8 +497,10 @@ macro_rules! __lyquid_categorize_methods {
                 // NOTE: We don't need to check `_target` here, because in a two-phase process, the
                 // target is determined by the user-defined aggregate function, and thus already
                 // implicitly checked during validate() (as it invokes aggregate() independently).
-                let oracle = ctx.instance.__internal.oracle_src_mut(stringify!($name));
-                let (init, _nonce, inputs) = match $crate::runtime::oracle::SrcWrapper::new(stringify!($name))
+                let Some(oracle) = ctx.network.__internal.oracle_src(stringify!($name)) else {
+                    return Ok(false);
+                };
+                let (init, _nonce, inputs) = match ctx.network.$name.clone()
                     .__pre_validation_two_phase(
                         oracle,
                         &header,
@@ -559,7 +561,7 @@ macro_rules! __lyquid_categorize_methods {
                 resp: LyquidResult<$crate::runtime::oracle::ValidateResponse>
             ) -> LyquidResult<Option< Option<$crate::runtime::oracle::OracleCert> >> {
                 let cache: &mut $crate::runtime::oracle::ValidateAggregation =
-                    ctx.cache.get_mut().expect("Oracle: aggregation cache should have been set.");
+                    ctx.cache.get_mut().expect("NEAT: validation aggregation cache should have been set.");
                 if let Ok(resp) = resp {
                     return Ok(cache.add_response(ctx.from, resp))
                 }
@@ -571,8 +573,10 @@ macro_rules! __lyquid_categorize_methods {
                 msg: $crate::runtime::oracle::ValidateRequest
             ) -> LyquidResult<$crate::runtime::oracle::ValidateResponse> {
                 let expected_group = concat!(stringify!($name) $(, "::", stringify!($group))*);
-                let src = $crate::runtime::oracle::SrcWrapper::new(stringify!($name));
-                let oracle = ctx.instance.__internal.oracle_src_mut(stringify!($name));
+                let src = ctx.network.$name.clone();
+                let Some(oracle) = ctx.network.__internal.oracle_src(stringify!($name)) else {
+                    return Err(LyquidError::LyquidRuntime("Mismatch config".into()))
+                };
                 let epoch_advance = match src.__pre_validation(
                     oracle,
                     &msg.header,

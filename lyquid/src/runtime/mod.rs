@@ -276,7 +276,7 @@ pub mod lyquor_api {
         get_ed25519_by_address(address: Address) -> Option<NodeID>;
         eth_contract() -> Option<Address>;
         sequence_backend_id() -> lyquor_primitives::SequenceBackendID;
-        get_oracle_epoch(topic: String, target: lyquor_primitives::oracle::OracleTarget, full_config: bool) -> Option<lyquor_primitives::oracle::OracleEpochInfo>;
+        fetch_oracle_info(topic: String, target: lyquor_primitives::oracle::OracleTarget, full_config: bool) -> Option<lyquor_primitives::oracle::OracleEpochInfo>;
         trigger(group: String, method: String, input: Vec<u8>, mode: lyquor_primitives::TriggerMode);
     );
 }
@@ -494,9 +494,10 @@ where
 {
     pub fn signer_node_id(&mut self, id: u64) -> Option<NodeID> {
         let sid: oracle::SignerID = id.try_into().ok()?;
-        self.network
+        internal::builtin_network_state()
+            .ok()?
             .oracle_dest(self.topic)
-            .and_then(|dest| dest.signer_node_id(sid))
+            .signer_node_id(sid)
     }
 }
 

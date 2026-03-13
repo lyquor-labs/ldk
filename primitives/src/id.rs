@@ -366,6 +366,7 @@ mod tests {
     use super::*;
     use crate::hex::FromHex;
     use ed25519_dalek::SigningKey;
+    use lyquor_test::test;
 
     #[test]
     fn test_hex() {

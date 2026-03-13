@@ -269,11 +269,11 @@ impl OracleDest {
     }
 
     pub fn verify_epoch_advance(
-        &mut self, me: LyquidID, topic: &str, config_delta: &OracleConfigDeltaWire, oc: &OracleCert,
+        &mut self, me: LyquidID, caller: Address, topic: &str, config_delta: &OracleConfigDeltaWire, oc: &OracleCert,
     ) -> bool {
         let params = CallParams {
             origin: Address::ZERO,
-            caller: Address::ZERO,
+            caller,
             group: "oracle::internal".to_string(),
             method: ADVANCE_EPOCH_METHOD.into(),
             input: encode_by_fields!(

@@ -1,7 +1,4 @@
-//! Source-side local oracle cache and source wrapper APIs.
-//!
-//! This cache is not authoritative consensus state. It is a local view used to drive source
-//! voting/certification liveness before target-side verification.
+//! Source-side staged oracle state and wrapper APIs.
 
 use super::*;
 use hashbrown::hash_map::Entry;
@@ -128,10 +125,6 @@ struct OracleConfigDelta {
 }
 
 impl OracleConfigDelta {
-    pub fn is_empty(&self) -> bool {
-        self.committee.is_empty() && self.threshold.is_none()
-    }
-
     pub fn to_wire(&self, cipher: Cipher) -> OracleConfigDeltaWire {
         let mut upsert = Vec::new();
         let mut remove = Vec::new();
@@ -159,12 +152,6 @@ pub struct TargetState {
     current: OracleConfig,
     staging: OracleConfig,
     staging_delta: OracleConfigDelta,
-
-    // Cached data for fast voting/checking.
-    current_hash: Hash,
-    staging_hash: Hash,
-    staging_delta_wire: OracleConfigDeltaWire,
-    staging_cache_dirty: bool,
 }
 
 #[doc(hidden)]
@@ -196,79 +183,24 @@ impl TargetState {
             current,
             staging_delta,
             staging,
-            current_hash: Hash::from_bytes([0; 32]),
-            staging_hash: Hash::from_bytes([0; 32]),
-            staging_delta_wire: OracleConfigDeltaWire {
-                upsert: Vec::new(),
-                remove: Vec::new(),
-                threshold: None,
-            },
-            staging_cache_dirty: true,
         }
     }
 
     #[inline]
-    fn invalidate_staging_cache(&mut self) {
-        self.staging_cache_dirty = true;
+    fn staging_config_hash(&self) -> Hash {
+        config_hash(&self.staging, self.cipher)
     }
 
     #[inline]
-    fn ensure_staging_cache(&mut self) {
-        if self.staging_cache_dirty {
-            self.staging_hash = config_hash(&self.staging, self.cipher);
-            self.staging_delta_wire = self.staging_delta.to_wire(self.cipher);
-            self.staging_cache_dirty = false;
-        }
+    fn staging_delta_wire(&self) -> OracleConfigDeltaWire {
+        self.staging_delta.to_wire(self.cipher)
     }
 
-    // Returns true only when the cheap epoch/hash path was insufficient and caller should retry
-    // with full config.
-    fn on_epoch_update(&mut self, target_state: OracleEpochInfo) -> bool {
-        let target_epoch = target_state.epoch;
-        let target_hash: Hash = <[u8; 32]>::from(target_state.config_hash).into();
-        if target_epoch < self.current.epoch {
-            return false;
-        }
-
-        if let Some(config_wire) = target_state.config {
-            let actual_hash = match self.cipher {
-                Cipher::Ed25519 => config_wire.to_hash(),
-                Cipher::Secp256k1 => eth::OracleConfig::from(config_wire.clone()).to_hash(),
-            };
-            if actual_hash != target_hash {
-                return false;
-            }
-            let Some(config) = OracleConfig::from_wire(&config_wire, self.cipher, target_epoch) else {
-                return false;
-            };
-            if target_epoch == self.current.epoch && target_hash == self.current_hash {
-                return false;
-            }
-
-            self.current = config;
-            self.current_hash = target_hash;
-            self.staging_delta = OracleConfigDelta::default();
-            self.staging = self.current.clone();
-            self.staging.epoch = self.current.epoch.wrapping_add(1);
-            self.invalidate_staging_cache();
-            return false;
-        }
-
-        if target_epoch == self.current.epoch {
-            return self.current_hash != target_hash;
-        }
-
-        self.ensure_staging_cache();
-        if target_epoch != self.staging.epoch || target_hash != self.staging_hash {
-            return true;
-        }
-
-        self.current = self.staging.clone();
-        self.current_hash = self.staging_hash;
+    fn replace_current(&mut self, config: OracleConfig) {
+        self.current = config;
         self.staging_delta = OracleConfigDelta::default();
+        self.staging = self.current.clone();
         self.staging.epoch = self.current.epoch.wrapping_add(1);
-        self.invalidate_staging_cache();
-        false
     }
 
     fn add_node(&mut self, id: NodeID, signer: Signer) -> bool {
@@ -298,7 +230,6 @@ impl TargetState {
             }
             self.staging.committee.insert(id, signer);
         }
-        self.invalidate_staging_cache();
         true
     }
 
@@ -327,7 +258,6 @@ impl TargetState {
             }
         }
         self.staging.committee.remove(&id);
-        self.invalidate_staging_cache();
         true
     }
 
@@ -337,24 +267,29 @@ impl TargetState {
         }
         self.staging_delta.threshold = (new_thres != self.current.threshold).then_some(new_thres);
         self.staging.threshold = new_thres;
-        self.invalidate_staging_cache();
     }
 
     pub fn current_config(&self) -> &OracleConfig {
         &self.current
     }
 
-    pub fn current_config_hash(&self) -> &Hash {
-        &self.current_hash
+    pub fn current_config_hash(&self) -> Hash {
+        if self.current.epoch == 0 && self.current.threshold == 0 && self.current.committee.is_empty() {
+            Hash::from_bytes([0; 32])
+        } else {
+            config_hash(&self.current, self.cipher)
+        }
     }
 
-    pub fn epoch_advance(&mut self) -> Option<(u32, &OracleConfig, OracleConfigDeltaWire, Hash)> {
+    pub fn get_epoch(&self) -> u32 {
+        self.current.epoch
+    }
+
+    pub fn epoch_advance(&self) -> Option<(u32, &OracleConfig, OracleConfigDeltaWire, Hash)> {
         if !self.staging.is_valid() {
             return None;
         }
-
-        self.ensure_staging_cache();
-        // FIXME: bootstrap when the committee is empty.
+        // Bootstrap under the staged config because there is no active committee yet.
         let config = if self.current.committee.is_empty() {
             &self.staging
         } else {
@@ -363,27 +298,55 @@ impl TargetState {
         Some((
             self.staging.epoch,
             config,
-            self.staging_delta_wire.clone(),
-            self.staging_hash,
+            self.staging_delta_wire(),
+            self.staging_config_hash(),
         ))
     }
 
-    pub fn staging_delta(&mut self) -> Option<(u32, &OracleConfig, OracleConfigDeltaWire, Hash)> {
-        if self.staging_delta.is_empty() {
-            return None;
-        }
-        self.epoch_advance()
+    pub fn epoch_finalize_vote(&self, use_staging: bool) -> Option<(u32, &OracleConfig, Hash)> {
+        let (epoch, config, hash) = if use_staging {
+            (self.staging.epoch, &self.staging, self.staging_config_hash())
+        } else {
+            (self.current.epoch, &self.current, self.current_config_hash())
+        };
+        config.is_valid().then_some((epoch, config, hash))
     }
 
-    pub fn validate_epoch_advance(
-        &mut self, epoch: u32, config_hash: &Hash, config_delta: &OracleConfigDeltaWire,
-    ) -> bool {
+    pub fn validate_epoch_advance(&self, epoch: u32, config_hash: &Hash, config_delta: &OracleConfigDeltaWire) -> bool {
         if !self.staging.is_valid() || epoch != self.staging.epoch {
             return false;
         }
-        self.ensure_staging_cache();
-        if &self.staging_hash != config_hash || &self.staging_delta_wire != config_delta {
+        if &self.staging_config_hash() != config_hash || &self.staging_delta_wire() != config_delta {
             return false;
+        }
+        true
+    }
+
+    fn apply_epoch_finalize(&mut self, target_state: OracleEpochInfo) -> bool {
+        let target_hash: Hash = <[u8; 32]>::from(target_state.config_hash).into();
+        if target_state.epoch == self.current.epoch && target_hash == self.current_config_hash() {
+            return false;
+        }
+        match target_state.config {
+            Some(config_wire) => {
+                let actual_hash = match self.cipher {
+                    Cipher::Ed25519 => config_wire.to_hash(),
+                    Cipher::Secp256k1 => eth::OracleConfig::from(config_wire.clone()).to_hash(),
+                };
+                if actual_hash != target_hash {
+                    return false;
+                }
+                let Some(config) = OracleConfig::from_wire(&config_wire, self.cipher, target_state.epoch) else {
+                    return false;
+                };
+                self.replace_current(config);
+            }
+            None => {
+                if target_state.epoch != 0 || target_hash != Hash::from_bytes([0; 32]) {
+                    return false;
+                }
+                self.replace_current(OracleConfig::new());
+            }
         }
         true
     }
@@ -398,51 +361,59 @@ impl OracleSrc {
         }
     }
 
-    fn get_oracle_epoch(&self, target: OracleTarget, full_config: bool) -> LyquidResult<Option<OracleEpochInfo>> {
-        lyquor_api::get_oracle_epoch(self.topic.clone(), target, full_config)
-    }
-
     pub fn target_state_mut(&mut self, target: OracleServiceTarget) -> &mut TargetState {
-        // TODO: allow this function to directly take OracleTarget (can take different sequence
-        // backends).
         let seq_id = lyquor_api::sequence_backend_id().unwrap();
         let target = OracleTarget { target, seq_id };
-        self.targets.entry(target).or_insert_with(|| {
-            let mut state = TargetState::new(&target);
-            let info = lyquor_api::get_oracle_epoch(self.topic.clone(), target, true);
-            if let Ok(Some(target_state)) = info {
-                state.on_epoch_update(target_state);
-            }
-            state
-        })
+        self.targets.entry(target).or_insert_with(|| TargetState::new(&target))
     }
 
-    fn target_state(&self, target: OracleServiceTarget) -> Option<&TargetState> {
-        // TODO: allow this function to directly take OracleTarget (can take different sequence
-        // backends).
+    pub fn target_state(&self, target: OracleServiceTarget) -> Option<&TargetState> {
         let seq_id = lyquor_api::sequence_backend_id().unwrap();
         let target = OracleTarget { target, seq_id };
         self.targets.get(&target)
     }
 
-    pub fn sync_targets(&mut self) {
-        let keys = self.targets.keys().copied().collect::<Vec<_>>();
-        for target in keys {
-            let needs_full_config = if let Ok(Some(target_state)) = self.get_oracle_epoch(target, false) {
-                match self.targets.get_mut(&target) {
-                    Some(state) => state.on_epoch_update(target_state),
-                    None => false,
-                }
-            } else {
-                false
-            };
-            if needs_full_config &&
-                let Ok(Some(target_state)) = self.get_oracle_epoch(target, true) &&
-                let Some(state) = self.targets.get_mut(&target)
-            {
-                state.on_epoch_update(target_state);
-            }
+    pub fn validate_epoch_finalize(
+        &self, source: LyquidID, target: OracleTarget, epoch: u32, config_hash: &Hash, target_state: &OracleEpochInfo,
+    ) -> bool {
+        let Some(target_state_local) = self.targets.get(&target) else {
+            return false;
+        };
+        let Some(source_state) = self.target_state(OracleServiceTarget::LVM(source)) else {
+            return false;
+        };
+        let use_staging = target.target == OracleServiceTarget::LVM(source);
+        let Some((source_epoch, _, source_hash)) = source_state.epoch_finalize_vote(use_staging) else {
+            return false;
+        };
+        if source_epoch != epoch || &source_hash != config_hash {
+            return false;
         }
+        let payload_hash: Hash = <[u8; 32]>::from(target_state.config_hash).into();
+        let config_ok = match &target_state.config {
+            Some(config) => {
+                (match target.target {
+                    OracleServiceTarget::LVM(_) => config.to_hash(),
+                    OracleServiceTarget::EVM { .. } => eth::OracleConfig::from(config.clone()).to_hash(),
+                }) == payload_hash
+            }
+            None => payload_hash == Hash::from_bytes([0; 32]),
+        };
+        config_ok &&
+            fetch_target_epoch_info(self.topic.as_str(), target, false)
+                .ok()
+                .flatten()
+                .is_some_and(|observed| {
+                    let observed_hash = Hash::from(<[u8; 32]>::from(observed.config_hash));
+                    observed.epoch == target_state.epoch &&
+                        observed_hash == payload_hash &&
+                        (observed.epoch != target_state_local.current.epoch ||
+                            observed_hash != target_state_local.current_config_hash())
+                })
+    }
+
+    pub fn finalize_epoch(&mut self, target: OracleServiceTarget, target_state: OracleEpochInfo) -> bool {
+        self.target_state_mut(target).apply_epoch_finalize(target_state)
     }
 
     fn add_node(&mut self, target: OracleServiceTarget, id: NodeID) -> bool {
@@ -473,24 +444,24 @@ impl OracleSrc {
     }
 
     pub fn validate_epoch_advance(
-        &mut self, target: OracleServiceTarget, topic: &str, epoch: u32, config_hash: &Hash,
+        &self, target: OracleServiceTarget, topic: &str, epoch: u32, config_hash: &Hash,
         config_delta: &OracleConfigDeltaWire,
     ) -> bool {
         if self.topic != topic {
             return false;
         }
-        self.target_state_mut(target)
-            .validate_epoch_advance(epoch, config_hash, config_delta)
+        self.target_state(target)
+            .is_some_and(|state| state.validate_epoch_advance(epoch, config_hash, config_delta))
     }
 }
 
 /// Per-topic API wrapper for source-side certified call generation.
 #[derive(Clone)]
-pub struct SrcWrapper<'a> {
+pub struct StateVar<'a> {
     topic: &'a str,
 }
 
-impl<'b> SrcWrapper<'b> {
+impl<'b> StateVar<'b> {
     pub fn new(topic: &'b str) -> Self {
         Self { topic }
     }
@@ -500,25 +471,25 @@ impl<'b> SrcWrapper<'b> {
     }
 
     /// Add a node to the committee. If the node exists, returns false.
-    pub fn add_node(&self, ctx: &mut impl OracleSrcStateContext, target: OracleServiceTarget, id: NodeID) -> bool {
-        ctx.instance_internal_state_mut()
+    pub fn add_node<T>(&self, _ctx: &mut T, target: OracleServiceTarget, id: NodeID) -> bool {
+        crate::runtime::internal::builtin_network_state()
+            .expect("NEAT: failed to access builtin network state.")
             .oracle_src_mut(self.topic())
             .add_node(target, id)
     }
 
     /// Remove a node from the committee. If the node does not exist, returns false.
-    pub fn remove_node(&self, ctx: &mut impl OracleSrcStateContext, target: OracleServiceTarget, id: NodeID) -> bool {
-        ctx.instance_internal_state_mut()
+    pub fn remove_node<T>(&self, _ctx: &mut T, target: OracleServiceTarget, id: NodeID) -> bool {
+        crate::runtime::internal::builtin_network_state()
+            .expect("NEAT: failed to access builtin network state.")
             .oracle_src_mut(self.topic())
             .remove_node(target, id)
     }
 
     /// Get the currently active oracle config.
-    pub fn config_current<'a>(
-        &self, ctx: &'a impl OracleSrcReadContext, target: OracleServiceTarget,
-    ) -> &'a OracleConfig {
-        match ctx
-            .instance_internal_state()
+    pub fn config_current<T>(&self, _ctx: &T, target: OracleServiceTarget) -> &OracleConfig {
+        match crate::runtime::internal::builtin_network_state()
+            .expect("NEAT: failed to access builtin network state.")
             .oracle_src(self.topic())
             .and_then(|oracle| oracle.target_state(target))
         {
@@ -528,11 +499,9 @@ impl<'b> SrcWrapper<'b> {
     }
 
     /// Get the staged oracle config (`current + staging_delta`).
-    pub fn config_staging<'a>(
-        &self, ctx: &'a impl OracleSrcReadContext, target: OracleServiceTarget,
-    ) -> &'a OracleConfig {
-        match ctx
-            .instance_internal_state()
+    pub fn config_staging<T>(&self, _ctx: &T, target: OracleServiceTarget) -> &OracleConfig {
+        match crate::runtime::internal::builtin_network_state()
+            .expect("NEAT: failed to access builtin network state.")
             .oracle_src(self.topic())
             .and_then(|oracle| oracle.target_state(target))
         {
@@ -541,9 +510,18 @@ impl<'b> SrcWrapper<'b> {
         }
     }
 
+    pub fn get_epoch<T>(&self, _ctx: &T, target: OracleServiceTarget) -> u32 {
+        crate::runtime::internal::builtin_network_state()
+            .expect("NEAT: failed to access builtin network state.")
+            .oracle_src(self.topic())
+            .and_then(|oracle| oracle.target_state(target))
+            .map_or(0, TargetState::get_epoch)
+    }
+
     /// Update the threshold of the oracle.
-    pub fn set_threshold(&self, ctx: &mut impl OracleSrcStateContext, target: OracleServiceTarget, new_thres: u16) {
-        ctx.instance_internal_state_mut()
+    pub fn set_threshold<T>(&self, _ctx: &mut T, target: OracleServiceTarget, new_thres: u16) {
+        crate::runtime::internal::builtin_network_state()
+            .expect("NEAT: failed to access builtin network state.")
             .oracle_src_mut(self.topic())
             .set_threshold(target, new_thres);
     }

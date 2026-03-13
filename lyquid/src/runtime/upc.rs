@@ -2,7 +2,7 @@ use std::any::Any;
 
 use super::{Immutable, Mutable, internal};
 use crate::{Address, Bytes, CallContext, LyquidID, LyquidResult, NodeID, upc::CachePtr};
-use internal::{StateAccessor, sealed};
+use internal::StateAccessor;
 
 /// UPC prepare context, which is allowed to only read the network state variables.
 pub struct PrepareContextImpl<S>
@@ -71,8 +71,6 @@ where
         })
     }
 }
-
-impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for RequestContextImpl<S, I> {}
 
 /// UPC response context, which is allowed to only read the network state variables.
 pub struct ResponseContextImpl<S>

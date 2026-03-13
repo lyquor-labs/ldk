@@ -1019,16 +1019,14 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         let mut cat_str = cat.to_string();
         let name = next_token_is_ident(&mut def_iter).expect("expect variable identifer");
         let name_str = name.to_string();
-        let mut oracle_var = false;
         let type_;
         let init;
 
         match cat_str.as_str() {
             "oracle" => {
-                cat_str = "instance".to_string();
-                oracle_var = true;
-                type_ = quote::quote! { runtime::oracle::SrcWrapper<'static> };
-                init = quote::quote! { runtime::oracle::SrcWrapper::new(stringify!(#name)) };
+                cat_str = "network".to_string();
+                type_ = quote::quote! { runtime::oracle::StateVar<'static> };
+                init = quote::quote! { runtime::oracle::StateVar::new(stringify!(#name)) };
             }
             _ => {
                 type_ = def_iter.next().expect("expect variable type").into();
@@ -1064,7 +1062,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
             #init
         }};
 
-        if cat_str == "instance" && !oracle_var {
+        if cat_str == "instance" {
             init = quote::quote! {runtime::sync::RwLock::new(#init)};
             type_ = quote::quote! {runtime::sync::RwLock<#type_>};
         }
@@ -1154,15 +1152,6 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         let field_ts = struct_fields.entry(cat.clone()).or_insert_with(|| TokenStream::new());
         let init_ts = struct_inits.entry(cat.clone()).or_insert_with(|| TokenStream::new());
         let sname = quote::format_ident!("{}{}", cat_prefix, struct_suffix);
-        let oracle_dest_fn = if cat == "network" {
-            quote::quote! {
-                fn oracle_dest(&mut self, topic: &'static str) -> Option<&mut runtime::oracle::OracleDest> {
-                    Some(self.__internal.oracle_dest(topic))
-                }
-            }
-        } else {
-            quote::quote! {}
-        };
         structs.extend([quote::quote! {
             pub struct #sname {
                 #field_ts
@@ -1176,8 +1165,6 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
                         #init_ts
                     })
                 }
-
-                #oracle_dest_fn
             }
         }]);
     }

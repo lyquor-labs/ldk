@@ -281,7 +281,6 @@ pub mod eth {
         fn try_from(om: super::ValidatePreimage) -> Result<Self, ()> {
             let params = om.params;
             let is_epoch_advance = params.origin == Address::ZERO &&
-                params.caller == Address::ZERO &&
                 params.abi == super::InputABI::Lyquor &&
                 params.group == "oracle::internal" &&
                 params.method == "__lyquor_oracle_on_epoch_advance";
@@ -343,6 +342,7 @@ pub mod eth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lyquor_test::test;
 
     #[test]
     fn topic_from_group_uses_first_segment() {

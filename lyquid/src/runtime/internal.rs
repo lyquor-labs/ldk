@@ -1,7 +1,5 @@
 use super::oracle::{OracleDest, OracleSrc};
-use super::{
-    __lyquid_volatile_alloc, __lyquid_volatile_dealloc, ImmutableInstanceContextImpl, InstanceContextImpl, lyquor_api,
-};
+use super::{__lyquid_volatile_alloc, __lyquid_volatile_dealloc, lyquor_api};
 use crate::{LyquidError, LyquidResult};
 use lyquor_primitives::StateCategory;
 
@@ -48,10 +46,6 @@ pub trait StateAccessor {
     fn new() -> Result<Self, LyquidError>
     where
         Self: Sized;
-
-    fn oracle_dest(&mut self, _topic: &'static str) -> Option<&mut OracleDest> {
-        None
-    }
 }
 
 /// A low-cost wrapper that applies the same prefix to low-level state access through `lyquor_api`.
@@ -93,23 +87,27 @@ impl PrefixedAccess<Vec<u8>> {
 }
 
 pub struct BuiltinNetworkState {
-    oracle: super::HashMap<String, OracleDest>,
+    oracle_dest: super::HashMap<String, OracleDest>,
+    oracle_src: super::HashMap<String, OracleSrc>,
 }
 
 impl BuiltinNetworkState {
     pub fn new() -> Self {
         Self {
-            oracle: super::new_hashmap(),
+            oracle_dest: super::new_hashmap(),
+            oracle_src: super::new_hashmap(),
         }
     }
 
     /// Get (and create if missing) the destination-chain oracle topic state for the given topic key.
     pub fn oracle_dest(&mut self, topic: &str) -> &mut OracleDest {
-        self.oracle.entry(topic.to_string()).or_insert_with(OracleDest::default)
+        self.oracle_dest
+            .entry(topic.to_string())
+            .or_insert_with(OracleDest::default)
     }
 
     pub fn oracle_dest_epoch_info(&self, topic: &str, full_config: bool) -> lyquor_primitives::oracle::OracleEpochInfo {
-        match self.oracle.get(topic) {
+        match self.oracle_dest.get(topic) {
             Some(dest) => {
                 let config_hash = dest.get_config_hash().clone();
                 lyquor_primitives::oracle::OracleEpochInfo {
@@ -129,33 +127,23 @@ impl BuiltinNetworkState {
             },
         }
     }
-}
-
-pub struct BuiltinInstanceState {
-    oracle: super::HashMap<String, OracleSrc>,
-}
-
-impl BuiltinInstanceState {
-    pub fn new() -> Self {
-        Self {
-            oracle: super::new_hashmap(),
-        }
-    }
 
     pub fn oracle_src(&self, topic: &str) -> Option<&OracleSrc> {
-        self.oracle.get(topic)
+        self.oracle_src.get(topic)
     }
 
     pub fn oracle_src_mut(&mut self, topic: &str) -> &mut OracleSrc {
-        self.oracle
+        self.oracle_src
             .entry(topic.to_string())
             .or_insert_with(|| OracleSrc::new(topic))
     }
+}
 
-    pub fn oracle_src_sync_targets(&mut self) {
-        for oracle in self.oracle.values_mut() {
-            oracle.sync_targets();
-        }
+pub struct BuiltinInstanceState;
+
+impl BuiltinInstanceState {
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -169,11 +157,12 @@ pub(crate) fn builtin_instance_state() -> LyquidResult<&'static mut BuiltinInsta
     Ok(unsafe { &mut *(addr as *mut BuiltinInstanceState) })
 }
 
-// NOTE: limit the implementor of this trait to this LDK crate using sealed trait pattern
-// The extra sealed mod is used as a visibility trick.
-pub(crate) mod sealed {
-    pub trait Sealed {}
+/// Returns built-in network state initialized by runtime bootstrap.
+pub(crate) fn builtin_network_state() -> LyquidResult<&'static mut BuiltinNetworkState> {
+    let internal_pa = PrefixedAccess::new(Vec::from(crate::INTERNAL_STATE_PREFIX));
+    let bytes = internal_pa
+        .get(StateCategory::Network, "network".as_bytes())?
+        .ok_or(LyquidError::Init)?;
+    let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| LyquidError::Init)?);
+    Ok(unsafe { &mut *(addr as *mut BuiltinNetworkState) })
 }
-
-impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for InstanceContextImpl<S, I> {}
-impl<S: StateAccessor, I: StateAccessor> sealed::Sealed for ImmutableInstanceContextImpl<S, I> {}
