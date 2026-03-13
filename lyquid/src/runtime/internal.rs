@@ -112,6 +112,7 @@ impl BuiltinNetworkState {
                 let config_hash = dest.get_config_hash().clone();
                 lyquor_primitives::oracle::OracleEpochInfo {
                     epoch: dest.get_epoch(),
+                    change_count: dest.get_change_count(),
                     config: if full_config && config_hash != [0; 32].into() {
                         Some(dest.get_config())
                     } else {
@@ -123,6 +124,7 @@ impl BuiltinNetworkState {
             None => lyquor_primitives::oracle::OracleEpochInfo {
                 epoch: 0,
                 config_hash: [0; 32].into(),
+                change_count: 0,
                 config: None,
             },
         }
@@ -148,21 +150,31 @@ impl BuiltinInstanceState {
 }
 
 /// Returns built-in instance state initialized by runtime bootstrap.
-pub(crate) fn builtin_instance_state() -> LyquidResult<&'static mut BuiltinInstanceState> {
+pub(crate) fn builtin_instance_state() -> &'static mut BuiltinInstanceState {
     let internal_pa = PrefixedAccess::new(Vec::from(crate::INTERNAL_STATE_PREFIX));
-    let bytes = internal_pa
-        .get(StateCategory::Instance, "instance".as_bytes())?
-        .ok_or(LyquidError::Init)?;
-    let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| LyquidError::Init)?);
-    Ok(unsafe { &mut *(addr as *mut BuiltinInstanceState) })
+    let Some(addr) = internal_pa
+        .get(StateCategory::Instance, "instance".as_bytes())
+        .ok()
+        .flatten()
+        .and_then(|bytes| bytes.try_into().ok())
+    else {
+        panic!("NEAT: failed to access builtin instance state.");
+    };
+    let addr = u64::from_be_bytes(addr);
+    unsafe { &mut *(addr as *mut BuiltinInstanceState) }
 }
 
 /// Returns built-in network state initialized by runtime bootstrap.
-pub(crate) fn builtin_network_state() -> LyquidResult<&'static mut BuiltinNetworkState> {
+pub(crate) fn builtin_network_state() -> &'static mut BuiltinNetworkState {
     let internal_pa = PrefixedAccess::new(Vec::from(crate::INTERNAL_STATE_PREFIX));
-    let bytes = internal_pa
-        .get(StateCategory::Network, "network".as_bytes())?
-        .ok_or(LyquidError::Init)?;
-    let addr = u64::from_be_bytes(bytes.try_into().map_err(|_| LyquidError::Init)?);
-    Ok(unsafe { &mut *(addr as *mut BuiltinNetworkState) })
+    let Some(addr) = internal_pa
+        .get(StateCategory::Network, "network".as_bytes())
+        .ok()
+        .flatten()
+        .and_then(|bytes| bytes.try_into().ok())
+    else {
+        panic!("NEAT: failed to access builtin network state.");
+    };
+    let addr = u64::from_be_bytes(addr);
+    unsafe { &mut *(addr as *mut BuiltinNetworkState) }
 }

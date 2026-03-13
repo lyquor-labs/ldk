@@ -1,12 +1,13 @@
 //! Source-side staged oracle state and wrapper APIs.
 
 use super::*;
-use hashbrown::hash_map::Entry;
 use lyquor_primitives::oracle::{
     OracleConfig as OracleConfigWire, OracleConfigDelta as OracleConfigDeltaWire, OracleEpochInfo, OracleSigner, eth,
 };
 use lyquor_primitives::{Address, Bytes, Cipher, Hash};
 use serde::{Deserialize, Serialize};
+
+const MAX_STAGING_OPS: usize = 1024;
 
 #[derive(Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Signer {
@@ -71,87 +72,22 @@ impl OracleConfig {
         static EMPTY: std::sync::OnceLock<OracleConfig> = std::sync::OnceLock::new();
         EMPTY.get_or_init(Self::new)
     }
-
-    fn from_wire(config: &OracleConfigWire, cipher: Cipher, epoch: u32) -> Option<Self> {
-        let mut committee = new_hashmap();
-        for signer in config.committee.iter() {
-            let (node_id, key_lvm, key_evm) = match cipher {
-                Cipher::Ed25519 => {
-                    let key_lvm: [u8; 32] = signer.key.as_ref().try_into().ok()?;
-                    let key_evm = lyquor_api::get_address_by_ed25519(key_lvm)
-                        .ok()
-                        .flatten()
-                        .unwrap_or(Address::ZERO);
-                    (NodeID::from(key_lvm), key_lvm, key_evm)
-                }
-                Cipher::Secp256k1 => {
-                    let key_evm = Address::from_slice(signer.key.as_ref());
-                    let node_id = lyquor_api::get_ed25519_by_address(key_evm).ok().flatten()?;
-                    (node_id, node_id.0, key_evm)
-                }
-            };
-            if committee
-                .insert(
-                    node_id,
-                    Signer {
-                        id: signer.id,
-                        key_lvm,
-                        key_evm,
-                    },
-                )
-                .is_some()
-            {
-                return None;
-            }
-        }
-        Some(Self {
-            committee,
-            threshold: config.threshold,
-            epoch,
-        })
-    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
-enum CommitteeChange {
-    Upsert(Signer),
-    Remove(SignerID),
-}
-
-#[derive(Clone, PartialEq, Eq, Default)]
-struct OracleConfigDelta {
-    committee: HashMap<NodeID, CommitteeChange>,
-    threshold: Option<u16>,
-}
-
-impl OracleConfigDelta {
-    pub fn to_wire(&self, cipher: Cipher) -> OracleConfigDeltaWire {
-        let mut upsert = Vec::new();
-        let mut remove = Vec::new();
-        for (_node, op) in self.committee.iter() {
-            match op {
-                CommitteeChange::Upsert(signer) => {
-                    upsert.push(signer.to_wire(cipher));
-                }
-                CommitteeChange::Remove(id) => remove.push(*id),
-            }
-        }
-        upsert.sort_by_key(|s| s.id);
-        remove.sort();
-        OracleConfigDeltaWire {
-            upsert,
-            remove,
-            threshold: self.threshold,
-        }
-    }
+enum OracleConfigOp {
+    AddNode(NodeID, Signer),
+    RemoveNode(NodeID),
+    SetThreshold(u16),
 }
 
 #[derive(Clone)]
 pub struct TargetState {
     cipher: Cipher,
     current: OracleConfig,
+    current_hash: Hash,
     staging: OracleConfig,
-    staging_delta: OracleConfigDelta,
+    staging_ops: Vec<OracleConfigOp>,
 }
 
 #[doc(hidden)]
@@ -168,6 +104,23 @@ fn config_hash(config: &OracleConfig, cipher: Cipher) -> Hash {
     }
 }
 
+fn apply_config_op(config: &mut OracleConfig, op: &OracleConfigOp) -> bool {
+    match op {
+        OracleConfigOp::AddNode(id, signer) => {
+            if config.committee.contains_key(id) {
+                return false;
+            }
+            config.committee.insert(*id, *signer);
+            true
+        }
+        OracleConfigOp::RemoveNode(id) => config.committee.remove(id).is_some(),
+        OracleConfigOp::SetThreshold(threshold) => {
+            config.threshold = *threshold;
+            true
+        }
+    }
+}
+
 impl TargetState {
     fn new(target: &OracleTarget) -> Self {
         let cipher = match target.target {
@@ -177,96 +130,133 @@ impl TargetState {
         let current = OracleConfig::new();
         let mut staging = current.clone();
         staging.epoch += 1;
-        let staging_delta = OracleConfigDelta::default();
         Self {
             cipher,
             current,
-            staging_delta,
+            current_hash: Hash::from_bytes([0; 32]),
+            staging_ops: Vec::new(),
             staging,
         }
     }
 
     #[inline]
-    fn staging_config_hash(&self) -> Hash {
-        config_hash(&self.staging, self.cipher)
+    pub(crate) fn materialize_prefix(&self, change_count: u32) -> Option<(OracleConfig, OracleConfigDeltaWire, Hash)> {
+        let change_count = usize::try_from(change_count).ok()?;
+        if change_count > self.staging_ops.len() {
+            return None;
+        }
+
+        let mut changes: HashMap<NodeID, Option<Signer>> = new_hashmap();
+        let mut threshold = self.current.threshold;
+        for op in self.staging_ops.iter().take(change_count) {
+            match op {
+                OracleConfigOp::AddNode(id, signer) => match (self.current.committee.get(id), changes.get(id)) {
+                    (Some(current_signer), Some(None)) => {
+                        if current_signer == signer {
+                            changes.remove(id);
+                        } else {
+                            changes.insert(*id, Some(*signer));
+                        }
+                    }
+                    (Some(_), _) | (None, Some(Some(_))) => return None,
+                    (None, Some(None)) => {
+                        changes.insert(*id, Some(*signer));
+                    }
+                    (None, None) => {
+                        changes.insert(*id, Some(*signer));
+                    }
+                },
+                OracleConfigOp::RemoveNode(id) => match (self.current.committee.get(id), changes.get(id)) {
+                    (Some(_), Some(None)) | (None, None) | (None, Some(None)) => return None,
+                    (Some(_), _) => {
+                        changes.insert(*id, None);
+                    }
+                    (None, Some(Some(_))) => {
+                        changes.remove(id);
+                    }
+                },
+                OracleConfigOp::SetThreshold(new_threshold) => {
+                    threshold = *new_threshold;
+                }
+            }
+        }
+
+        let mut committee = new_hashmap();
+        let mut upsert = Vec::new();
+        let mut remove = Vec::new();
+        for (id, current_signer) in self.current.committee.iter() {
+            match changes.get(id) {
+                Some(Some(next_signer)) => {
+                    committee.insert(*id, *next_signer);
+                }
+                Some(None) => remove.push(current_signer.id),
+                None => {
+                    committee.insert(*id, *current_signer);
+                }
+            }
+        }
+        for (id, signer) in changes.iter() {
+            match signer {
+                Some(signer) => {
+                    if !self.current.committee.contains_key(id) {
+                        committee.insert(*id, *signer);
+                    } else {
+                        remove.push(self.current.committee[id].id);
+                    }
+                    upsert.push(signer.to_wire(self.cipher));
+                }
+                None => {}
+            }
+        }
+        upsert.sort_by_key(|signer| signer.id);
+        remove.sort();
+
+        let next = OracleConfig {
+            committee,
+            threshold,
+            epoch: self.current.epoch.wrapping_add(1),
+        };
+
+        let delta = OracleConfigDeltaWire {
+            upsert,
+            remove,
+            threshold: (threshold != self.current.threshold).then_some(threshold),
+        };
+        let hash = config_hash(&next, self.cipher);
+        Some((next, delta, hash))
     }
 
-    #[inline]
-    fn staging_delta_wire(&self) -> OracleConfigDeltaWire {
-        self.staging_delta.to_wire(self.cipher)
-    }
-
-    fn replace_current(&mut self, config: OracleConfig) {
-        self.current = config;
-        self.staging_delta = OracleConfigDelta::default();
-        self.staging = self.current.clone();
-        self.staging.epoch = self.current.epoch.wrapping_add(1);
+    fn push_op(&mut self, op: OracleConfigOp) -> bool {
+        if self.staging_ops.len() >= MAX_STAGING_OPS {
+            return false;
+        }
+        if !apply_config_op(&mut self.staging, &op) {
+            return false;
+        }
+        self.staging_ops.push(op);
+        true
     }
 
     fn add_node(&mut self, id: NodeID, signer: Signer) -> bool {
         if self.staging.committee.contains_key(&id) {
             return false;
         }
-
-        if let Some(existing) = self.current.committee.get(&id).copied() {
-            match self.staging_delta.committee.get(&id) {
-                Some(CommitteeChange::Remove(_)) => {
-                    self.staging_delta.committee.remove(&id);
-                    self.staging.committee.insert(id, existing);
-                }
-                _ => return false,
-            }
-        } else {
-            match self.staging_delta.committee.entry(id) {
-                Entry::Occupied(mut change) => match change.get() {
-                    CommitteeChange::Upsert(_) => return false,
-                    CommitteeChange::Remove(_) => {
-                        *change.get_mut() = CommitteeChange::Upsert(signer);
-                    }
-                },
-                Entry::Vacant(change) => {
-                    change.insert(CommitteeChange::Upsert(signer));
-                }
-            }
-            self.staging.committee.insert(id, signer);
-        }
-        true
+        let signer = self.current.committee.get(&id).copied().unwrap_or(signer);
+        self.push_op(OracleConfigOp::AddNode(id, signer))
     }
 
     fn remove_node(&mut self, id: NodeID) -> bool {
         if !self.staging.committee.contains_key(&id) {
             return false;
         }
-
-        let existing = self.current.committee.get(&id).copied();
-        match self.staging_delta.committee.entry(id) {
-            Entry::Occupied(mut change) => match change.get() {
-                CommitteeChange::Remove(_) => return false,
-                CommitteeChange::Upsert(_) => {
-                    if let Some(existing) = existing {
-                        *change.get_mut() = CommitteeChange::Remove(existing.id);
-                    } else {
-                        change.remove();
-                    }
-                }
-            },
-            Entry::Vacant(change) => {
-                let Some(existing) = existing else {
-                    return false;
-                };
-                change.insert(CommitteeChange::Remove(existing.id));
-            }
-        }
-        self.staging.committee.remove(&id);
-        true
+        self.push_op(OracleConfigOp::RemoveNode(id))
     }
 
-    fn set_threshold(&mut self, new_thres: u16) {
+    fn set_threshold(&mut self, new_thres: u16) -> bool {
         if self.staging.threshold == new_thres {
-            return;
+            return false;
         }
-        self.staging_delta.threshold = (new_thres != self.current.threshold).then_some(new_thres);
-        self.staging.threshold = new_thres;
+        self.push_op(OracleConfigOp::SetThreshold(new_thres))
     }
 
     pub fn current_config(&self) -> &OracleConfig {
@@ -274,81 +264,26 @@ impl TargetState {
     }
 
     pub fn current_config_hash(&self) -> Hash {
-        if self.current.epoch == 0 && self.current.threshold == 0 && self.current.committee.is_empty() {
-            Hash::from_bytes([0; 32])
-        } else {
-            config_hash(&self.current, self.cipher)
-        }
+        self.current_hash
     }
 
     pub fn get_epoch(&self) -> u32 {
         self.current.epoch
     }
 
-    pub fn epoch_advance(&self) -> Option<(u32, &OracleConfig, OracleConfigDeltaWire, Hash)> {
+    pub fn propose_advance_epoch(&self) -> Option<(u32, &OracleConfig, OracleConfigDeltaWire, Hash, u32)> {
         if !self.staging.is_valid() {
             return None;
         }
-        // Bootstrap under the staged config because there is no active committee yet.
+        let change_count = u32::try_from(self.staging_ops.len()).ok()?;
+        let (_, delta, config_hash) = self.materialize_prefix(change_count)?;
+        // FIXME: Bootstrap under the staged config because there is no active committee yet.
         let config = if self.current.committee.is_empty() {
             &self.staging
         } else {
             &self.current
         };
-        Some((
-            self.staging.epoch,
-            config,
-            self.staging_delta_wire(),
-            self.staging_config_hash(),
-        ))
-    }
-
-    pub fn epoch_finalize_vote(&self, use_staging: bool) -> Option<(u32, &OracleConfig, Hash)> {
-        let (epoch, config, hash) = if use_staging {
-            (self.staging.epoch, &self.staging, self.staging_config_hash())
-        } else {
-            (self.current.epoch, &self.current, self.current_config_hash())
-        };
-        config.is_valid().then_some((epoch, config, hash))
-    }
-
-    pub fn validate_epoch_advance(&self, epoch: u32, config_hash: &Hash, config_delta: &OracleConfigDeltaWire) -> bool {
-        if !self.staging.is_valid() || epoch != self.staging.epoch {
-            return false;
-        }
-        if &self.staging_config_hash() != config_hash || &self.staging_delta_wire() != config_delta {
-            return false;
-        }
-        true
-    }
-
-    fn apply_epoch_finalize(&mut self, target_state: OracleEpochInfo) -> bool {
-        let target_hash: Hash = <[u8; 32]>::from(target_state.config_hash).into();
-        if target_state.epoch == self.current.epoch && target_hash == self.current_config_hash() {
-            return false;
-        }
-        match target_state.config {
-            Some(config_wire) => {
-                let actual_hash = match self.cipher {
-                    Cipher::Ed25519 => config_wire.to_hash(),
-                    Cipher::Secp256k1 => eth::OracleConfig::from(config_wire.clone()).to_hash(),
-                };
-                if actual_hash != target_hash {
-                    return false;
-                }
-                let Some(config) = OracleConfig::from_wire(&config_wire, self.cipher, target_state.epoch) else {
-                    return false;
-                };
-                self.replace_current(config);
-            }
-            None => {
-                if target_state.epoch != 0 || target_hash != Hash::from_bytes([0; 32]) {
-                    return false;
-                }
-                self.replace_current(OracleConfig::new());
-            }
-        }
-        true
+        Some((self.staging.epoch, config, delta, config_hash, change_count))
     }
 }
 
@@ -373,47 +308,34 @@ impl OracleSrc {
         self.targets.get(&target)
     }
 
-    pub fn validate_epoch_finalize(
-        &self, source: LyquidID, target: OracleTarget, epoch: u32, config_hash: &Hash, target_state: &OracleEpochInfo,
-    ) -> bool {
-        let Some(target_state_local) = self.targets.get(&target) else {
-            return false;
-        };
-        let Some(source_state) = self.target_state(OracleServiceTarget::LVM(source)) else {
-            return false;
-        };
-        let use_staging = target.target == OracleServiceTarget::LVM(source);
-        let Some((source_epoch, _, source_hash)) = source_state.epoch_finalize_vote(use_staging) else {
-            return false;
-        };
-        if source_epoch != epoch || &source_hash != config_hash {
+    pub fn finalize_epoch(&mut self, target: OracleServiceTarget, target_state: OracleEpochInfo) -> bool {
+        let state = self.target_state_mut(target);
+        let target_hash: Hash = <[u8; 32]>::from(target_state.config_hash).into();
+        if target_state.epoch != state.current.epoch.wrapping_add(1) {
             return false;
         }
-        let payload_hash: Hash = <[u8; 32]>::from(target_state.config_hash).into();
-        let config_ok = match &target_state.config {
-            Some(config) => {
-                (match target.target {
-                    OracleServiceTarget::LVM(_) => config.to_hash(),
-                    OracleServiceTarget::EVM { .. } => eth::OracleConfig::from(config.clone()).to_hash(),
-                }) == payload_hash
-            }
-            None => payload_hash == Hash::from_bytes([0; 32]),
+        let Some((next_current, _, expected_hash)) = state.materialize_prefix(target_state.change_count) else {
+            return false;
         };
-        config_ok &&
-            fetch_target_epoch_info(self.topic.as_str(), target, false)
-                .ok()
-                .flatten()
-                .is_some_and(|observed| {
-                    let observed_hash = Hash::from(<[u8; 32]>::from(observed.config_hash));
-                    observed.epoch == target_state.epoch &&
-                        observed_hash == payload_hash &&
-                        (observed.epoch != target_state_local.current.epoch ||
-                            observed_hash != target_state_local.current_config_hash())
-                })
-    }
-
-    pub fn finalize_epoch(&mut self, target: OracleServiceTarget, target_state: OracleEpochInfo) -> bool {
-        self.target_state_mut(target).apply_epoch_finalize(target_state)
+        if expected_hash != target_hash {
+            return false;
+        }
+        let trim_len = match usize::try_from(target_state.change_count) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let mut next_staging = next_current.clone();
+        next_staging.epoch = next_current.epoch.wrapping_add(1);
+        for op in state.staging_ops.iter().skip(trim_len) {
+            if !apply_config_op(&mut next_staging, op) {
+                return false;
+            }
+        }
+        state.current = next_current;
+        state.current_hash = target_hash;
+        state.staging_ops.drain(..trim_len);
+        state.staging = next_staging;
+        true
     }
 
     fn add_node(&mut self, target: OracleServiceTarget, id: NodeID) -> bool {
@@ -439,19 +361,41 @@ impl OracleSrc {
         self.target_state_mut(target).remove_node(id)
     }
 
-    fn set_threshold(&mut self, target: OracleServiceTarget, new_thres: u16) {
-        self.target_state_mut(target).set_threshold(new_thres);
+    fn set_threshold(&mut self, target: OracleServiceTarget, new_thres: u16) -> bool {
+        self.target_state_mut(target).set_threshold(new_thres)
     }
 
-    pub fn validate_epoch_advance(
+    pub fn validate_advance_epoch(
         &self, target: OracleServiceTarget, topic: &str, epoch: u32, config_hash: &Hash,
-        config_delta: &OracleConfigDeltaWire,
+        config_delta: &OracleConfigDeltaWire, change_count: u32,
     ) -> bool {
         if self.topic != topic {
             return false;
         }
-        self.target_state(target)
-            .is_some_and(|state| state.validate_epoch_advance(epoch, config_hash, config_delta))
+        let Some(state) = self.target_state(target) else {
+            return false;
+        };
+        if !state.staging.is_valid() || epoch != state.staging.epoch {
+            return false;
+        }
+        state
+            .materialize_prefix(change_count)
+            .is_some_and(|(_, expected_delta, expected_hash)| {
+                &expected_delta == config_delta && &expected_hash == config_hash
+            })
+    }
+
+    pub fn validate_finalize_epoch(&self, target: OracleTarget, target_state: &OracleEpochInfo) -> bool {
+        let payload_hash: Hash = <[u8; 32]>::from(target_state.config_hash).into();
+        fetch_target_epoch_info(self.topic.as_str(), target, false)
+            .ok()
+            .flatten()
+            .is_some_and(|observed| {
+                let observed_hash = Hash::from(<[u8; 32]>::from(observed.config_hash));
+                observed.epoch == target_state.epoch &&
+                    observed_hash == payload_hash &&
+                    observed.change_count == target_state.change_count
+            })
     }
 }
 
@@ -473,7 +417,6 @@ impl<'b> StateVar<'b> {
     /// Add a node to the committee. If the node exists, returns false.
     pub fn add_node<T>(&self, _ctx: &mut T, target: OracleServiceTarget, id: NodeID) -> bool {
         crate::runtime::internal::builtin_network_state()
-            .expect("NEAT: failed to access builtin network state.")
             .oracle_src_mut(self.topic())
             .add_node(target, id)
     }
@@ -481,7 +424,6 @@ impl<'b> StateVar<'b> {
     /// Remove a node from the committee. If the node does not exist, returns false.
     pub fn remove_node<T>(&self, _ctx: &mut T, target: OracleServiceTarget, id: NodeID) -> bool {
         crate::runtime::internal::builtin_network_state()
-            .expect("NEAT: failed to access builtin network state.")
             .oracle_src_mut(self.topic())
             .remove_node(target, id)
     }
@@ -489,7 +431,6 @@ impl<'b> StateVar<'b> {
     /// Get the currently active oracle config.
     pub fn config_current<T>(&self, _ctx: &T, target: OracleServiceTarget) -> &OracleConfig {
         match crate::runtime::internal::builtin_network_state()
-            .expect("NEAT: failed to access builtin network state.")
             .oracle_src(self.topic())
             .and_then(|oracle| oracle.target_state(target))
         {
@@ -498,10 +439,9 @@ impl<'b> StateVar<'b> {
         }
     }
 
-    /// Get the staged oracle config (`current + staging_delta`).
+    /// Get the staged oracle config after applying all queued source-side ops.
     pub fn config_staging<T>(&self, _ctx: &T, target: OracleServiceTarget) -> &OracleConfig {
         match crate::runtime::internal::builtin_network_state()
-            .expect("NEAT: failed to access builtin network state.")
             .oracle_src(self.topic())
             .and_then(|oracle| oracle.target_state(target))
         {
@@ -512,17 +452,15 @@ impl<'b> StateVar<'b> {
 
     pub fn get_epoch<T>(&self, _ctx: &T, target: OracleServiceTarget) -> u32 {
         crate::runtime::internal::builtin_network_state()
-            .expect("NEAT: failed to access builtin network state.")
             .oracle_src(self.topic())
             .and_then(|oracle| oracle.target_state(target))
             .map_or(0, TargetState::get_epoch)
     }
 
     /// Update the threshold of the oracle.
-    pub fn set_threshold<T>(&self, _ctx: &mut T, target: OracleServiceTarget, new_thres: u16) {
+    pub fn set_threshold<T>(&self, _ctx: &mut T, target: OracleServiceTarget, new_thres: u16) -> bool {
         crate::runtime::internal::builtin_network_state()
-            .expect("NEAT: failed to access builtin network state.")
             .oracle_src_mut(self.topic())
-            .set_threshold(target, new_thres);
+            .set_threshold(target, new_thres)
     }
 }

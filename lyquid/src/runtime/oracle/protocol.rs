@@ -1,33 +1,27 @@
-//! Oracle certification protocol flows (single-phase / two-phase / epoch-advance).
+//! Oracle certification protocol flows (single-phase / two-phase / epoch coordination).
 //!
 //! ## Epoch Coordination
-//! This module defines the certification flows around epoch transitions.
+//! Source-side oracle state is shared network state keyed by the actual target. `advance_epoch(...)`
+//! certifies one exact staged prefix for that target and sends the certified transition to the
+//! target. The target is canonical: only the target decides which next epoch/config actually
+//! settles.
 //!
-//! For ordinary certified calls, the important protocol boundary is the active destination config.
-//! Epoch coordination adds one extra source-side rule: honest nodes should build the next epoch's
-//! candidate config from the same staged source state before trying `advance_epoch(...)`.
+//! `finalize_epoch(...)` is the source-side follow-up. It only certifies the observed target fact
+//! `(epoch, config_hash, change_count)` and lands on the source. The actual source mutation happens
+//! later, when that certified call is sequenced on source and tries to consume exactly that staged
+//! prefix.
 //!
-//! The epoch-transition flow is:
+//! The key invariant is:
 //!
-//! 1. LDK user logic mutates staged oracle config through source-side network functions.
-//! 2. `advance_epoch(...)` reads that shared staged state and produces a source-certified
-//!    next-epoch transition for the target.
-//! 3. Once the target has actually advanced, `finalize_epoch(...)` adopts that target-canonical
-//!    epoch on the source side and clears leftover staged edits.
+//! - timing only affects whether an `advance_epoch(...)` or `finalize_epoch(...)` cert is still
+//!   useful;
+//! - stale, delayed, or out-of-order certs must fail or become no-ops rather than mutate oracle
+//!   state incorrectly.
 //!
-//! This means source staging is a voting baseline, not durable destination truth. Edits made after
-//! the target has advanced but before `finalize_epoch(...)` lands are provisional and may be
-//! discarded by that later cleanup.
+//! So LDK-user logic should:
 //!
-//! The LDK-user rule is therefore simple:
-//!
-//! - stage oracle changes through source network functions so honest nodes see the same next config;
-//! - only start a new round of staging after the source-side epoch has been finalized.
-//!
-//! Once an honest, non-faulty node has assembled a valid source-certified target epoch-advance
-//! transition, liveness no longer depends on further source-side negotiation: any honest node can
-//! keep submitting that certified target advance until it lands. `finalize_epoch(...)` then
-//! re-bases source state to the target-canonical result.
+//! - stage oracle changes through source network functions so honest nodes see the same prefix;
+//! - start the next round only after the previous epoch has been finalized on source.
 
 use super::source::{OracleSrc, Signer};
 use super::*;
@@ -289,7 +283,6 @@ fn certify<S: crate::runtime::internal::StateAccessor, I: crate::runtime::intern
 ) -> LyquidResult<Option<CallParams>> {
     let lyquid = ctx.lyquid_id;
     let Some(source) = crate::runtime::internal::builtin_network_state()
-        .expect("NEAT: failed to access builtin network state.")
         .oracle_src(topic)
         .and_then(|oracle| oracle.target_state(params.target.target))
     else {
@@ -331,7 +324,6 @@ fn propose_and_certify<S: crate::runtime::internal::StateAccessor, I: crate::run
 ) -> LyquidResult<Option<CallParams>> {
     let lyquid = ctx.lyquid_id;
     let Some(source) = crate::runtime::internal::builtin_network_state()
-        .expect("NEAT: failed to access builtin network state.")
         .oracle_src(topic)
         .and_then(|oracle| oracle.target_state(target))
     else {
@@ -416,13 +408,12 @@ fn advance_epoch<S: crate::runtime::internal::StateAccessor, I: crate::runtime::
     ctx: &mut crate::runtime::InstanceContextImpl<S, I>, topic: &str, target: OracleTarget,
 ) -> LyquidResult<Option<CallParams>> {
     let Some(source) = crate::runtime::internal::builtin_network_state()
-        .expect("NEAT: failed to access builtin network state.")
         .oracle_src(topic)
         .and_then(|oracle| oracle.target_state(target.target))
     else {
         return Ok(None);
     };
-    let (epoch, config, delta, config_hash) = match source.epoch_advance() {
+    let (epoch, config, delta, config_hash, change_count) = match source.propose_advance_epoch() {
         Some(d) => d,
         None => return Ok(None),
     };
@@ -434,7 +425,8 @@ fn advance_epoch<S: crate::runtime::internal::StateAccessor, I: crate::runtime::
         method: ADVANCE_EPOCH_METHOD.into(),
         input: encode_by_fields!(
             topic: String = topic.to_string(),
-            config_delta: OracleConfigDeltaWire = delta
+            config_delta: OracleConfigDeltaWire = delta,
+            change_count: u32 = change_count
         )
         .into(),
         abi: InputABI::Lyquor,
@@ -457,22 +449,28 @@ fn finalize_epoch<S: crate::runtime::internal::StateAccessor, I: crate::runtime:
     ctx: &mut crate::runtime::InstanceContextImpl<S, I>, topic: &str, target: OracleTarget,
 ) -> LyquidResult<Option<CallParams>> {
     // This is the target-canonical state that source wants to adopt.
-    let Some(finalized_target_state) = fetch_target_epoch_info(topic, target, true)? else {
+    let Some(finalized_target_state) = fetch_target_epoch_info(topic, target, false)? else {
         return Ok(None);
     };
     let source = OracleServiceTarget::LVM(ctx.lyquid_id);
     let Some(source_state) = crate::runtime::internal::builtin_network_state()
-        .expect("NEAT: failed to access builtin network state.")
         .oracle_src(topic)
         .and_then(|oracle| oracle.target_state(source))
     else {
         return Ok(None);
     };
-    let use_staging = target.target == source;
-    let Some((source_epoch, source_config, source_hash)) = source_state.epoch_finalize_vote(use_staging) else {
-        return Ok(None);
+    let (source_epoch, source_config, source_hash) = if target.target == source {
+        match source_state.materialize_prefix(finalized_target_state.change_count) {
+            Some((config, _, hash)) if config.is_valid() => (config.epoch, config, hash),
+            _ => return Ok(None),
+        }
+    } else {
+        let config = source_state.current_config().clone();
+        if !config.is_valid() {
+            return Ok(None);
+        }
+        (config.epoch, config, source_state.current_config_hash())
     };
-    let source_config = source_config.clone();
 
     // `finalize_epoch(...)` is certified under the source target and adopts the observed
     // target-canonical state in its payload.
@@ -594,17 +592,19 @@ impl<'a> StateVar<'a> {
             let payload = match lyquor_primitives::decode_by_fields!(
                 &params.input,
                 topic: String,
-                config_delta: OracleConfigDeltaWire
+                config_delta: OracleConfigDeltaWire,
+                change_count: u32
             ) {
                 Some(payload) => payload,
                 None => return None,
             };
-            if !oracle.validate_epoch_advance(
+            if !oracle.validate_advance_epoch(
                 header.target.target,
                 payload.topic.as_str(),
                 header.epoch,
                 &header.config_hash,
                 &payload.config_delta,
+                payload.change_count,
             ) {
                 return None;
             }
@@ -626,13 +626,7 @@ impl<'a> StateVar<'a> {
             {
                 return None;
             }
-            if !oracle.validate_epoch_finalize(
-                lyquid_id,
-                payload.target,
-                header.epoch,
-                &header.config_hash,
-                &payload.target_state,
-            ) {
+            if !oracle.validate_finalize_epoch(payload.target, &payload.target_state) {
                 return None;
             }
         } else {

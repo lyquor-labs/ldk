@@ -495,7 +495,6 @@ where
     pub fn signer_node_id(&mut self, id: u64) -> Option<NodeID> {
         let sid: oracle::SignerID = id.try_into().ok()?;
         internal::builtin_network_state()
-            .ok()?
             .oracle_dest(self.topic)
             .signer_node_id(sid)
     }

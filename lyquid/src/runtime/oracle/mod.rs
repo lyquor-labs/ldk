@@ -1,42 +1,58 @@
 //! NEAT: Runtime Oracle Protocol
 //!
-//! Implementation of NEAT (Nonce-Epoch Autonomous Target Routing), a software-defined,
+//! Implementation of NEAT (Nonce-Epoch with Arbitrary Targets), a software-defined,
 //! self-governed oracle protocol.
 //!
-//! ## State Model
-//! - Source-side oracle state lives in builtin network state. It is the shared staged intent used
-//!   for voting and epoch advancement, not the authoritative active oracle state.
+//! ## High-Level Model
+//! - Source-side oracle state lives in builtin network state and is keyed by the actual target.
+//!   It is the shared staged intent used for voting.
 //! - Destination state is authoritative. Each target topic owns the active config, config hash,
-//!   epoch, and replay-protection nonce set.
-//! - Safety is decided only at destination verification time: certificate signatures, target
-//!   binding, config binding, epoch transition rules, and nonce replay checks are enforced there.
+//!   epoch, consumed `change_count`, and replay-protection nonce set.
+//! - Ordinary certified calls stay off-chain until final settlement. Oracle coordination only adds
+//!   explicit epoch-boundary settlement.
 //!
-//! A certified call nonce is single-use within an epoch, so an accepted call cannot be replayed.
+//! The epoch-boundary flow is bidirectional:
+//! - `advance_epoch(...)` goes from source to target and settles one exact staged source-op prefix
+//!   on the target.
+//! - `finalize_epoch(...)` goes from target back to source and moves source forward by consuming
+//!   exactly the prefix that target actually settled.
 //!
-//! ## Forward Path
+//! This keeps the target canonical for active config selection while still letting source keep the
+//! shared staged voting baseline.
+//!
+//! ## Routing
 //! Source produces a certified envelope and submits it through FCO:
 //! ```text
 //! Source Lyquid -> FCO -> __lyquor_submit_certified_calls(...)
 //! ```
 //!
+//! TODO: the source identity should not rely on `caller` alone. `LyquidID` is not globally
+//! unique across sequencing backends, so the source-side identity carried by protocol-internal
+//! calls should eventually include the sequencing backend ID as well.
+//!
 //! The certified envelope shape is independent of the execution target:
 //! - `CallParams.input = (cert, input_raw)`
 //! - `input_raw` is the signed payload for the destination path
 //!
-//! There are two settlement routes:
+//! There are three protocol routes:
 //! - **Normal certified call**:
-//!   destination verifies the cert against the active config, requires the current epoch, and then
-//!   executes the user call.
+//!   destination verifies the cert against the active config and executes the user call.
 //! - **Epoch advance**:
-//!   destination is the only path that may advance to the next epoch. It verifies the cert against
-//!   the current config, may apply a staged config delta, and does not execute a user call body.
+//!   destination verifies a source-certified next-epoch transition and, if valid, advances to the
+//!   next target epoch.
+//! - **Epoch finalize**:
+//!   source verifies that enough nodes observed the settled target fact and then applies that
+//!   settled epoch back into source staging state.
 //!
-//! Epoch advance is intentionally a protocol-internal route:
+//! Epoch advance is a protocol-internal destination route:
 //! - signed params use `group = "oracle::internal"`
 //! - method = `__lyquor_oracle_on_epoch_advance`
-//! - payload = `(topic, config_delta)`
-//! - `config_delta` may be empty for an explicit rollover without reconfiguration; destination
-//!   still requires the usual next-epoch nonce threshold in that case.
+//! - payload = `(topic, config_delta, change_count)`
+//!
+//! Epoch finalize is a protocol-internal source route:
+//! - signed params use `group = "<topic>::__epoch"`
+//! - method = `__lyquor_oracle_on_epoch_finalize`
+//! - payload = `(target, target_state)`
 //!
 //! ## Backend vs Target
 //! A sequencing backend is the source of ordering/finality for certified calls. A target is where
@@ -50,14 +66,9 @@
 //!   the sequencing contract decodes the same `(cert, input_raw)` envelope and routes it through
 //!   `ethCertifiedCall(...)`, where Solidity mirrors the destination verification/update logic.
 //!
-//! ## Source Validation and Finalization
-//! - Source pre-validation checks that the proposed destination call matches the shared staged view
-//!   for the topic/target before signing.
-//! - Destination remains canonical for which config actually wins for a next epoch.
-//! - Once the target advances, source adopts that target-canonical state through the sequenced
-//!   `finalize_epoch(...)` flow.
-//! - Target observations come from `fetch_oracle_info(topic, target, full_config)`, which returns
-//!   `(epoch, config_hash)` and may additionally include the authoritative target config.
+//! Target observations come from `fetch_oracle_info(topic, target, full_config)`, which returns
+//! `(epoch, config_hash, change_count)` and may additionally include the authoritative target
+//! config for debugging or inspection.
 
 use super::prelude::*;
 pub use lyquor_primitives::oracle::OracleConfigDelta as OracleConfigDeltaWire;
@@ -130,28 +141,20 @@ macro_rules! __lyquid_define_oracle_internal_methods {
         ) -> LyquidResult<(
             u64,
             $crate::lyquor_primitives::B256,
-            Vec<u32>,
-            Vec<$crate::lyquor_primitives::Bytes>,
-            u16
+            u32,
+            $crate::lyquor_primitives::Bytes
         )> {
             let info = ctx
                 .network
                 .__internal
                 .oracle_dest_epoch_info(topic.as_str(), full_config);
-            let (committee_ids, committee_keys, threshold) = match info.config {
-                Some(config) => {
-                    let committee_ids = config.committee.iter().map(|signer| signer.id).collect();
-                    let committee_keys = config.committee.into_iter().map(|signer| signer.key).collect();
-                    (committee_ids, committee_keys, config.threshold)
-                }
-                None => (Vec::new(), Vec::new(), 0),
-            };
             Ok((
                 info.epoch as u64,
                 <[u8; 32]>::from(info.config_hash).into(),
-                committee_ids,
-                committee_keys,
-                threshold,
+                info.change_count,
+                info.config
+                    .map(|config| $crate::lyquor_primitives::encode_object(&config).into())
+                    .unwrap_or_default(),
             ))
         }
 
@@ -203,14 +206,22 @@ macro_rules! __lyquid_define_oracle_internal_methods {
             let payload = $crate::lyquor_primitives::decode_by_fields!(
                 input_raw.as_ref(),
                 topic: String,
-                config_delta: $crate::runtime::oracle::OracleConfigDeltaWire
+                config_delta: $crate::runtime::oracle::OracleConfigDeltaWire,
+                change_count: u32
             )
             .ok_or($crate::LyquidError::LyquorInput)?;
             if !ctx
                 .network
                 .__internal
                 .oracle_dest(payload.topic.as_str())
-                .verify_epoch_advance(ctx.lyquid_id, ctx.caller, payload.topic.as_str(), &payload.config_delta, &cert)
+                .verify_epoch_advance(
+                    ctx.lyquid_id,
+                    ctx.caller,
+                    payload.topic.as_str(),
+                    &payload.config_delta,
+                    payload.change_count,
+                    &cert,
+                )
             {
                 return Err($crate::LyquidError::InputCert);
             }

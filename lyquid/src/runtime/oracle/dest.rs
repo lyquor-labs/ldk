@@ -146,6 +146,8 @@ pub struct OracleDest {
     config: OracleConfig,
     // Hash of _config for the topic.
     config_hash: HashBytes,
+    // Source-staged operation count consumed to reach the active epoch.
+    change_count: u32,
     // Nonce of settled calls in the current epoch, used to ensure a certified call is at most
     // invoked once.
     used_nonce: HashSet<Hash>,
@@ -158,6 +160,7 @@ impl Default for OracleDest {
         Self {
             config: OracleConfig::new(),
             config_hash: [0; 32].into(),
+            change_count: 0,
             used_nonce: new_hashset(),
             epoch: 0,
         }
@@ -176,6 +179,10 @@ impl OracleDest {
 
     pub fn get_config_hash(&self) -> &HashBytes {
         &self.config_hash
+    }
+
+    pub fn get_change_count(&self) -> u32 {
+        self.change_count
     }
 
     pub fn get_config(&self) -> lyquor_primitives::oracle::OracleConfig {
@@ -215,7 +222,7 @@ impl OracleDest {
         true
     }
 
-    fn update(&mut self, header: &OracleHeader, next_config: Option<OracleConfig>) -> bool {
+    fn update(&mut self, header: &OracleHeader, next_config: Option<OracleConfig>, change_count: u32) -> bool {
         let update_config = next_config.is_some();
         let nonce: Hash = header.nonce.clone().into();
         let epoch_delta = match header.epoch.checked_sub(self.epoch) {
@@ -237,6 +244,7 @@ impl OracleDest {
                 }
                 self.epoch = header.epoch;
                 self.used_nonce.clear();
+                self.change_count = change_count;
                 if let Some(config) = next_config {
                     self.config = config;
                     self.config_hash = header.config_hash.clone();
@@ -265,11 +273,12 @@ impl OracleDest {
             // Invalid call certificate.
             return false;
         }
-        self.update(&oc.header, None)
+        self.update(&oc.header, None, self.change_count)
     }
 
     pub fn verify_epoch_advance(
-        &mut self, me: LyquidID, caller: Address, topic: &str, config_delta: &OracleConfigDeltaWire, oc: &OracleCert,
+        &mut self, me: LyquidID, caller: Address, topic: &str, config_delta: &OracleConfigDeltaWire, change_count: u32,
+        oc: &OracleCert,
     ) -> bool {
         let params = CallParams {
             origin: Address::ZERO,
@@ -278,7 +287,8 @@ impl OracleDest {
             method: ADVANCE_EPOCH_METHOD.into(),
             input: encode_by_fields!(
                 topic: String = topic.to_string(),
-                config_delta: OracleConfigDeltaWire = config_delta.clone()
+                config_delta: OracleConfigDeltaWire = config_delta.clone(),
+                change_count: u32 = change_count
             )
             .into(),
             abi: InputABI::Lyquor,
@@ -308,6 +318,6 @@ impl OracleDest {
         if verify_oracle_cert(oc, &params, &self.config).is_err() {
             return false;
         }
-        self.update(&oc.header, next_config)
+        self.update(&oc.header, next_config, change_count)
     }
 }

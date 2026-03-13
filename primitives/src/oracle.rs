@@ -49,6 +49,7 @@ pub struct OracleHeader {
 pub struct OracleEpochInfo {
     pub epoch: u32,
     pub config_hash: HashBytes,
+    pub change_count: u32,
     pub config: Option<OracleConfig>,
 }
 
@@ -130,7 +131,7 @@ pub fn topic_from_dispatch_group(group: &str) -> &str {
 
 pub mod eth {
     use crate::{Address, decode_by_fields};
-    use alloy_sol_types::{SolType, sol};
+    use alloy_sol_types::{SolValue, sol};
     sol! {
         struct OracleHeader {
             bytes32 topic;
@@ -186,7 +187,7 @@ pub mod eth {
 
     impl OracleConfig {
         pub fn to_hash(&self) -> super::Hash {
-            alloy_primitives::keccak256(OracleConfig::abi_encode(self)).0.into()
+            alloy_primitives::keccak256(SolValue::abi_encode(self)).0.into()
         }
     }
 
@@ -217,7 +218,7 @@ pub mod eth {
 
         pub fn to_preimage(&self) -> Vec<u8> {
             let mut buf = Vec::from(Self::PREFIX);
-            buf.extend_from_slice(&Self::abi_encode(self));
+            buf.extend_from_slice(&SolValue::abi_encode(self));
             buf
         }
 
@@ -288,12 +289,13 @@ pub mod eth {
                 let payload = decode_by_fields!(
                     params.input.as_ref(),
                     topic: String,
-                    config_delta: super::OracleConfigDelta
+                    config_delta: super::OracleConfigDelta,
+                    change_count: u32
                 )
                 .ok_or(())?;
                 let config_delta = OracleConfigDelta::try_from(payload.config_delta)?;
                 let topic = payload.topic;
-                let input = OracleConfigDelta::abi_encode(&config_delta);
+                let input = (config_delta, payload.change_count).abi_encode_params();
                 (topic, input)
             } else {
                 (
