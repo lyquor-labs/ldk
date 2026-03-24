@@ -26,7 +26,7 @@ services:
   setup-devnet:
     image: ghcr.io/lyquor-labs/lyquor-tools:main-latest
     pull_policy: always
-    command: /usr/local/bin/setup-devnet -b /ldk/bartender/Cargo.toml
+    command: /usr/local/bin/shaker deploy /ldk/bartender/Cargo.toml --is-bartender
     environment:
       - LYQUOR_ENDPOINT=ws://node:10087/ws
     volumes:

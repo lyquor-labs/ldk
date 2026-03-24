@@ -265,7 +265,7 @@ setup_foundry() {
 
 needs_lyquor_update() {
     local bin_dir="$1" ldk_dir="$2" version_file="$3" latest_filename="$4"
-    local tools=(lyquor ladle setup-devnet shaker)
+    local tools=(lyquor ladle shaker)
     
     # Check if tools and LDK exist
     if ! all_tools_exist "$bin_dir" "${tools[@]}" || ! [[ -d "$ldk_dir" && -n "$(ls -A "$ldk_dir" 2>/dev/null)" ]]; then
@@ -325,7 +325,7 @@ rm -rf lyquor_db && LYQUOR_LOG=${LYQUOR_LOG:-info} "$SCRIPT_DIR/lyquor" &
 pid=$!
 trap 'echo "Received signal, stopping devnet node..."; kill -INT "$pid" 2>/dev/null; wait "$pid"; exit' INT TERM
 sleep 1
-if ! "$SCRIPT_DIR/setup-devnet" -b "$SCRIPT_DIR/../ldk/bartender/Cargo.toml" > /dev/null; then
+if ! "$SCRIPT_DIR/shaker" deploy "$SCRIPT_DIR/../ldk/bartender/Cargo.toml" --is-bartender > /dev/null; then
     kill -INT "$pid" 2>/dev/null; wait "$pid"; exit 1
 fi
 wait "$pid"
