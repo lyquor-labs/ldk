@@ -117,10 +117,22 @@ x509-parser = "0.18.0"
 [profile.dev.package.cranelift-codegen]
 opt-level = 2
 
+[profile.dev.package.cranelift-frontend]
+opt-level = 2
+
+[profile.dev.package.cranelift-native]
+opt-level = 2
+
+[profile.dev.package.regalloc2]
+opt-level = 2
+
 [profile.dev.package.wasmtime-environ]
 opt-level = 1
 
 [profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 2
+
+[profile.dev.package.wasmtime-internal-unwinder]
 opt-level = 1
 
 [profile.dev.package.cranelift-isle]
