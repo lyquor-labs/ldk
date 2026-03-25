@@ -15,8 +15,8 @@ services:
       - -lc
       - |
         set -euo pipefail
-        until curl --data '{"id":1,"jsonrpc":"2.0","params":[],"method":"eth_chainId"}' --header 'accept: application/json' --header 'content-type: application/json' -sf http://node:10087/api >/dev/null; do sleep 1; done
-        curl --data '{"lyquidId":""}' --header 'accept: application/json' --header 'content-type: application/json' -sf http://node:10087/lyquor.lyquid.v1.LyquidService/GetLyquidInfo | grep contract ||
+        until curl --data '{}' --header 'content-type: application/json' -sf http://node:10087/lyquor.node.v1.NodeService/GetNodeInfo >/dev/null; do sleep 1; done
+        curl --data '{}' --header 'content-type: application/json' -sf http://node:10087/lyquor.lyquid.v1.LyquidService/GetLyquidInfo | grep contract ||
           /usr/local/bin/shaker deploy --is-bartender --reference ghcr.io/lyquor-labs/lyquids:bartender-main-latest --endpoint ws://node:10087/ws
     environment:
       - LYQUOR_ENDPOINT=ws://node:10087/ws

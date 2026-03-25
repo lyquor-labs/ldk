@@ -61,20 +61,18 @@ Inside the Docker network:
 
 ## Quick Health Checks
 
-Check chain ID via node1 API:
+Check node info via node1 API:
 
 ```bash
-curl --data '{"id":1,"jsonrpc":"2.0","params":[],"method":"eth_chainId"}' \
-  --header 'accept: application/json' \
+curl --data '{}' \
   --header 'content-type: application/json' \
-  -s http://localhost:10087/api
+  -s http://localhost:10087/lyquor.node.v1.NodeService/GetNodeInfo
 ```
 
 Check that a Lyquid is deployed (after bootstrap):
 
 ```bash
-curl --data '{"lyquidId":""}' \
-  --header 'accept: application/json' \
+curl --data '{}' \
   --header 'content-type: application/json' \
   -s http://localhost:10087/lyquor.lyquid.v1.LyquidService/GetLyquidInfo
 ```

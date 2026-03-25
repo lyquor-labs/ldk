@@ -39,20 +39,18 @@ docker compose -f docker/single/docker-compose.yaml ps
 
 ## Quick Health Checks
 
-Check chain ID:
+Check node info:
 
 ```bash
-curl --data '{"id":1,"jsonrpc":"2.0","params":[],"method":"eth_chainId"}' \
-  --header 'accept: application/json' \
+curl --data '{}' \
   --header 'content-type: application/json' \
-  -s http://localhost:10087/api
+  -s http://localhost:10087/lyquor.node.v1.NodeService/GetNodeInfo
 ```
 
 Check deployed Lyquid info:
 
 ```bash
-curl --data '{"lyquidId":""}' \
-  --header 'accept: application/json' \
+curl --data '{}' \
   --header 'content-type: application/json' \
   -s http://localhost:10087/lyquor.lyquid.v1.LyquidService/GetLyquidInfo
 ```
