@@ -1,0 +1,103 @@
+x-node-defaults: &node_defaults
+  image: ghcr.io/lyquor-labs/lyquor-node:main-latest
+  pull_policy: always
+  expose:
+    - "10080"
+  depends_on:
+    anvil:
+      condition: service_started
+    registry:
+      condition: service_started
+
+x-setup-devnet-command: &setup_devnet_command |
+  set -euo pipefail
+  until curl --data '{"id":1,"jsonrpc":"2.0","params":[],"method":"eth_chainId"}' --header 'accept: application/json' --header 'content-type: application/json' -sf http://node1:10087/api >/dev/null; do sleep 1; done
+  curl --data '{"lyquidId":""}' --header 'accept: application/json' --header 'content-type: application/json' -sf http://node1:10087/lyquor.lyquid.v1.LyquidService/GetLyquidInfo | grep contract ||
+    /usr/local/bin/shaker deploy --is-bartender --reference ghcr.io/lyquor-labs/lyquids:bartender-main-latest --endpoint ws://node1:10087/ws
+
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:v1.5.0
+    entrypoint: ["anvil", "--host", "0.0.0.0", "--port", "8545", "--state", "/home/foundry/anvil-state.json"]
+    expose:
+      - "8545"
+    volumes:
+      - anvil-state:/home/foundry
+
+  registry:
+    image: registry:3
+    ports:
+      - "8000:8000"
+    environment:
+      REGISTRY_HTTP_ADDR: 0.0.0.0:8000
+      REGISTRY_LOG_LEVEL: error
+      REGISTRY_LOG_ACCESSLOG_DISABLED: "true"
+      OTEL_TRACES_EXPORTER: none
+    volumes:
+      - registry-data:/var/lib/registry
+
+  node1:
+    <<: *node_defaults
+    command: ["/usr/local/bin/lyquor", "--config", "/config/node1.toml"]
+    environment:
+      # Modify this line to change Node 1's log level (debug/info/warn/error).
+      - LYQUOR_LOG=
+    ports:
+      - "10087:10087"
+    volumes:
+      - node1-data:/opt
+      - ./node1.toml:/config/node1.toml:ro
+
+  node2:
+    <<: *node_defaults
+    command: ["/usr/local/bin/lyquor", "--config", "/config/node2.toml"]
+    ports:
+      - "11087:10087"
+    volumes:
+      - node2-data:/opt
+      - ./node2.toml:/config/node2.toml:ro
+
+  node3:
+    <<: *node_defaults
+    command: ["/usr/local/bin/lyquor", "--config", "/config/node3.toml"]
+    ports:
+      - "12087:10087"
+    volumes:
+      - node3-data:/opt
+      - ./node3.toml:/config/node3.toml:ro
+
+  node4:
+    <<: *node_defaults
+    command: ["/usr/local/bin/lyquor", "--config", "/config/node4.toml"]
+    ports:
+      - "13087:10087"
+    volumes:
+      - node4-data:/opt
+      - ./node4.toml:/config/node4.toml:ro
+
+  setup-devnet:
+    image: ghcr.io/lyquor-labs/lyquor-tools:main-latest
+    pull_policy: always
+    command:
+      - /bin/bash
+      - -lc
+      - *setup_devnet_command
+    environment:
+      - LYQUOR_ENDPOINT=ws://node1:10087/ws
+    depends_on:
+      node1:
+        condition: service_started
+
+volumes:
+  anvil-state:
+    external: false
+  node1-data:
+    external: false
+  node2-data:
+    external: false
+  node3-data:
+    external: false
+  node4-data:
+    external: false
+  registry-data:
+    external: false

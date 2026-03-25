@@ -1,0 +1,29 @@
+services:
+  node:
+    image: ghcr.io/lyquor-labs/lyquor-node:main-latest
+    pull_policy: always
+    ports:
+      - "10087:10087"
+    volumes:
+      - node-data:/opt
+
+  setup-devnet:
+    image: ghcr.io/lyquor-labs/lyquor-tools:main-latest
+    pull_policy: always
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        until curl --data '{"id":1,"jsonrpc":"2.0","params":[],"method":"eth_chainId"}' --header 'accept: application/json' --header 'content-type: application/json' -sf http://node:10087/api >/dev/null; do sleep 1; done
+        curl --data '{"lyquidId":""}' --header 'accept: application/json' --header 'content-type: application/json' -sf http://node:10087/lyquor.lyquid.v1.LyquidService/GetLyquidInfo | grep contract ||
+          /usr/local/bin/shaker deploy --is-bartender --reference ghcr.io/lyquor-labs/lyquids:bartender-main-latest --endpoint ws://node:10087/ws
+    environment:
+      - LYQUOR_ENDPOINT=ws://node:10087/ws
+    depends_on:
+      node:
+        condition: service_started
+
+volumes:
+  node-data:
+    external: false

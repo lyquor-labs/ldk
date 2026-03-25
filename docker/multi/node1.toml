@@ -1,0 +1,26 @@
+[profile]
+base = "devnet"
+sequencer = "ws://anvil:8545"
+
+[node_key]
+type = "seed"
+value = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+[network]
+api_addr = "0.0.0.0:10087"
+upc_addr = "0.0.0.0:10080"
+
+[image]
+fallback_repos = ["http://registry:8000/lyquids", "ghcr.io/lyquor-labs/lyquids"]
+
+[[peers]]
+node_id = "Node-j3fcdy5twah7csa6pr4jhgxcvszycxdms2hsen5m7lrvtezqlv52cqaa"
+upc_addr = "node2:10080"
+
+[[peers]]
+node_id = "Node-2folhfgf4kuyfdenaq3l4dnamv7yxrnqq3zbp64thfa5esqgxhv6wzqa"
+upc_addr = "node3:10080"
+
+[[peers]]
+node_id = "Node-oq2lcra5u4ksufzsv2ciqbl56dkp5c653ikzkx3lh62tai566d7dseia"
+upc_addr = "node4:10080"
