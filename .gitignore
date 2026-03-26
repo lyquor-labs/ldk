@@ -5,5 +5,6 @@ node_modules
 lyquid_tools_target/
 /lyquid_image_db/
 /lyquor_db/
+/lyquor_data/
 .DS_Store
 /lyquor_certs/
