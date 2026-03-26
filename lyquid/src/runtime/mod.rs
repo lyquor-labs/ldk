@@ -11,7 +11,7 @@ use std::alloc;
 
 use allocator::Talck;
 use lyquor_primitives::{Cipher, ConsoleSink, LyteLog, StateCategory};
-use talc::{ErrOnOom, Span, Talc};
+use talc::{base::Talc, source::Manual};
 
 use super::http;
 use super::{
@@ -42,19 +42,19 @@ struct VolatileSegmentHeader {
     /// 0x1 -- instance
     /// 0x2 -- network
     category: u8,
-    allocator: Talck<ErrOnOom>,
+    allocator: Talck,
 }
 
 #[repr(C)]
 struct NetworkSegmentHeader {
-    allocator: Talck<ErrOnOom>,
+    allocator: Talck,
     /// an empty LyteMemory will mark it as "false".
     initialized: bool,
 }
 
 #[repr(C)]
 struct InstanceSegmentHeader {
-    allocator: Talck<ErrOnOom>,
+    allocator: Talck,
 }
 
 #[inline(always)]
@@ -170,16 +170,12 @@ fn initialize_volatile_heap(category: u8) {
     // always initialize the allocator for volatile memory
     let volatile_header = volatile_segment_header();
     volatile_header.category = category;
-    volatile_header.allocator = Talck::new(Talc::new(ErrOnOom));
+    volatile_header.allocator = Talck::new(Talc::new(Manual));
     unsafe {
-        volatile_header
-            .allocator
-            .lock()
-            .claim(Span::from_base_size(
-                VOLATILE_HEAP_BASE as *mut u8,
-                VOLATILE_SEGMENT_SIZE - VOLATILE_HEADER_SIZE,
-            ))
-            .ok();
+        let _ = volatile_header.allocator.lock().claim(
+            VOLATILE_HEAP_BASE as *mut u8,
+            VOLATILE_SEGMENT_SIZE - VOLATILE_HEADER_SIZE,
+        );
     }
 }
 
@@ -194,19 +190,22 @@ fn initialize_persistent_heap() -> Option<u32> {
         // already previously initialized
         0
     } else {
-        let network_span =
-            Span::from_base_size(NETWORK_HEAP_BASE as *mut u8, NETWORK_SEGMENT_SIZE - NETWORK_HEADER_SIZE);
-        let instance_span = Span::from_base_size(
-            INSTANCE_HEAP_BASE as *mut u8,
-            INSTANCE_SEGMENT_SIZE - INSTANCE_HEADER_SIZE - 1,
-        ); // minus 1 to avoid 32-bit overflow when Span calculcates the higher end of the span
+        // minus 1 to avoid 32-bit overflow when calculating the higher end of the span
+        let network_size = NETWORK_SEGMENT_SIZE - NETWORK_HEADER_SIZE;
+        let instance_size = INSTANCE_SEGMENT_SIZE - INSTANCE_HEADER_SIZE - 1;
 
-        network_header.allocator = Talck::new(Talc::new(ErrOnOom));
-        instance_header.allocator = Talck::new(Talc::new(ErrOnOom));
+        network_header.allocator = Talck::new(Talc::new(Manual));
+        instance_header.allocator = Talck::new(Talc::new(Manual));
         unsafe {
             // otherwise initialize the allocators only once
-            network_header.allocator.lock().claim(network_span).ok()?;
-            instance_header.allocator.lock().claim(instance_span).ok()?;
+            network_header
+                .allocator
+                .lock()
+                .claim(NETWORK_HEAP_BASE as *mut u8, network_size)?;
+            instance_header
+                .allocator
+                .lock()
+                .claim(INSTANCE_HEAP_BASE as *mut u8, instance_size)?;
         }
         network_header.initialized = true;
         1

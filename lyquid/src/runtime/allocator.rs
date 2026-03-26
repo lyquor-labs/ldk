@@ -1,14 +1,15 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 use super::Mutex;
-use talc::{OomHandler, Talc};
+use talc::{DefaultBinning, base::Talc, source::Manual};
 
 use core::{
     alloc::{GlobalAlloc, Layout},
     cmp::Ordering,
-    ptr::{NonNull, null_mut},
+    ptr::null_mut,
 };
 
 const RELEASE_LOCK_ON_REALLOC_LIMIT: usize = 0x10000;
+type TalcInner = Talc<Manual, DefaultBinning>;
 
 /// Talc lock, contains a mutex-locked [`Talc`].
 ///
@@ -19,42 +20,40 @@ const RELEASE_LOCK_ON_REALLOC_LIMIT: usize = 0x10000;
 /// let talck = talc.lock::<spin::Mutex<()>>();
 /// ```
 #[derive(Debug)]
-pub struct Talck<O: OomHandler> {
-    mutex: Mutex<Talc<O>>,
+pub struct Talck {
+    mutex: Mutex<TalcInner>,
 }
 
-impl<O: OomHandler> Talck<O> {
+impl Talck {
     /// Create a new `Talck`.
-    pub const fn new(talc: Talc<O>) -> Self {
+    pub const fn new(talc: TalcInner) -> Self {
         Self {
             mutex: Mutex::new(talc),
         }
     }
 
     /// Lock the mutex and access the inner `Talc`.
-    pub fn lock(&self) -> super::MutexGuard<'_, Talc<O>> {
+    pub fn lock(&self) -> super::MutexGuard<'_, TalcInner> {
         self.mutex.lock()
     }
 }
 
-unsafe impl<O: OomHandler> GlobalAlloc for Talck<O> {
+unsafe impl GlobalAlloc for Talck {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.lock().malloc(layout).map_or(null_mut(), |nn| nn.as_ptr())
+        self.lock().allocate(layout).map_or(null_mut(), |nn| nn.as_ptr())
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.lock().free(NonNull::new_unchecked(ptr), layout)
+        self.lock().deallocate(ptr, layout)
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
-        let nn_ptr = NonNull::new_unchecked(ptr);
-
         match new_size.cmp(&old_layout.size()) {
             Ordering::Greater => {
                 // first try to grow in-place before manually re-allocating
 
-                if let Ok(nn) = self.lock().grow_in_place(nn_ptr, old_layout, new_size) {
-                    return nn.as_ptr();
+                if self.lock().try_grow_in_place(ptr, old_layout, new_size) {
+                    return ptr;
                 }
 
                 // grow in-place failed, reallocate manually
@@ -62,25 +61,25 @@ unsafe impl<O: OomHandler> GlobalAlloc for Talck<O> {
                 let new_layout = Layout::from_size_align_unchecked(new_size, old_layout.align());
 
                 let mut lock = self.lock();
-                let allocation = match lock.malloc(new_layout) {
-                    Ok(ptr) => ptr,
-                    Err(_) => return null_mut(),
+                let allocation = match lock.allocate(new_layout) {
+                    Some(ptr) => ptr.as_ptr(),
+                    None => return null_mut(),
                 };
 
                 if old_layout.size() > RELEASE_LOCK_ON_REALLOC_LIMIT {
                     drop(lock);
-                    allocation.as_ptr().copy_from_nonoverlapping(ptr, old_layout.size());
+                    allocation.copy_from_nonoverlapping(ptr, old_layout.size());
                     lock = self.lock();
                 } else {
-                    allocation.as_ptr().copy_from_nonoverlapping(ptr, old_layout.size());
+                    allocation.copy_from_nonoverlapping(ptr, old_layout.size());
                 }
 
-                lock.free(nn_ptr, old_layout);
-                allocation.as_ptr()
+                lock.deallocate(ptr, old_layout);
+                allocation
             }
 
             Ordering::Less => {
-                self.lock().shrink(NonNull::new_unchecked(ptr), old_layout, new_size);
+                self.lock().shrink(ptr, old_layout, new_size);
                 ptr
             }
 
