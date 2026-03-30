@@ -325,16 +325,28 @@ macro_rules! log {
 }
 
 /// Initiate a inter-lyquid call. **Only usable by network functions.**
+///
+/// This macro has strict atomic semantics: if the underlying host inter-call
+/// fails, or its output cannot be decoded, it traps the current slot so the
+/// whole sequenced execution unwinds together instead of letting guest code
+/// catch the error and continue.
 /// FIXME: enforce this at compile time.
 #[macro_export]
 macro_rules! call {
-    (($service: expr).$method :ident($($var:ident: $type:ty = $val: expr),*) -> ($($ovar:ident: $otype:ty),*)) => {
-        lyquor_api::inter_lyquid_call(
+    (($service: expr).$method :ident($($var:ident: $type:ty = $val: expr),*) -> ($($ovar:ident: $otype:ty),*)) => {{
+        let returned = match lyquor_api::inter_lyquid_call(
             $service,
             stringify!($method).to_string().into(),
             Vec::from(&$crate::prelude::encode_by_fields!($($var: $type = $val),*)[..]),
-        ).and_then(|r| $crate::prelude::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
-    };
+        ) {
+            Ok(returned) => returned,
+            Err(err) => $crate::runtime::internal::abort_atomic_inter_call(err),
+        };
+        match $crate::prelude::decode_by_fields!(&returned, $($ovar: $otype),*) {
+            Some(decoded) => decoded,
+            None => $crate::runtime::internal::abort_atomic_inter_call($crate::LyquidError::LyquorOutput),
+        }
+    }};
 }
 
 /// Submit a certified call to the sequencing backend. Returns the backend-specific

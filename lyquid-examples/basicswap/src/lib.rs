@@ -27,21 +27,21 @@ const FEE_FACTOR: U256 = uint!(997_U256);
 const BPS_DENOMINATOR: U256 = uint!(10_000_U256);
 
 fn _safe_transfer(token: LyquidID, to: Address, amount: U256) -> LyquidResult<()> {
-    if !call!((token).transfer(to: Address = to, amount: U256 = amount) -> (success: LyquidResult<bool>))?.success? {
+    if !call!((token).transfer(to: Address = to, amount: U256 = amount) -> (success: LyquidResult<bool>)).success? {
         return Err(LyquidError::LyquidRuntime("TRANSFER_FAILED".into()));
     }
     Ok(())
 }
 
 fn _safe_transfer_from(token: LyquidID, from: Address, to: Address, amount: U256) -> LyquidResult<()> {
-    if !call!((token).transferFrom(from: Address = from, to: Address = to, value: U256 = amount) -> (success: LyquidResult<bool>))?.success? {
+    if !call!((token).transferFrom(from: Address = from, to: Address = to, value: U256 = amount) -> (success: LyquidResult<bool>)).success? {
         return Err(LyquidError::LyquidRuntime("TRANSFER_FROM_FAILED".into()));
     }
     Ok(())
 }
 
 fn _get_token_balance(token: LyquidID, account: Address) -> LyquidResult<U256> {
-    Ok(call!((token).balanceOf(account: Address = account) -> (balance: LyquidResult<U256>))?.balance?)
+    Ok(call!((token).balanceOf(account: Address = account) -> (balance: LyquidResult<U256>)).balance?)
 }
 
 fn _get_amount_out(amount_in: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {

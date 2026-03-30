@@ -30,6 +30,17 @@ impl HostInput {
     }
 }
 
+/// Abort the current network-slot execution by forcing a guest trap.
+///
+/// `call!` uses this to enforce strict atomic inter-call semantics: once an
+/// inter-lyquid call fails, guest code must not continue running and the
+/// current sequenced slot should unwind as a single reverted batch.
+#[cold]
+#[inline(never)]
+pub fn abort_atomic_inter_call(err: LyquidError) -> ! {
+    panic!("atomic inter-call aborted: {err}")
+}
+
 #[inline]
 pub fn output_to_host(output: &[u8]) -> u64 {
     let output_len = output.len() as u32;
