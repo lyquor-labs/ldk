@@ -60,7 +60,7 @@ lyquor-oci = { path = "oci" }
 lyquor-primitives = { path = "primitives" }
 lyquor-proto = { path = "proto" }
 lyquor-router = { path = "router" }
-lyquor-seq = { path = "sequencer" }
+lyquor-seq = { path = "seq" }
 lyquor-state = { path = "state" }
 lyquor-test = { path = "test" }
 lyquor-test-harness = { path = "test-harness" }
