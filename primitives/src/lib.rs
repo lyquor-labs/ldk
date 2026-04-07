@@ -142,8 +142,6 @@ pub enum TriggerMode {
     Once(u64),
     /// Trigger once after the current slot commits successfully.
     Commit,
-    /// Trigger once immediately and wait for completion.
-    Sync,
     /// Stop the trigger (remove it from the registry).
     Stop,
 }
