@@ -12,6 +12,7 @@ For the single-node topology, see `docker/single/`.
 
 - Starts a full-mesh UPC peer network across 4 nodes.
 - Uses deterministic node seeds in `node1.toml`..`node4.toml` so peer IDs are stable.
+- Sets `LYQUOR_ETH_SUBMITTER_KEY` on all nodes (Anvil key0) so oracle epoch advance/finalize internal submits can be sequenced.
 - Exposes each node API port on the host.
 - Persists Anvil chain state in a Docker volume.
 - Starts/uses a local OCI registry on host port `8000`.

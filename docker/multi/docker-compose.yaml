@@ -42,6 +42,8 @@ services:
     environment:
       # Modify this line to change Node 1's log level (debug/info/warn/error).
       - LYQUOR_LOG=
+      # Matches test-harness default so oracle epoch internal submits can sign.
+      - LYQUOR_ETH_SUBMITTER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
     ports:
       - "10087:10087"
     volumes:
@@ -51,6 +53,8 @@ services:
   node2:
     <<: *node_defaults
     command: ["/usr/local/bin/lyquor", "--config", "/config/node2.toml"]
+    environment:
+      - LYQUOR_ETH_SUBMITTER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
     ports:
       - "11087:10087"
     volumes:
@@ -60,6 +64,8 @@ services:
   node3:
     <<: *node_defaults
     command: ["/usr/local/bin/lyquor", "--config", "/config/node3.toml"]
+    environment:
+      - LYQUOR_ETH_SUBMITTER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
     ports:
       - "12087:10087"
     volumes:
@@ -69,6 +75,8 @@ services:
   node4:
     <<: *node_defaults
     command: ["/usr/local/bin/lyquor", "--config", "/config/node4.toml"]
+    environment:
+      - LYQUOR_ETH_SUBMITTER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
     ports:
       - "13087:10087"
     volumes:

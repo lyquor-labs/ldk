@@ -262,7 +262,14 @@ pub mod lyquor_api {
         chain_pos() -> ChainPos;
         log(record: LyteLog);
         console_output(output: ConsoleSink, s: String);
-        universal_procedural_call(target: LyquidID, group: Option<String>, method: String, input: Vec<u8>, client_params: Option<Bytes>) -> Vec<u8>;
+        universal_procedural_call(
+            target: LyquidID,
+            group: Option<String>,
+            method: String,
+            input: Vec<u8>,
+            client_params: Option<Bytes>,
+            timeout_ms: Option<u64>
+        ) -> Vec<u8>;
         inter_lyquid_call(target: LyquidID, method: String, input: Vec<u8>) -> Vec<u8>;
         submit_call(params: lyquor_primitives::CallParams, signed: bool) -> Vec<u8>;
         sign(msg: Bytes, cipher: Cipher) -> Bytes;
@@ -392,6 +399,7 @@ macro_rules! upc {
             stringify!($method).to_string().into(),
             Vec::from(&$crate::prelude::encode_by_fields!($($var: $type = $val),*)[..]),
             None,
+            None,
         ).and_then(|r| $crate::prelude::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
     };
 
@@ -402,6 +410,7 @@ macro_rules! upc {
             stringify!($method).to_string().into(),
             Vec::from(&$crate::prelude::encode_by_fields!($($var: $type = $val),*)[..]),
             Some($crate::prelude::encode_by_fields!($($params: $params_type = $params_val),*).into()),
+            None,
         ).and_then(|r| $crate::prelude::decode_by_fields!(&r, $($ovar: $otype),*).ok_or(LyquidError::LyquorOutput))
     };
 }

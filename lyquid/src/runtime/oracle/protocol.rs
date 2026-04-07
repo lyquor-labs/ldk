@@ -190,7 +190,7 @@ fn random_cert_nonce() -> Option<HashBytes> {
 fn validate_phase(
     lyquid_id: LyquidID, proposer: NodeID, group_suffix: &str, target: OracleTarget, epoch: u32,
     config_hash: HashBytes, mut params: CallParams, extra: Bytes, config: OracleConfig,
-    nonce_fn: impl FnOnce() -> Option<HashBytes>,
+    nonce_fn: impl FnOnce() -> Option<HashBytes>, timeout_ms: Option<u64>,
 ) -> LyquidResult<Option<CallParams>> {
     let nonce = nonce_fn().ok_or_else(|| LyquidError::LyquidRuntime("NEAT: failed to generate nonce.".into()))?;
     let callee = config.committee.keys().cloned().collect::<Vec<_>>();
@@ -242,6 +242,7 @@ fn validate_phase(
             )
             .into(),
         ),
+        timeout_ms,
     )
     .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))
     .map(|cert: Option<OracleCert>| {
@@ -254,7 +255,7 @@ fn validate_phase(
 
 fn certify<S: crate::runtime::internal::StateAccessor, I: crate::runtime::internal::StateAccessor>(
     ctx: &mut crate::runtime::InstanceContextImpl<S, I>, topic: &str, params: CertifiedCallParams, extra: Bytes,
-    group_suffix: Option<&'static str>,
+    group_suffix: Option<&'static str>, timeout_ms: Option<u64>,
 ) -> LyquidResult<Option<CallParams>> {
     let lyquid = ctx.lyquid_id;
     let Some(source) = crate::runtime::internal::builtin_network_state()
@@ -290,12 +291,13 @@ fn certify<S: crate::runtime::internal::StateAccessor, I: crate::runtime::intern
         extra,
         config,
         random_cert_nonce,
+        timeout_ms,
     )
 }
 
 fn propose_and_certify<S: crate::runtime::internal::StateAccessor, I: crate::runtime::internal::StateAccessor>(
     ctx: &mut crate::runtime::InstanceContextImpl<S, I>, topic: &str, target: OracleTarget, init: Bytes,
-    group_suffix: Option<&'static str>,
+    group_suffix: Option<&'static str>, timeout_ms: Option<u64>,
 ) -> LyquidResult<Option<CallParams>> {
     let lyquid = ctx.lyquid_id;
     let Some(source) = crate::runtime::internal::builtin_network_state()
@@ -332,6 +334,7 @@ fn propose_and_certify<S: crate::runtime::internal::StateAccessor, I: crate::run
             )
             .into(),
         ),
+        timeout_ms,
     )
     .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))?;
 
@@ -372,6 +375,7 @@ fn propose_and_certify<S: crate::runtime::internal::StateAccessor, I: crate::run
         .into(),
         config,
         || Some(cert_nonce),
+        timeout_ms,
     )
 }
 
@@ -415,6 +419,7 @@ fn advance_epoch<S: crate::runtime::internal::StateAccessor, I: crate::runtime::
         Bytes::new(),
         config,
         random_cert_nonce,
+        None,
     )
 }
 
@@ -478,6 +483,7 @@ fn finalize_epoch<S: crate::runtime::internal::StateAccessor, I: crate::runtime:
         Bytes::new(),
         source_config,
         random_cert_nonce,
+        None,
     )
 }
 
@@ -487,9 +493,9 @@ impl<'a> StateVar<'a> {
     #[inline]
     pub fn certify<S: crate::runtime::internal::StateAccessor, I: crate::runtime::internal::StateAccessor>(
         &self, ctx: &mut crate::runtime::InstanceContextImpl<S, I>, params: CertifiedCallParams, extra: Bytes,
-        group_suffix: Option<&'static str>,
+        group_suffix: Option<&'static str>, timeout_ms: Option<u64>,
     ) -> LyquidResult<Option<CallParams>> {
-        certify(ctx, self.topic(), params, extra, group_suffix)
+        certify(ctx, self.topic(), params, extra, group_suffix, timeout_ms)
     }
 
     /// Generate a self-certified call bundle under the oracle topic to be sequenced by the target
@@ -528,9 +534,9 @@ impl<'a> StateVar<'a> {
         I: crate::runtime::internal::StateAccessor,
     >(
         &self, ctx: &mut crate::runtime::InstanceContextImpl<S, I>, target: OracleTarget, init: Bytes,
-        group_suffix: Option<&'static str>,
+        group_suffix: Option<&'static str>, timeout_ms: Option<u64>,
     ) -> LyquidResult<Option<CallParams>> {
-        propose_and_certify(ctx, self.topic(), target, init, group_suffix)
+        propose_and_certify(ctx, self.topic(), target, init, group_suffix, timeout_ms)
     }
 
     /// Generate an epoch-advance certificate for the target chain, carrying the current staged
