@@ -104,7 +104,7 @@ tokio-util = { version = "0.7", features = ["rt", "time"] }
 tonic = { version = "0.14", features = ["transport", "tls-native-roots"] }
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
-tower = { version = "0.5" }
+tower = { version = "0.5", features = ["util"] }
 tracing = { version = "0.1" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
