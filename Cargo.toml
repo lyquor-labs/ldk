@@ -92,7 +92,7 @@ scc = "3.5"
 schemars = "1.1"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = "1.0.147"
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 syn = "2.0"
 tempfile = { version = "3.27" }
 testcontainers = "0.27.1"
@@ -109,7 +109,7 @@ tracing = { version = "0.1" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typed-builder = "0.23"
-wasmparser = "0.245.1"
+wasmparser = "0.246.2"
 x509-parser = "0.18.0"
 
 # These crates run hot during Wasmtime JIT compilation (module lowering, instruction selection,

@@ -38,7 +38,7 @@ highlight = "all"
 allow = []
 deny = []
 skip = []
-skip-tree = []
+skip-tree = [{ name = "alloy-primitives", reason = "some underlying library conflict with sha3" }]
 
 [bans.workspace-dependencies]
 duplicates = "deny"
