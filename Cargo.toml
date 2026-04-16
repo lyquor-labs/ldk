@@ -53,7 +53,6 @@ lyquor-eth = { path = "eth" }
 lyquor-image-store = { path = "image-store" }
 lyquor-jsonrpc = { path = "jsonrpc" }
 lyquor-net = { path = "net" }
-lyquor-net-rpc = { path = "net/rpc" }
 lyquor-oci = { path = "oci" }
 lyquor-primitives = { path = "primitives" }
 lyquor-proto = { path = "proto" }
@@ -79,7 +78,7 @@ prost-build = "0.14"
 prost-types = "0.14"
 protoc-bin-vendored = "3.2"
 quote = "1.0"
-rand = "0.10"
+rand = "0.10.1"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 regex = "1.11.2"
 reqwest = { version = "0.13.1", default-features = false }
