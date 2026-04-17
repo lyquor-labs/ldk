@@ -430,30 +430,12 @@ fn finalize_epoch<S: crate::runtime::internal::StateAccessor, I: crate::runtime:
     let Some(target_info) = lyquor_api::fetch_oracle_info(topic.to_string(), target, false)? else {
         return Ok(None);
     };
-    let source = OracleTarget {
-        seq_id: lyquor_api::sequence_backend_id()?,
-        target: OracleServiceTarget::LVM(ctx.lyquid_id),
-    };
-    let Some(source_state) = crate::runtime::internal::builtin_network_state()
+    let Some((source_epoch, source_hash, source_config)) = crate::runtime::internal::builtin_network_state()
         .oracle_src(topic)
-        .and_then(|oracle| oracle.source_state(source))
+        .and_then(|oracle| oracle.source_state(target))
+        .and_then(|state| state.finalize_cert_context(target_info.change_count))
     else {
         return Ok(None);
-    };
-    let (source_epoch, source_config, source_hash) = if target == source {
-        match source_state.materialize_prefix(target_info.change_count) {
-            Some((config, _)) if config.is_valid() => {
-                let hash = config.to_hash(source.cipher());
-                (config.epoch, config, hash)
-            }
-            _ => return Ok(None),
-        }
-    } else {
-        let config = source_state.current_config().clone();
-        if !config.is_valid() {
-            return Ok(None);
-        }
-        (config.epoch, config, source_state.current_config_hash())
     };
 
     // `finalize_epoch(...)` is certified under the source target and adopts the observed

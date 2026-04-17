@@ -167,6 +167,48 @@ macro_rules! method {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __lyquid_categorize_methods {
+    ({network(oracle::certified::$first:ident::__epoch) export($export:tt) fn __lyquor_oracle_on_epoch_finalize(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
+     {$($network_funcs:tt)*},
+     {$($instance_funcs:tt)*},
+     {$($internal_funcs:tt)*}) => {
+        $crate::__lyquid_categorize_methods!(
+            {$($rest)*},
+            {$($network_funcs)*
+                oracle::certified::$first::__epoch (true, $export) fn __lyquor_oracle_on_epoch_finalize(oc: $crate::runtime::oracle::OracleCert, input_raw: $crate::prelude::Bytes) -> LyquidResult<$rt> {|ctx: $crate::CallContext| -> LyquidResult<$rt> {
+                    let topic = stringify!($first);
+                    let group = concat!(stringify!($first), "::__epoch");
+                    let params = $crate::lyquor_primitives::CallParams {
+                        origin: ctx.origin,
+                        caller: ctx.caller,
+                        group: group.to_string(),
+                        method: "__lyquor_oracle_on_epoch_finalize".to_string(),
+                        input: input_raw.clone(),
+                        abi: $crate::lyquor_primitives::InputABI::Lyquor,
+                    };
+                    let me = ctx.lyquid_id;
+                    let mut $handle = crate::__lyquid::CertifiedContext::new(ctx, oc, topic)?;
+                    let cert = &$handle.cert;
+                    if !$handle
+                        .network
+                        .__internal
+                        .oracle_src(topic)
+                        .is_some_and(|oracle| oracle.verify_finalize_cert(me, &params, cert))
+                    {
+                        return Err(LyquidError::InputCert)
+                    }
+
+                    let input = $crate::lyquor_primitives::decode_by_fields!(&input_raw, $($name: $type),*).ok_or(LyquidError::LyquorInput)?;
+                    $(let $name = input.$name;)*
+                    let result = $body;
+                    drop($handle);
+                    result
+                }}
+            },
+            {$($instance_funcs)*},
+            {$($internal_funcs)*}
+        );
+    };
+
     ({network(oracle::certified::$first:ident $(:: $tail:ident)*) export($export:tt) fn $fn:ident(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},
      {$($instance_funcs:tt)*},

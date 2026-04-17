@@ -2,7 +2,7 @@ use super::*;
 use lyquor_primitives::oracle::{
     OracleConfig as OracleConfigWire, OracleConfigDelta as OracleConfigDeltaWire, OracleEpochInfo, OracleSigner, eth,
 };
-use lyquor_primitives::{Address, Bytes, Cipher, Hash};
+use lyquor_primitives::{Address, Bytes, Cipher, Hash, HashBytes};
 use serde::{Deserialize, Serialize};
 
 const MAX_STAGING_OPS: usize = 1024;
@@ -280,6 +280,23 @@ impl SourceState {
     pub fn get_epoch(&self) -> u32 {
         self.current.epoch
     }
+
+    pub(super) fn finalize_cert_context(&self, change_count: u32) -> Option<(u32, Hash, OracleConfig)> {
+        if self.current.epoch == 0 {
+            let (config, _) = self.materialize_prefix(change_count)?;
+            if !config.is_valid() {
+                return None;
+            }
+            let hash = config.to_hash(self.cipher);
+            Some((config.epoch, hash, config))
+        } else {
+            let config = self.current.clone();
+            if !config.is_valid() {
+                return None;
+            }
+            Some((config.epoch, self.current_hash, config))
+        }
+    }
 }
 
 impl OracleSrc {
@@ -436,6 +453,50 @@ impl OracleSrc {
                     observed_hash == target_hash &&
                     observed.change_count == target_info.change_count
             })
+    }
+
+    pub fn verify_finalize_cert(
+        &self, lyquid_id: LyquidID, params: &lyquor_primitives::CallParams, oc: &OracleCert,
+    ) -> bool {
+        let payload = match lyquor_primitives::decode_by_fields!(
+            &params.input,
+            target: OracleTarget,
+            target_info: OracleEpochInfo
+        ) {
+            Some(payload) => payload,
+            None => return false,
+        };
+
+        let source_target = OracleTarget {
+            seq_id: match lyquor_api::sequence_backend_id() {
+                Ok(seq_id) => seq_id,
+                Err(_) => return false,
+            },
+            target: OracleServiceTarget::LVM(lyquid_id),
+        };
+        if oc.header.target != source_target {
+            return false;
+        }
+
+        let Some((cert_epoch, cert_hash, cert_config)) = self
+            .source_state(payload.target)
+            .and_then(|state| state.finalize_cert_context(payload.target_info.change_count))
+        else {
+            return false;
+        };
+
+        let cert_hash: HashBytes = cert_hash.into();
+        if oc.header.epoch != cert_epoch || oc.header.config_hash != cert_hash {
+            return false;
+        }
+
+        let mut signer_keys = new_hashmap();
+        for signer in cert_config.committee.values() {
+            signer_keys.insert(signer.id, signer.get_verifying_key(source_target.cipher()));
+        }
+        super::verify_oracle_cert_signatures(oc, params, cert_config.threshold, source_target.cipher(), |id| {
+            signer_keys.get(&id).cloned()
+        })
     }
 }
 

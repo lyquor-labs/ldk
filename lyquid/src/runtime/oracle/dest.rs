@@ -1,57 +1,8 @@
 use super::*;
 use lyquor_primitives::oracle::{
-    OracleConfig as OracleConfigWire, OracleConfigDelta as OracleConfigDeltaWire, OracleSigner, ValidatePreimage,
+    OracleConfig as OracleConfigWire, OracleConfigDelta as OracleConfigDeltaWire, OracleSigner,
 };
 use lyquor_primitives::{Address, Bytes, CallParams, Hash, HashBytes, InputABI};
-
-// Mirrors the certificate verification logic in `eth/src/lib/oracle.sol` for the LVM destination
-// path. Solidity splits this into storage/memory helpers; Rust can use one helper for both.
-fn verify_oracle_cert(oc: &OracleCert, params: &CallParams, config: &OracleConfig) -> Result<(), ()> {
-    if oc.signers.len() != oc.signatures.len() {
-        // Malformed certificate.
-        return Err(());
-    }
-    let threshold = config.threshold as usize;
-    if oc.signers.len() < config.threshold as usize {
-        // Threshold not met.
-        return Err(());
-    }
-
-    let msg: Bytes = ValidatePreimage {
-        header: oc.header.clone(),
-        params: params.clone(),
-        approval: true,
-    }
-    .to_preimage()
-    .into();
-
-    let cipher = oc.header.target.cipher();
-    let mut prev_id: Option<SignerID> = None;
-    for (id, sig) in oc
-        .signers
-        .iter()
-        .take(threshold)
-        .zip(oc.signatures.iter().take(threshold))
-    {
-        if prev_id.map(|p| *id <= p).unwrap_or(false) {
-            // Non-canonical signer set: unsorted or duplicate.
-            return Err(());
-        }
-        prev_id = Some(*id);
-        if !config
-            .committee
-            .get(id)
-            .map(|key| {
-                super::lyquor_api::verify(msg.clone(), cipher, sig.clone(), Bytes::copy_from_slice(key))
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
-        {
-            return Err(());
-        }
-    }
-    Ok(())
-}
 
 fn is_delta_canonical(delta: &OracleConfigDeltaWire) -> bool {
     // Canonical delta form requires strictly increasing IDs in each list.
@@ -268,7 +219,9 @@ impl OracleDest {
         if oc.header.config_hash != self.config_hash {
             return false;
         }
-        if verify_oracle_cert(oc, &params, &self.config).is_err() {
+        if !super::verify_oracle_cert_signatures(oc, &params, self.config.threshold, oc.header.target.cipher(), |id| {
+            self.config.committee.get(&id).map(|key| Bytes::copy_from_slice(key))
+        }) {
             // Invalid call certificate.
             return false;
         }
@@ -316,7 +269,9 @@ impl OracleDest {
         if oc.header.config_hash != config_hash {
             return false;
         }
-        if verify_oracle_cert(oc, &params, cert_config).is_err() {
+        if !super::verify_oracle_cert_signatures(oc, &params, cert_config.threshold, oc.header.target.cipher(), |id| {
+            cert_config.committee.get(&id).map(|key| Bytes::copy_from_slice(key))
+        }) {
             return false;
         }
         self.update(&oc.header, next_config, change_count)

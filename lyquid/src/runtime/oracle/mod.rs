@@ -19,6 +19,51 @@ const ADVANCE_EPOCH_METHOD: &str = "__lyquor_oracle_on_epoch_advance";
 const FINALIZE_EPOCH_METHOD: &str = "__lyquor_oracle_on_epoch_finalize";
 const EPOCH_GROUP_SUFFIX: &str = "__epoch";
 
+fn verify_oracle_cert_signatures(
+    oc: &OracleCert, params: &lyquor_primitives::CallParams, threshold: u16, cipher: lyquor_primitives::Cipher,
+    mut signer_key: impl FnMut(SignerID) -> Option<Bytes>,
+) -> bool {
+    if oc.signers.len() != oc.signatures.len() {
+        return false;
+    }
+    let threshold = threshold as usize;
+    if threshold == 0 || oc.signers.len() < threshold {
+        return false;
+    }
+
+    let msg: Bytes = lyquor_primitives::oracle::ValidatePreimage {
+        header: oc.header.clone(),
+        params: params.clone(),
+        approval: true,
+    }
+    .to_preimage()
+    .into();
+
+    let mut prev_id: Option<SignerID> = None;
+    for (id, sig) in oc
+        .signers
+        .iter()
+        .take(threshold)
+        .zip(oc.signatures.iter().take(threshold))
+    {
+        if prev_id.map(|p| *id <= p).unwrap_or(false) {
+            return false;
+        }
+        prev_id = Some(*id);
+
+        let Some(key) = signer_key(*id) else {
+            return false;
+        };
+        if !lyquor_api::verify(msg.clone(), cipher, sig.clone(), key)
+            .ok()
+            .unwrap_or(false)
+        {
+            return false;
+        }
+    }
+    true
+}
+
 // TODO: allow a different sequence backend ID from this Lyquid's environment.
 pub fn oracle_target_from_address(target_addr: Address, is_evm: bool) -> LyquidResult<OracleTarget> {
     let seq_id = lyquor_api::sequence_backend_id()?;
