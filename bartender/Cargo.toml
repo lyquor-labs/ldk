@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 lyquid = { path = "../lyquid", features = ["ldk"] }
-serde = { version = "1.0.217", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
