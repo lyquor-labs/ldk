@@ -30,5 +30,6 @@ pub use crate::{
     submit_certified_call, trigger, upc,
 };
 
+#[cfg(feature = "ai")] pub use crate::ai;
 pub use crate::http;
 pub use crate::method::{self};

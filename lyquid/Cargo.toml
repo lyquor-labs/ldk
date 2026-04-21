@@ -15,9 +15,11 @@ hashbrown = { optional = true, version = "0.16", default-features = false }     
 lyquid-proc = { version = "0.0.1", optional = true, path = "./proc" }
 lyquor-primitives = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
 talc = { optional = true, version = "5.0.3", default-features = false }                          # features = ["allocator"] # features used to be for Allocator
 thiserror.workspace = true
 
 [features]
 default = []
 ldk = ["lyquid-proc", "talc", "hashbrown", "ahash"]
+ai = ["ldk", "serde_json"]
