@@ -42,6 +42,7 @@ k256 = { version = "0.13", default-features = false }
 lazy_static = "1.5"
 lru = "0.17.0"
 lyquid = { path = "lyquid" }
+lyquid-ai = { path = "lyquid-ai" }
 lyquid-examples = { path = "lyquid-examples" }
 lyquid-fixtures = { path = "lyquid-fixtures" }
 lyquid-proc = { path = "lyquid/proc" }

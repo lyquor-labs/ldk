@@ -9,7 +9,6 @@
 #[cfg(feature = "ldk")] pub mod runtime;
 #[cfg(feature = "ldk")] pub use runtime::prelude;
 
-#[cfg(feature = "ai")] pub mod ai;
 pub use alloy_dyn_abi;
 pub mod http;
 
