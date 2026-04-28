@@ -82,7 +82,7 @@ quote = "1.0"
 rand = "0.10.1"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 regex = "1.12.3"
-reqwest = { version = "0.13.2", default-features = false }
+reqwest = { version = "0.13.3", default-features = false }
 rustls = { version = "0.23", features = ["aws_lc_rs"], default-features = false }
 rustls-pki-types = { version = "1.14" }
 rustls-webpki = { version = "0.103.13", features = ["aws-lc-rs"] }
