@@ -1,5 +1,5 @@
 // Useful external crates (from LDK deps);
-pub use alloy_dyn_abi;
+pub use alloy_sol_types;
 pub use hashbrown;
 pub use lyquor_primitives;
 pub use lyquor_primitives::blake3;

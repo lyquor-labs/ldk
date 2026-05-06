@@ -744,22 +744,7 @@ macro_rules! __lyquid_method_alias {
 #[macro_export]
 macro_rules! decode_eth_call_params {
     ($input:expr, $($name:ident: $type:ty),*) => {
-        (|| -> Option<($($type,)*)> {
-            use $crate::alloy_dyn_abi::{DynSolType, DynSolValue};
-            use $crate::runtime::ethabi::{EthAbiType, EthAbiValue, dyn_sol_type};
-
-            let sol_type = DynSolType::Tuple(vec![
-                $(dyn_sol_type(<$type as EthAbiType>::DESC)?,)*
-            ]);
-            let decoded = sol_type.abi_decode_params($input).ok()?;
-
-            let mut iter = match decoded {
-                DynSolValue::Tuple(v) => v.into_iter(),
-                _ => return None,
-            };
-
-            Some(($(<$type as EthAbiValue>::decode(iter.next()?)?,)*))
-        })()
+        <($($type,)*) as $crate::runtime::ethabi::EthAbiParams>::decode_params($input)
     };
 }
 
@@ -767,11 +752,9 @@ macro_rules! decode_eth_call_params {
 macro_rules! encode_eth_call_params {
     ($($val:expr),*) => {
         {
-            use $crate::alloy_dyn_abi::DynSolValue;
-            use $crate::runtime::ethabi::EthAbiValue;
             use $crate::prelude::Bytes;
-            let vals = vec![$($val.encode()),*];
-            Bytes::from(DynSolValue::Tuple(vals).abi_encode_params())
+            let vals = ($($val,)*);
+            Bytes::from($crate::runtime::ethabi::EthAbiParams::encode_params(vals))
         }
     };
 }
@@ -852,29 +835,11 @@ macro_rules! __lyquid_emit_method_fn {
                     let (input, ctx) = (|| {
                         let ctx: $crate::CallContext = decode_object(&raw)?;
 
-                        // We cache the Solidity type decoder so Eth ABI types are only generated once
-                        static SOL_TYPE_CACHED: std::sync::OnceLock<Option<$crate::alloy_dyn_abi::DynSolType>> =
-                            std::sync::OnceLock::new();
-                        let sol_type = SOL_TYPE_CACHED.get_or_init(|| {
-                            let mut types = Vec::new();
-                            $(
-                                    let ty = $crate::runtime::ethabi::dyn_sol_type(
-                                        <$type as $crate::runtime::ethabi::EthAbiType>::DESC
-                                    )?;
-                                types.push(ty);
-                            )*
-                            Some($crate::alloy_dyn_abi::DynSolType::Tuple(types))
-                        }).as_ref()?;
-
-                        // decode to a list of DynSolValue
-                        let mut iter = match sol_type.abi_decode_params(&ctx.input).ok()? {
-                            $crate::alloy_dyn_abi::DynSolValue::Tuple(v) => v.into_iter(),
-                            _ => return None,
-                        };
+                        let ($($name,)*) =
+                            <($($type,)*) as $crate::runtime::ethabi::EthAbiParams>::decode_params(&ctx.input)?;
                         struct Parameters {$($name: $type),*}
-                        // then let each type use its trait method to decode further
                         Some((Parameters {
-                            $($name: <$type as $crate::runtime::ethabi::EthAbiValue>::decode(iter.next()?)?),*
+                            $($name),*
                         }, ctx))
                     })().ok_or(LyquidError::LyquorInput)?;
                     drop(raw);
@@ -884,8 +849,7 @@ macro_rules! __lyquid_emit_method_fn {
                     // execute the function body
                     ($body)(ctx)
                 })().map(|rt| {
-                    let values = <$rt as $crate::runtime::ethabi::EthAbiReturnValue>::encode_return(rt);
-                    $crate::alloy_dyn_abi::DynSolValue::Tuple(values).abi_encode_sequence().unwrap()
+                    <$rt as $crate::runtime::ethabi::EthAbiReturnValue>::encode_return(rt)
                 });
                 encode_object(&result)
             } else {

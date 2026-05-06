@@ -9,7 +9,7 @@
 #[cfg(feature = "ldk")] pub mod runtime;
 #[cfg(feature = "ldk")] pub use runtime::prelude;
 
-pub use alloy_dyn_abi;
+pub use alloy_sol_types;
 pub mod http;
 
 use lyquor_primitives::{Address, Bytes, LyquidID, NodeID};

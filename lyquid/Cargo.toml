@@ -10,7 +10,7 @@ description = "Lyquid Development Kit (LDK)."
 
 [dependencies]
 ahash = { optional = true, version = "0.8.12", features = ["no-rng"], default-features = false }
-alloy-dyn-abi = { version = "1.5", default-features = false }
+alloy-sol-types.workspace = true
 hashbrown = { optional = true, version = "0.16", default-features = false }                      # features used to be for allocator
 lyquid-proc = { version = "0.0.1", optional = true, path = "./proc" }
 lyquor-primitives = { workspace = true }
