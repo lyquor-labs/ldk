@@ -27,6 +27,7 @@ bytes = "1.11"
 clap = { version = "4.6.1" }
 config = { version = "0.15", default-features = false, features = ["toml", "json", "yaml"] }
 const-hex = "1.18"
+criterion = { version = "0.8", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
 derive_more = { version = "2.1", features = ["debug"] }
 duct = "1.1"
 ed25519-dalek = { version = "2.2", default-features = false, features = ["fast", "pkcs8", "pem", "std"] }
