@@ -3,16 +3,20 @@ use core::fmt;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use super::GuestUsize;
+
 // Directly call the host API because core::arch::wasm32 intrinsics are unstable
 // without feature flags on the current toolchain, and we want to target Stable Rust.
 // This matches the code that `shaker` (tools/src/lib.rs) would inject anyway
 // (it replaces standard atomic instructions with calls to these host functions,
 // passing the instruction's immediate offset as the last argument).
 mod lyquor_api {
+    use super::GuestUsize;
+
     #[link(wasm_import_module = "lyquor_api")]
     unsafe extern "C" {
-        pub fn __wait(ptr: u32, exp: u32, timeout: i64, offset: u32) -> u32;
-        pub fn __notify(ptr: u32, cnt: u32, offset: u32) -> u32;
+        pub fn __wait(ptr: GuestUsize, exp: u32, timeout: i64, offset: GuestUsize) -> u32;
+        pub fn __notify(ptr: GuestUsize, cnt: u32, offset: GuestUsize) -> u32;
     }
 }
 
@@ -90,7 +94,7 @@ impl<T: ?Sized> Mutex<T> {
 
             // If contended, wait.
             unsafe {
-                lyquor_api::__wait(self.state.as_ptr() as u32, MUTEX_CONTENDED, -1, 0);
+                lyquor_api::__wait(self.state.as_ptr() as GuestUsize, MUTEX_CONTENDED, -1, 0 as GuestUsize);
             }
             s = self.state.load(Ordering::Relaxed);
         }
@@ -100,7 +104,7 @@ impl<T: ?Sized> Mutex<T> {
         let prev = self.state.swap(MUTEX_UNLOCKED, Ordering::Release);
         if prev == MUTEX_CONTENDED {
             unsafe {
-                lyquor_api::__notify(self.state.as_ptr() as u32, 1, 0);
+                lyquor_api::__notify(self.state.as_ptr() as GuestUsize, 1, 0 as GuestUsize);
             }
         }
     }
@@ -246,7 +250,7 @@ impl Drop for WriterQueueGuard<'_> {
         if prev == 1 {
             // Gate just opened (writers_waiting -> 0). Wake all gated readers.
             unsafe {
-                lyquor_api::__notify(self.0.as_ptr() as u32, u32::MAX, 0);
+                lyquor_api::__notify(self.0.as_ptr() as GuestUsize, u32::MAX, 0 as GuestUsize);
             }
         }
     }
@@ -261,7 +265,7 @@ impl<T: ?Sized> RwLock<T> {
             // Active writer holds the lock
             if s == RWLOCK_WRITER {
                 unsafe {
-                    lyquor_api::__wait(self.state.as_ptr() as u32, RWLOCK_WRITER, -1, 0);
+                    lyquor_api::__wait(self.state.as_ptr() as GuestUsize, RWLOCK_WRITER, -1, 0 as GuestUsize);
                 }
                 continue;
             }
@@ -270,7 +274,7 @@ impl<T: ?Sized> RwLock<T> {
             let ww = self.writers_waiting.load(Ordering::Acquire);
             if ww != 0 {
                 unsafe {
-                    lyquor_api::__wait(self.writers_waiting.as_ptr() as u32, ww, -1, 0);
+                    lyquor_api::__wait(self.writers_waiting.as_ptr() as GuestUsize, ww, -1, 0 as GuestUsize);
                 }
                 continue;
             }
@@ -278,7 +282,7 @@ impl<T: ?Sized> RwLock<T> {
             // Overflow protection (pathological)
             if s > RWLOCK_MAX_READERS {
                 unsafe {
-                    lyquor_api::__wait(self.state.as_ptr() as u32, s, -1, 0);
+                    lyquor_api::__wait(self.state.as_ptr() as GuestUsize, s, -1, 0 as GuestUsize);
                 }
                 continue;
             }
@@ -312,7 +316,7 @@ impl<T: ?Sized> RwLock<T> {
                 }
             } else {
                 unsafe {
-                    lyquor_api::__wait(self.state.as_ptr() as u32, s, -1, 0);
+                    lyquor_api::__wait(self.state.as_ptr() as GuestUsize, s, -1, 0 as GuestUsize);
                 }
             }
         }
@@ -323,7 +327,7 @@ impl<T: ?Sized> RwLock<T> {
         if prev == 1 {
             // last reader out: wake a waiting writer (or someone waiting on state)
             unsafe {
-                lyquor_api::__notify(self.state.as_ptr() as u32, 1, 0);
+                lyquor_api::__notify(self.state.as_ptr() as GuestUsize, 1, 0 as GuestUsize);
             }
         }
     }
@@ -339,7 +343,7 @@ impl<T: ?Sized> RwLock<T> {
         };
 
         unsafe {
-            lyquor_api::__notify(self.state.as_ptr() as u32, cnt, 0);
+            lyquor_api::__notify(self.state.as_ptr() as GuestUsize, cnt, 0 as GuestUsize);
         }
     }
 }

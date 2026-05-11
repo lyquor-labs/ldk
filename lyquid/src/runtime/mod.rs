@@ -20,6 +20,14 @@ use super::{
 use internal::StateAccessor;
 use prelude::*;
 
+#[cfg(all(target_arch = "wasm32", target_pointer_width = "32"))]
+pub type NativeGuestAbi = crate::mem::Wasm32;
+#[cfg(all(target_arch = "wasm64", target_pointer_width = "64"))]
+pub type NativeGuestAbi = crate::mem::Wasm64;
+pub type GuestUsize = <NativeGuestAbi as crate::mem::Guest>::Usize;
+pub type GuestIsize = <NativeGuestAbi as crate::mem::Guest>::Isize;
+pub type GuestSlice = crate::mem::Slice<NativeGuestAbi>;
+
 const VOLATILE_SEGMENT_SIZE: usize = VOLATILE_MEMSIZE_IN_MB << 20;
 const NETWORK_SEGMENT_SIZE: usize = NETWORK_MEMSIZE_IN_MB << 20;
 const INSTANCE_SEGMENT_SIZE: usize = INSTANCE_MEMSIZE_IN_MB << 20;
@@ -141,15 +149,15 @@ fn __lyquid_nuke_state() {
 
 /// Allocate volatile memory.
 #[unsafe(no_mangle)]
-fn __lyquid_volatile_alloc(size: u32, align: u32) -> *mut u8 {
+fn __lyquid_volatile_alloc(size: GuestUsize, align: GuestUsize) -> GuestUsize {
     use alloc::GlobalAlloc;
     let allocator = &volatile_segment_header().allocator;
-    unsafe { allocator.alloc(alloc::Layout::from_size_align(size as usize, align as usize).unwrap()) }
+    unsafe { allocator.alloc(alloc::Layout::from_size_align(size as usize, align as usize).unwrap()) as GuestUsize }
 }
 
 /// Deallocate volatile memory.
 #[unsafe(no_mangle)]
-fn __lyquid_volatile_dealloc(base: u32, size: u32, align: u32) {
+fn __lyquid_volatile_dealloc(base: GuestUsize, size: GuestUsize, align: GuestUsize) {
     use alloc::GlobalAlloc;
     let allocator = &volatile_segment_header().allocator;
     unsafe {
@@ -220,27 +228,26 @@ macro_rules! host_api {
         pub fn $fn($($param:$type),*) -> Result<$rt, $crate::LyquidError> {
             use $crate::prelude::decode_object;
 
-            let output_raw = {
+            let output = {
                 #[link(wasm_import_module = "lyquor_api")]
                 unsafe extern "C" {
-                    fn $fn(base: u32, len: u32) -> u64;
+                    fn $fn(
+                        base: $crate::runtime::GuestUsize,
+                        len: $crate::runtime::GuestUsize,
+                    ) -> $crate::runtime::GuestUsize;
                 }
                 // encode input
                 let raw = $crate::prelude::encode_by_fields!($($param: $type),*);
                 // run host-side and locate the returned output in the WASM-allocated memory;
                 // host-side will allocate the WASM volatile memory for the result
-                unsafe {
-                    let output_bundle = $fn(raw.as_ptr() as u32, raw.len() as u32);
-                    if output_bundle == 0x0 {
-                        return Err($crate::LyquidError::LyquorRuntime("error during the setup of host API environment".to_string()))
-                    }
-                    core::slice::from_raw_parts(output_bundle as u32 as *mut u8, (output_bundle >> 32) as u32 as usize)
-                }
+                let output_block = unsafe {
+                    $fn(raw.as_ptr() as $crate::runtime::GuestUsize, raw.len() as $crate::runtime::GuestUsize)
+                };
+                let host_output = unsafe { $crate::runtime::internal::HostOutput::read(output_block)? };
+                let output_raw = unsafe { host_output.as_slice() };
+                decode_object::<Result<$rt, $crate::LyquidError>>(output_raw).ok_or($crate::LyquidError::LyquorOutput)
             };
-            let output = decode_object::<Result<$rt, $crate::LyquidError>>(output_raw).ok_or($crate::LyquidError::LyquorOutput)?;
-            // free the WASM volatile memory allocated by the host
-            $crate::runtime::__lyquid_volatile_dealloc(output_raw.as_ptr() as u32, output_raw.len() as u32, 4);
-            output
+            output?
         }
 
         host_api!($($rest)*);

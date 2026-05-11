@@ -1,5 +1,6 @@
 use super::oracle::{OracleDest, OracleSrc};
 use super::{__lyquid_volatile_alloc, __lyquid_volatile_dealloc, lyquor_api};
+use super::{GuestSlice, GuestUsize, NativeGuestAbi};
 use crate::{LyquidError, LyquidResult};
 use lyquor_primitives::StateCategory;
 
@@ -9,10 +10,10 @@ pub struct HostInput(&'static [u8]);
 
 impl Drop for HostInput {
     fn drop(&mut self) {
-        let base = self.0.as_ptr() as u32;
-        let len = self.0.len() as u32;
+        let base = self.0.as_ptr() as GuestUsize;
+        let len = self.0.len() as GuestUsize;
         // deallocate the host-allocated input
-        __lyquid_volatile_dealloc(base, len, 4);
+        __lyquid_volatile_dealloc(base, len, <NativeGuestAbi as crate::mem::Guest>::USIZE_ALIGN_VALUE);
     }
 }
 
@@ -25,7 +26,7 @@ impl core::ops::Deref for HostInput {
 
 impl HostInput {
     #[inline(always)]
-    pub unsafe fn new(base: u32, len: u32) -> Self {
+    pub unsafe fn new(base: GuestUsize, len: GuestUsize) -> Self {
         unsafe { Self(core::slice::from_raw_parts(base as *mut u8, len as usize)) }
     }
 }
@@ -41,16 +42,78 @@ pub fn abort_atomic_inter_call(err: LyquidError) -> ! {
     panic!("atomic inter-call aborted: {err}")
 }
 
+pub struct HostOutput {
+    block: GuestUsize,
+    slice: GuestSlice,
+}
+
+impl HostOutput {
+    #[inline(always)]
+    fn header_align() -> GuestUsize {
+        crate::mem::Slice::<NativeGuestAbi>::align() as GuestUsize
+    }
+
+    #[inline(always)]
+    fn block_size_for(len: GuestUsize) -> GuestUsize {
+        (crate::mem::Slice::<NativeGuestAbi>::size() + len as usize) as GuestUsize
+    }
+
+    pub unsafe fn read(block: GuestUsize) -> LyquidResult<Self> {
+        if block == 0 as GuestUsize {
+            return Err(LyquidError::LyquorRuntime(
+                "error during the setup of host API environment".to_string(),
+            ));
+        }
+        Ok(Self {
+            block,
+            slice: unsafe { (block as *const GuestSlice).read() },
+        })
+    }
+
+    pub unsafe fn as_slice<'a>(&'a self) -> &'a [u8] {
+        if self.slice.len == 0 as GuestUsize {
+            &[]
+        } else {
+            unsafe { core::slice::from_raw_parts(self.slice.base as *const u8, self.slice.len as usize) }
+        }
+    }
+
+    #[inline(always)]
+    fn block_size(&self) -> GuestUsize {
+        Self::block_size_for(self.slice.len)
+    }
+}
+
+impl Drop for HostOutput {
+    fn drop(&mut self) {
+        __lyquid_volatile_dealloc(self.block, self.block_size(), Self::header_align());
+    }
+}
+
 #[inline]
-pub fn output_to_host(output: &[u8]) -> u64 {
-    let output_len = output.len() as u32;
-    let output_base = unsafe {
-        // allocate output
-        let ptr = __lyquid_volatile_alloc(output_len, 4);
-        core::slice::from_raw_parts_mut(ptr as *mut u8, output_len as usize).copy_from_slice(&output);
-        ptr
-    } as u32;
-    ((output_len as u64) << 32) | output_base as u64
+pub fn output_to_host(output: &[u8]) -> GuestUsize {
+    let output_len = output.len() as GuestUsize;
+    let block_size = HostOutput::block_size_for(output_len);
+    let block = __lyquid_volatile_alloc(block_size, HostOutput::header_align());
+    if block == 0 as GuestUsize {
+        return 0 as GuestUsize;
+    }
+    let output_base = if output.is_empty() {
+        0 as GuestUsize
+    } else {
+        (block as usize + crate::mem::Slice::<NativeGuestAbi>::size()) as GuestUsize
+    };
+
+    unsafe {
+        (block as *mut GuestSlice).write(GuestSlice {
+            base: output_base,
+            len: output_len,
+        });
+        if !output.is_empty() {
+            core::slice::from_raw_parts_mut(output_base as *mut u8, output.len()).copy_from_slice(output);
+        }
+    }
+    block
 }
 
 pub trait StateAccessor {

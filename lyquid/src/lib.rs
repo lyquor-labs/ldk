@@ -11,6 +11,7 @@
 
 pub use alloy_sol_types;
 pub mod http;
+pub mod mem;
 
 use lyquor_primitives::{Address, Bytes, LyquidID, NodeID};
 use serde::{Deserialize, Serialize};

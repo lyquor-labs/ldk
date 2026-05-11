@@ -731,7 +731,7 @@ macro_rules! __lyquid_method_alias {
 
         #[prefix_item("__lyquid_method_instance", ($($group)::*))]
         #[unsafe(no_mangle)]
-        fn $fn(base: u32, len: u32, abi: u32) -> u64 {
+        fn $fn(base: GuestUsize, len: GuestUsize, abi: u32) -> GuestUsize {
             prefix_call!(("__lyquid_method_network", ($($group)::*)), $fn(base, len, abi))
         }
     };
@@ -828,7 +828,7 @@ macro_rules! __lyquid_emit_method_fn {
     (true, $prefix:tt, ($($group:ident)::*) , $fn:ident, ($($name:ident: $type:ty),*), $rt:ty, $body:block) => {
         #[prefix_item($prefix, ($($group)::*))]
         #[unsafe(no_mangle)]
-        fn $fn(base: u32, len: u32, abi: u32) -> u64 {
+        fn $fn(base: GuestUsize, len: GuestUsize, abi: u32) -> GuestUsize {
             let raw = unsafe { HostInput::new(base, len) };
             let output = if abi == $crate::ABI_ETH {
                 let result = (|| -> Result<$rt, LyquidError> {
@@ -863,7 +863,7 @@ macro_rules! __lyquid_emit_method_fn {
     (false, $prefix:tt, ($($group:ident)::*) , $fn:ident, ($($name:ident: $type:ty),*), $rt:ty, $body:block) => {
         #[prefix_item($prefix, ($($group)::*))]
         #[unsafe(no_mangle)]
-        fn $fn(base: u32, len: u32, _abi: u32) -> u64 {
+        fn $fn(base: GuestUsize, len: GuestUsize, _abi: u32) -> GuestUsize {
             let raw = unsafe { HostInput::new(base, len) };
             let output = $crate::__lyquid_invoke_lyquor!(raw, ($($name: $type),*), $rt, $body);
             // TODO: possible improvement to not copy this already WASM-allocated vector? But
