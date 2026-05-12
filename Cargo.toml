@@ -26,7 +26,7 @@ base64 = "0.22"
 bytes = "1.11"
 clap = { version = "4.6.1" }
 config = { version = "0.15", default-features = false, features = ["toml", "json", "yaml"] }
-const-hex = "1.18"
+const-hex = "1.19"
 criterion = { version = "0.8", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
 derive_more = { version = "2.1", features = ["debug"] }
 duct = "1.1"
@@ -40,7 +40,7 @@ instant-acme = { version = "0.8.5", default-features = false, features = ["hyper
 jsonrpsee = { version = "0.26" }
 k256 = { version = "0.13", default-features = false }
 lazy_static = "1.5"
-lru = "0.17.0"
+lru = "0.18"
 lyquid = { path = "lyquid" }
 lyquid-ai = { path = "lyquid-ai" }
 lyquid-examples = { path = "lyquid-examples" }
@@ -106,7 +106,7 @@ tracing = { version = "0.1" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typed-builder = "0.23"
-wasmparser = "0.246.2"
+wasmparser = "0.246"
 x509-parser = "0.18.1"
 
 # These crates run hot during Wasmtime JIT compilation (module lowering, instruction selection,
