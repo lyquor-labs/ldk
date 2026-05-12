@@ -38,6 +38,8 @@ hyper = { version = "1.9", features = ["http2", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "http2", "client", "server"] }
 instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "aws-lc-rs"] }
 jsonrpsee = { version = "0.26" }
+jsonrpsee-client-transport = { version = "0.26", default-features = false }
+jsonrpsee-ws-client = { version = "0.26", default-features = false }
 k256 = { version = "0.13", default-features = false }
 lazy_static = "1.5"
 lru = "0.18"
@@ -85,6 +87,7 @@ regex = "1.12.3"
 reqwest = { version = "0.13.3", default-features = false }
 rustls = { version = "0.23", features = ["aws_lc_rs"], default-features = false }
 rustls-pki-types = { version = "1.14" }
+rustls-platform-verifier = { version = "0.7", default-features = false }
 rustls-webpki = { version = "0.103.13", features = ["aws-lc-rs"] }
 scc = "3.7"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
@@ -92,7 +95,7 @@ serde_json = "1.0.149"
 sha2 = { version = "0.11", default-features = false }
 syn = "2.0"
 tempfile = { version = "3.27" }
-testcontainers = "0.27.3"
+testcontainers = { version = "0.27.3", default-features = false, features = ["aws-lc-rs"] }
 thiserror = "2.0"
 tokio = { version = "1.52", features = ["full"] }
 tokio-rustls = { version = "0.26" }
