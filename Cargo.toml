@@ -14,7 +14,7 @@ homepage = "https://lyquor.xyz/"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-alloy-sol-types = { version = "1.5" }
+alloy-sol-types = { version = "1.5", default-features = false }
 anyhow = "1.0"
 assert_cmd = "2.2"
 async-trait = "0.1"
