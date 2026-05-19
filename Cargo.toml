@@ -14,7 +14,7 @@ homepage = "https://lyquor.xyz/"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-alloy-sol-types = { version = "1.5", default-features = false }
+alloy-sol-types = { version = "1.6", default-features = false }
 anyhow = "1.0"
 assert_cmd = "2.2"
 async-trait = "0.1"
@@ -110,7 +110,7 @@ tracing = { version = "0.1" }
 tracing-futures = "0.2.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typed-builder = "0.23"
-wasmparser = "0.246"
+wasmparser = "0.249"
 x509-parser = "0.18.1"
 
 # These crates run hot during Wasmtime JIT compilation (module lowering, instruction selection,
