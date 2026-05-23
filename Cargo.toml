@@ -32,6 +32,7 @@ derive_more = { version = "2.1", features = ["debug"] }
 duct = "1.1"
 ed25519-dalek = { version = "2.2", default-features = false, features = ["fast", "pkcs8", "pem", "std"] }
 futures = "0.3"
+hashbrown = { version = "0.17", default-features = false }
 http = "1.4"
 http-body-util = "0.1"
 hyper = { version = "1.9", features = ["http2", "server", "client"] }
@@ -44,9 +45,10 @@ k256 = { version = "0.13", default-features = false }
 lazy_static = "1.5"
 lru = "0.18"
 lyquid = { path = "lyquid" }
-lyquid-ai = { path = "lyquid-ai" }
+lyquid-agent = { path = "lyquid-agent" }
 lyquid-examples = { path = "lyquid-examples" }
 lyquid-fixtures = { path = "lyquid-fixtures" }
+lyquid-llm = { path = "lyquid-llm" }
 lyquid-proc = { path = "lyquid/proc" }
 lyquor-api = { path = "api" }
 lyquor-cli = { path = "cli" }

@@ -1,4 +1,5 @@
 /target
+**/target/
 node_modules
 /dist
 /docker/dist
@@ -8,3 +9,4 @@ lyquid_tools_target/
 /lyquor_data/
 .DS_Store
 /lyquor_certs/
+.claude/
