@@ -10,3 +10,4 @@ lyquid_tools_target/
 .DS_Store
 /lyquor_certs/
 .claude/
+/logs/
