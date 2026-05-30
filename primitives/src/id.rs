@@ -6,6 +6,8 @@ use sha2::Digest;
 
 use super::{Address, HashBytes};
 
+const ID_ALPHABET: base32::Alphabet = base32::Alphabet::Rfc4648Lower { padding: false };
+
 /// The ID of a node in the network.
 /// The ID is 35 bytes long, the first 32 bytes are the node's ed25519 public key,
 /// and the following 2 bytes are checksums, the last byte is the version number (0)
@@ -28,8 +30,6 @@ impl NodeID {
 }
 
 impl NodeID {
-    const ALPHABET: base32::Alphabet = base32::Alphabet::Rfc4648Lower { padding: false };
-
     pub fn as_u64(&self) -> u64 {
         u64::from_be_bytes(self.0[32 - 8..].try_into().unwrap())
     }
@@ -39,7 +39,7 @@ impl NodeID {
         let mut id: [u8; 35] = [0; 35];
         id[..32].copy_from_slice(&self.0);
         id[32..].copy_from_slice(&self.1);
-        base32::encode(Self::ALPHABET, &id)
+        base32::encode(ID_ALPHABET, &id)
     }
 }
 
@@ -106,7 +106,7 @@ impl std::str::FromStr for NodeID {
             return Err(IDError::Prefix);
         }
         let label = &s[PREFIX.len()..];
-        let bytes = base32::decode(NodeID::ALPHABET, label).ok_or(IDError::Base32)?;
+        let bytes = base32::decode(ID_ALPHABET, label).ok_or(IDError::Base32)?;
         if bytes.len() != 35 {
             return Err(IDError::Length);
         }
@@ -238,7 +238,7 @@ impl From<u64> for LyquidID {
 
 impl fmt::Display for LyquidID {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Lyquid-{}", cb58::cb58_encode(self.0))
+        write!(f, "Lyquid-{}", self.as_dns_label())
     }
 }
 
@@ -255,6 +255,18 @@ impl LyquidID {
         hasher.update(&nonce.to_be_bytes());
         let hash: [u8; 32] = hasher.finalize().into();
         hash[12..].try_into().unwrap()
+    }
+
+    pub fn as_dns_label(&self) -> String {
+        let mut id = [0; 23];
+        id[..20].copy_from_slice(&self.0);
+        let mut hash = sha2::Sha256::default();
+        hash.update(self.0);
+        let hash = hash.finalize();
+        id[20] = hash[0];
+        id[21] = hash[1];
+        id[22] = 0;
+        base32::encode(ID_ALPHABET, &id)
     }
 
     pub fn readable_short(&self) -> String {
@@ -275,7 +287,6 @@ impl FromHex for LyquidID {
 #[derive(Debug)]
 pub enum IDError {
     Prefix,
-    CB58,
     Base32,
     Checksum,
     Length,
@@ -288,8 +299,25 @@ impl std::str::FromStr for LyquidID {
         if s.len() < PREFIX.len() || &s[..PREFIX.len()] != PREFIX {
             return Err(IDError::Prefix);
         }
-        let bytes = cb58::cb58_decode(&s[PREFIX.len()..]).ok_or(IDError::CB58)?;
-        Ok(LyquidID(bytes.try_into().map_err(|_| IDError::Length)?))
+        let encoded = &s[PREFIX.len()..];
+        let bytes = base32::decode(ID_ALPHABET, encoded).ok_or(IDError::Base32)?;
+        if bytes.len() != 23 {
+            return Err(IDError::Length);
+        }
+
+        let mut id = [0u8; 20];
+        id.copy_from_slice(&bytes[..20]);
+        let mut checksum = [0u8; 3];
+        checksum.copy_from_slice(&bytes[20..]);
+
+        let mut hash = sha2::Sha256::default();
+        hash.update(id);
+        let hash = hash.finalize();
+        if checksum != [hash[0], hash[1], 0] {
+            return Err(IDError::Checksum);
+        }
+
+        Ok(LyquidID(id))
     }
 }
 
@@ -394,6 +422,34 @@ mod tests {
             let id = NodeID::from(x);
             assert_eq!(id.as_u64(), x, "NodeID <-> u64 roundtrip failed for {x}");
         }
+    }
+
+    #[test]
+    fn test_lyquid_id_dns_label() {
+        let id = LyquidID::from_hex("01d26e1e96a840dd86a7bd09f88820b718d5ced8").unwrap();
+        let encoded = id.as_dns_label();
+        assert_eq!(id.to_string(), "Lyquid-ahjg4huwvban3bvhxue7rcbaw4mnltwyolhqa");
+        assert_eq!(id.to_string().parse::<LyquidID>().unwrap(), id);
+        assert_eq!(encoded, "ahjg4huwvban3bvhxue7rcbaw4mnltwyolhqa");
+        assert_eq!(encoded.len(), 37);
+        assert!(encoded.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn test_lyquid_id_rejects_invalid_labels() {
+        let valid = "Lyquid-ahjg4huwvban3bvhxue7rcbaw4mnltwyolhqa";
+        let mut bad_checksum = valid.to_string();
+        bad_checksum.replace_range("Lyquid-".len().."Lyquid-".len() + 1, "b");
+
+        assert!(matches!(bad_checksum.parse::<LyquidID>(), Err(IDError::Checksum)));
+        assert!(matches!(
+            "Lyquid-Adm8r3j64FbzRjwcBK4ZZRFcgLQjTqtt".parse::<LyquidID>(),
+            Err(IDError::Base32)
+        ));
+        assert!(matches!(
+            "NotLyquid-ahjg4huwvban3bvhxue7rcbaw4mnltwyolhqa".parse::<LyquidID>(),
+            Err(IDError::Prefix)
+        ));
     }
 
     #[test]
