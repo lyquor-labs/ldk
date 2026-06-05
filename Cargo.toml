@@ -69,6 +69,7 @@ lyquor-test = { path = "test" }
 lyquor-test-harness = { path = "test-harness" }
 lyquor-tls = { path = "tls" }
 lyquor-tools = { path = "tools" }
+lyquor-ui = { path = "ui" }
 lyquor-upc = { path = "upc" }
 lyquor-vm = { path = "vm" }
 lyquor-wasm = { path = "wasm" }
@@ -88,6 +89,7 @@ rand = "0.10.1"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 regex = "1.12.3"
 reqwest = { version = "0.13.3", default-features = false }
+rust-embed = "8.11"
 rustls = { version = "0.23", features = ["aws_lc_rs"], default-features = false }
 rustls-pki-types = { version = "1.14" }
 rustls-platform-verifier = { version = "0.7", default-features = false }
