@@ -8,7 +8,10 @@ no-default-features = false
 feature-depth = 1
 
 [advisories]
-ignore = [{ id = "RUSTSEC-2024-0436", reason = "A build dependency only, used in alloy as well" }]
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "A build dependency only, used in alloy as well" },
+    { id = "RUSTSEC-2026-0173", reason = "No safe upgrade available; pulled through proc-macro dependencies in alloy-sol-macro" },
+]
 
 [licenses]
 # List of explicitly allowed licenses
