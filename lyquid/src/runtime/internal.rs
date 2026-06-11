@@ -223,21 +223,6 @@ impl BuiltinInstanceState {
     }
 }
 
-/// Returns built-in instance state initialized by runtime bootstrap.
-pub(crate) fn builtin_instance_state() -> &'static mut BuiltinInstanceState {
-    let internal_pa = PrefixedAccess::new(Vec::from(crate::INTERNAL_STATE_PREFIX));
-    let Some(addr) = internal_pa
-        .get(StateCategory::Instance, "instance".as_bytes())
-        .ok()
-        .flatten()
-        .and_then(|bytes| bytes.try_into().ok())
-    else {
-        panic!("NEAT: failed to access builtin instance state.");
-    };
-    let addr = u64::from_be_bytes(addr);
-    unsafe { &mut *(addr as *mut BuiltinInstanceState) }
-}
-
 /// Returns built-in network state initialized by runtime bootstrap.
 pub(crate) fn builtin_network_state() -> &'static mut BuiltinNetworkState {
     let internal_pa = PrefixedAccess::new(Vec::from(crate::INTERNAL_STATE_PREFIX));
