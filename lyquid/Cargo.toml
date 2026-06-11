@@ -21,3 +21,6 @@ thiserror.workspace = true
 [features]
 default = []
 ldk = ["lyquid-proc", "talc", "hashbrown", "ahash"]
+
+[lints]
+workspace = true

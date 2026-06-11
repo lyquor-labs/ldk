@@ -21,3 +21,6 @@ typed-builder.workspace = true
 [dev-dependencies]
 ed25519-dalek = { workspace = true }
 lyquor-test = { workspace = true }
+
+[lints]
+workspace = true

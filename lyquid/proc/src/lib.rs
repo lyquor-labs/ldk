@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use proc_macro;
 use proc_macro2::*;
 
 use std::collections::HashMap;
@@ -40,7 +39,7 @@ fn next_token_is_literal(iter: &mut token_stream::IntoIter) -> Option<Literal> {
 
 fn add_prefix(attr: TokenStream, ident: Ident) -> Ident {
     let mut tokens = Vec::new();
-    for t in TokenStream::from(attr).into_iter() {
+    for t in attr {
         let l = match t {
             TokenTree::Ident(id) => id.to_string(),
             TokenTree::Literal(l) => {
@@ -416,44 +415,43 @@ fn expand_instance_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result
                 None => quote::quote!(main),
             };
             // Special-case oracle two-phase aggregate to a fixed ABI entrypoint.
-            if let Some(path) = group_path.as_ref() {
-                if let Some(oracle_name) = oracle_two_phase_name(&path) {
-                    if fn_name == "aggregate" {
-                        if export.is_some() {
-                            return Err(syn::Error::new_spanned(
-                                fn_name,
-                                "oracle two-phase aggregate does not support `export`",
-                            ));
-                        }
-                        if ctx_mut {
-                            return Err(syn::Error::new_spanned(
-                                fn_name,
-                                "oracle two-phase aggregate must take `ctx: &_`",
-                            ));
-                        }
-                        if !params.is_empty() {
-                            return Err(syn::Error::new_spanned(
-                                fn_name,
-                                "oracle two-phase aggregate must not take extra parameters",
-                            ));
-                        }
-                        if !is_option_certified_call_params(&ret_inner) {
-                            return Err(syn::Error::new_spanned(
-                                ret_inner,
-                                "oracle two-phase aggregate must return LyquidResult<Option<CertifiedCallParams>>",
-                            ));
-                        }
-                        return Ok(quote::quote! {
-                            #(#attrs)*
-                            lyquid::__lyquid_categorize_methods!(
-                                { instance(oracle::two_phase::#oracle_name) export(false) fn aggregate(&#ctx_ident) -> LyquidResult<Option<CertifiedCallParams>> #body },
-                                {},
-                                {},
-                                {}
-                            );
-                        });
-                    }
+            if let Some(path) = group_path.as_ref() &&
+                let Some(oracle_name) = oracle_two_phase_name(path) &&
+                fn_name == "aggregate"
+            {
+                if export.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        fn_name,
+                        "oracle two-phase aggregate does not support `export`",
+                    ));
                 }
+                if ctx_mut {
+                    return Err(syn::Error::new_spanned(
+                        fn_name,
+                        "oracle two-phase aggregate must take `ctx: &_`",
+                    ));
+                }
+                if !params.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        fn_name,
+                        "oracle two-phase aggregate must not take extra parameters",
+                    ));
+                }
+                if !is_option_certified_call_params(&ret_inner) {
+                    return Err(syn::Error::new_spanned(
+                        ret_inner,
+                        "oracle two-phase aggregate must return LyquidResult<Option<CertifiedCallParams>>",
+                    ));
+                }
+                return Ok(quote::quote! {
+                    #(#attrs)*
+                    lyquid::__lyquid_categorize_methods!(
+                        { instance(oracle::two_phase::#oracle_name) export(false) fn aggregate(&#ctx_ident) -> LyquidResult<Option<CertifiedCallParams>> #body },
+                        {},
+                        {},
+                        {}
+                    );
+                });
             }
             let ctx_pattern = if ctx_mut {
                 quote::quote! { &mut #ctx_ident }
@@ -1041,15 +1039,11 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
 
         let (cat_value, _) = match cats.get(&cat_str) {
             Some(v) => v,
-            None => panic!("invalid category {}", cat.to_string()),
+            None => panic!("invalid category {}", cat),
         };
 
-        let field_ts = struct_fields
-            .entry(cat_str.clone())
-            .or_insert_with(|| TokenStream::new());
-        let init_ts = struct_inits
-            .entry(cat_str.clone())
-            .or_insert_with(|| TokenStream::new());
+        let field_ts = struct_fields.entry(cat_str.clone()).or_insert_with(TokenStream::new);
+        let init_ts = struct_inits.entry(cat_str.clone()).or_insert_with(TokenStream::new);
 
         // Switch to the correct allocator.
         let cat_num: u8 = match cat_str.as_str() {
@@ -1112,13 +1106,13 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
 
     struct_fields
         .entry("network".to_string())
-        .or_insert_with(|| TokenStream::new())
+        .or_insert_with(TokenStream::new)
         .extend([quote::quote! {
             pub __internal: &'static mut runtime::internal::BuiltinNetworkState,
         }]);
     struct_inits
         .entry("network".to_string())
-        .or_insert_with(|| TokenStream::new())
+        .or_insert_with(TokenStream::new)
         .extend([quote::quote! {
             __internal: {
                 // retrieve the pointer for Box<T>
@@ -1130,13 +1124,13 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
 
     struct_fields
         .entry("instance".to_string())
-        .or_insert_with(|| TokenStream::new())
+        .or_insert_with(TokenStream::new)
         .extend([quote::quote! {
             pub __internal: &'static mut runtime::internal::BuiltinInstanceState,
         }]);
     struct_inits
         .entry("instance".to_string())
-        .or_insert_with(|| TokenStream::new())
+        .or_insert_with(TokenStream::new)
         .extend([quote::quote! {
             __internal: {
                 // retrieve the pointer for Box<T>
@@ -1149,8 +1143,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
     // now we summary up each category and generate output
     let mut structs = TokenStream::new();
     for (cat, (_, cat_prefix)) in cats.iter() {
-        let field_ts = struct_fields.entry(cat.clone()).or_insert_with(|| TokenStream::new());
-        let init_ts = struct_inits.entry(cat.clone()).or_insert_with(|| TokenStream::new());
+        let field_ts = struct_fields.entry(cat.clone()).or_insert_with(TokenStream::new);
+        let init_ts = struct_inits.entry(cat.clone()).or_insert_with(TokenStream::new);
         let sname = quote::format_ident!("{}{}", cat_prefix, struct_suffix);
         structs.extend([quote::quote! {
             pub struct #sname {

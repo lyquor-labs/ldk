@@ -13,6 +13,13 @@ version = "0.0.1"
 homepage = "https://lyquor.xyz/"
 license = "Apache-2.0"
 
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(rust_analyzer)'] }
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+
 [workspace.dependencies]
 alloy-sol-types = { version = "1.6", default-features = false }
 anyhow = "1.0"
