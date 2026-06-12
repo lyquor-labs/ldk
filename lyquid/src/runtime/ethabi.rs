@@ -5,6 +5,7 @@ use alloy_sol_types::{SolType, sol_data};
 
 use lyquor_primitives::{Address, B256, Bytes, LyquidID, NodeID, RequiredLyquid, U64, U128, U256};
 
+/// Compile-time Ethereum ABI type descriptor used in export metadata.
 #[derive(Copy, Clone)]
 pub struct EthAbiTypeDesc {
     pub base: &'static str,
@@ -17,6 +18,7 @@ const MAX_DIMS: usize = 8;
 const EMPTY_DIMS: [Option<u32>; MAX_DIMS] = [None; MAX_DIMS];
 
 impl EthAbiTypeDesc {
+    /// Returns the string length of the canonical ABI type representation.
     pub const fn len(self) -> usize {
         let mut len = self.base.len();
         let mut i = 0usize;
@@ -27,6 +29,7 @@ impl EthAbiTypeDesc {
         len
     }
 
+    /// Appends one array dimension to this descriptor.
     pub const fn with_dim(mut self, dim: Option<u32>) -> Self {
         if self.dims_len as usize >= MAX_DIMS {
             panic!("ethabi dims overflow");
@@ -62,28 +65,41 @@ const fn base_desc(base: &'static str, is_dynamic: bool) -> EthAbiTypeDesc {
     }
 }
 
+/// Conversion contract between Lyquid Rust values and alloy Solidity ABI values.
 pub trait EthAbiType: Sized {
+    /// Alloy Solidity type that represents this Lyquid value.
     type SolType: SolType;
 
+    /// Canonical ABI descriptor for this type.
     const DESC: EthAbiTypeDesc;
 
+    /// Converts this value into its ABI representation.
     fn into_sol(self) -> <Self::SolType as SolType>::RustType;
 
+    /// Converts an ABI representation back into this Lyquid value.
     fn from_sol(value: <Self::SolType as SolType>::RustType) -> Option<Self>;
 }
 
+/// Tuple-level encoder and decoder for Ethereum method parameters.
 pub trait EthAbiParams: Sized {
+    /// Decodes ABI parameter bytes into this tuple.
     fn decode_params(data: &[u8]) -> Option<Self>;
 
+    /// Encodes this tuple as ABI parameter bytes.
     fn encode_params(self) -> Vec<u8>;
 }
 
+/// Encoder for a single Ethereum ABI return value.
 pub trait EthAbiReturnValue {
+    /// Encodes this value as ABI return bytes.
     fn encode_return(self) -> Vec<u8>;
 }
 
+/// Metadata and encoder contract for Ethereum ABI return tuples.
 pub trait EthAbiReturn: EthAbiReturnValue {
+    /// Number of returned values.
     const COUNT: usize;
+    /// ABI descriptors for returned values.
     const TYPES: &'static [EthAbiTypeDesc];
 }
 

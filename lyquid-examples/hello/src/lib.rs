@@ -1,3 +1,10 @@
+//! Greeting Lyquid that shows the network/instance state split.
+//!
+//! Network methods initialize and update the shared greeting plus a network-wide greeting count,
+//! including Ethereum-exported entry points. The instance method `greet_me` reads that network
+//! state while updating an instance `HashMap` keyed by caller, making the difference between
+//! sequenced shared state and per-instance caller counters visible in one small contract.
+
 use lyquid::prelude::*;
 
 state! {

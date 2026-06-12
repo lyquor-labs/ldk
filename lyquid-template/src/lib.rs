@@ -1,3 +1,10 @@
+//! Template Lyquid crate for the standard greeting contract shape.
+//!
+//! The template keeps the same structure as `hello`: constructor and network methods own the
+//! shared greeting and greeting count, while `greet_me` is an instance method with per-caller
+//! counters stored in instance LyteMemory. New example crates can replace the state catalog and
+//! methods while preserving the exported method layout.
+
 use lyquid::prelude::*;
 
 state! {

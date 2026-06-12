@@ -6,6 +6,7 @@ use lyquor_primitives::StateCategory;
 
 pub use lyquid_proc::*;
 
+/// Host-allocated input buffer that is deallocated when dropped.
 pub struct HostInput(&'static [u8]);
 
 impl Drop for HostInput {
@@ -25,6 +26,9 @@ impl core::ops::Deref for HostInput {
 }
 
 impl HostInput {
+    /// Reconstructs a host input buffer from a guest pointer and length.
+    ///
+    /// The caller must pass a valid host-allocated buffer that this value may free on drop.
     #[inline(always)]
     pub unsafe fn new(base: GuestUsize, len: GuestUsize) -> Self {
         unsafe { Self(core::slice::from_raw_parts(base as *mut u8, len as usize)) }
@@ -42,6 +46,7 @@ pub fn abort_atomic_inter_call(err: LyquidError) -> ! {
     panic!("atomic inter-call aborted: {err}")
 }
 
+/// Host-returned output buffer that is deallocated when dropped.
 pub struct HostOutput {
     block: GuestUsize,
     slice: GuestSlice,
@@ -58,6 +63,9 @@ impl HostOutput {
         (crate::mem::Slice::<NativeGuestAbi>::size() + len as usize) as GuestUsize
     }
 
+    /// Reads a host output header from a raw guest pointer.
+    ///
+    /// The pointer must refer to a block allocated by the host output ABI.
     pub unsafe fn read(block: GuestUsize) -> LyquidResult<Self> {
         if block == 0 as GuestUsize {
             return Err(LyquidError::LyquorRuntime(
@@ -70,6 +78,7 @@ impl HostOutput {
         })
     }
 
+    /// Views the host output payload as bytes for the lifetime of this owner.
     pub unsafe fn as_slice<'a>(&'a self) -> &'a [u8] {
         if self.slice.len == 0 as GuestUsize {
             &[]
@@ -90,6 +99,7 @@ impl Drop for HostOutput {
     }
 }
 
+/// Allocates and writes a host-output block for returning bytes to the Lyquor host.
 #[inline]
 pub fn output_to_host(output: &[u8]) -> GuestUsize {
     let output_len = output.len() as GuestUsize;
@@ -116,7 +126,9 @@ pub fn output_to_host(output: &[u8]) -> GuestUsize {
     block
 }
 
+/// Constructor contract implemented by macro-generated Lyquid state accessors.
 pub trait StateAccessor {
+    /// Opens the state accessor for the current method invocation.
     fn new() -> Result<Self, LyquidError>
     where
         Self: Sized;
@@ -129,6 +141,7 @@ pub trait StateAccessor {
 pub struct PrefixedAccess<P: AsRef<[u8]>>(P);
 
 impl<P: AsRef<[u8]>> PrefixedAccess<P> {
+    /// Creates a low-level state accessor that prepends `prefix` to every key.
     pub fn new(prefix: P) -> Self {
         Self(prefix)
     }
@@ -140,11 +153,13 @@ impl<P: AsRef<[u8]>> PrefixedAccess<P> {
         prefixed
     }
 
+    /// Writes a prefixed key in the selected state category.
     #[inline(always)]
     pub fn set(&self, cat: StateCategory, key: &[u8], value: &[u8]) -> LyquidResult<()> {
         lyquor_api::state_set(cat, self.add_prefix(key), Some(Vec::from(value)))
     }
 
+    /// Reads a prefixed key from the selected state category.
     #[inline(always)]
     pub fn get(&self, cat: StateCategory, key: &[u8]) -> LyquidResult<Option<Vec<u8>>> {
         lyquor_api::state_get(cat, self.add_prefix(key))
@@ -160,12 +175,14 @@ impl PrefixedAccess<Vec<u8>> {
     }
 }
 
+/// Runtime-owned network state shared by generated oracle helpers.
 pub struct BuiltinNetworkState {
     oracle_dest: super::HashMap<String, OracleDest>,
     oracle_src: super::HashMap<String, OracleSrc>,
 }
 
 impl BuiltinNetworkState {
+    /// Creates an empty runtime-owned network state container.
     pub fn new() -> Self {
         Self {
             oracle_dest: super::new_hashmap(),
@@ -180,6 +197,7 @@ impl BuiltinNetworkState {
             .or_insert_with(OracleDest::default)
     }
 
+    /// Returns destination oracle epoch information for host queries.
     pub fn oracle_dest_epoch_info(&self, topic: &str, full_config: bool) -> lyquor_primitives::oracle::OracleEpochInfo {
         match self.oracle_dest.get(topic) {
             Some(dest) => {
@@ -204,10 +222,12 @@ impl BuiltinNetworkState {
         }
     }
 
+    /// Returns the source-side oracle state for a topic when it has been initialized.
     pub fn oracle_src(&self, topic: &str) -> Option<&OracleSrc> {
         self.oracle_src.get(topic)
     }
 
+    /// Returns the source-side oracle state for a topic, creating an empty topic state if needed.
     pub fn oracle_src_mut(&mut self, topic: &str) -> &mut OracleSrc {
         self.oracle_src
             .entry(topic.to_string())
@@ -215,9 +235,11 @@ impl BuiltinNetworkState {
     }
 }
 
+/// Runtime-owned instance state placeholder for generated state accessors.
 pub struct BuiltinInstanceState;
 
 impl BuiltinInstanceState {
+    /// Creates an empty runtime-owned instance state container.
     pub fn new() -> Self {
         Self
     }

@@ -1,9 +1,10 @@
-// =============================================================================
-// Lyquid Basic Swap Implementation
-//
-// This module implements a Uniswap V2-style Automated Market Maker (AMM) in the Lyquid framework.
-// It follows the constant product formula (x * y = k) for token swaps and liquidity provision.
-// =============================================================================
+//! Uniswap V2-style automated market maker implemented as a Lyquid.
+//!
+//! The pair stores token IDs, reserves, LP total supply, and LP balances in network state. Its
+//! network methods call required ERC-20 Lyquids for transfers and balance reads, then update
+//! reserves after mint, burn, exact-in, exact-out, and direct swap flows. The constant-product
+//! checks, fee math, and slippage helpers are kept in plain functions so the exported methods stay
+//! focused on state transitions and inter-Lyquid calls.
 
 use lyquid::prelude::*;
 

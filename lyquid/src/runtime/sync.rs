@@ -15,7 +15,9 @@ mod lyquor_api {
 
     #[link(wasm_import_module = "lyquor_api")]
     unsafe extern "C" {
+        /// Waits on a host futex address until it differs from the expected value or is notified.
         pub fn __wait(ptr: GuestUsize, exp: u32, timeout: i64, offset: GuestUsize) -> u32;
+        /// Notifies up to `cnt` waiters blocked on a host futex address.
         pub fn __notify(ptr: GuestUsize, cnt: u32, offset: GuestUsize) -> u32;
     }
 }
@@ -31,6 +33,7 @@ const MUTEX_UNLOCKED: u32 = 0;
 const MUTEX_LOCKED: u32 = 1;
 const MUTEX_CONTENDED: u32 = 2;
 
+/// Guest-side mutex backed by Lyquor host wait and notify primitives.
 #[derive(Debug)]
 pub struct Mutex<T: ?Sized> {
     state: AtomicU32,
@@ -41,6 +44,7 @@ unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
 unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
 
 impl<T> Mutex<T> {
+    /// Creates an unlocked mutex containing `data`.
     pub const fn new(data: T) -> Self {
         Self {
             state: AtomicU32::new(MUTEX_UNLOCKED),
@@ -50,6 +54,7 @@ impl<T> Mutex<T> {
 }
 
 impl<T: ?Sized> Mutex<T> {
+    /// Locks the mutex and returns a guard that unlocks on drop.
     #[inline]
     pub fn lock(&self) -> MutexGuard<'_, T> {
         // Fast path: uncontended acquire
@@ -110,6 +115,7 @@ impl<T: ?Sized> Mutex<T> {
     }
 }
 
+/// RAII guard returned by `Mutex::lock`.
 pub struct MutexGuard<'a, T: ?Sized> {
     lock: &'a Mutex<T>,
 }
@@ -220,6 +226,7 @@ const RWLOCK_WRITER: u32 = u32::MAX;
 const RWLOCK_UNLOCKED: u32 = 0;
 const RWLOCK_MAX_READERS: u32 = u32::MAX - 2;
 
+/// Writer-fair guest-side reader-writer lock backed by Lyquor host wait and notify primitives.
 #[derive(Debug)]
 pub struct RwLock<T: ?Sized> {
     state: AtomicU32,           // readers count or WRITER
@@ -231,6 +238,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 unsafe impl<T: ?Sized + Send + Sync> Send for RwLock<T> {}
 
 impl<T> RwLock<T> {
+    /// Creates an unlocked reader-writer lock containing `data`.
     pub const fn new(data: T) -> Self {
         Self {
             state: AtomicU32::new(RWLOCK_UNLOCKED),
@@ -257,6 +265,7 @@ impl Drop for WriterQueueGuard<'_> {
 }
 
 impl<T: ?Sized> RwLock<T> {
+    /// Acquires a shared read lock and returns a guard that releases on drop.
     #[inline]
     pub fn read(&self) -> RwLockReadGuard<'_, T> {
         loop {
@@ -298,6 +307,7 @@ impl<T: ?Sized> RwLock<T> {
         }
     }
 
+    /// Acquires an exclusive write lock and returns a guard that releases on drop.
     #[inline]
     pub fn write(&self) -> RwLockWriteGuard<'_, T> {
         self.writers_waiting.fetch_add(1, Ordering::AcqRel);
@@ -348,6 +358,7 @@ impl<T: ?Sized> RwLock<T> {
     }
 }
 
+/// RAII guard returned by `RwLock::read`.
 pub struct RwLockReadGuard<'a, T: ?Sized> {
     lock: &'a RwLock<T>,
 }
@@ -377,6 +388,7 @@ impl<T: ?Sized + fmt::Display> fmt::Display for RwLockReadGuard<'_, T> {
     }
 }
 
+/// RAII guard returned by `RwLock::write`.
 pub struct RwLockWriteGuard<'a, T: ?Sized> {
     lock: &'a RwLock<T>,
 }

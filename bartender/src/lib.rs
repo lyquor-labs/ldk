@@ -1,3 +1,11 @@
+//! Reference Lyquid registry contract.
+//!
+//! Bartender is itself a Lyquid: it stores deployment metadata, dependency lists, owner state, and
+//! Ed25519-to-address mappings in network memory. Nodes and tools query it to resolve a Lyquid ID
+//! and deployment into a contract address, image digest, optional repository hint, and dependency
+//! set. The methods in this crate are the contract surface that hosting and tooling treat as the
+//! registry authority.
+
 use hashbrown::hash_map::Entry;
 use lyquid::prelude::*;
 use lyquor_primitives::{B256, RegisterEvent};

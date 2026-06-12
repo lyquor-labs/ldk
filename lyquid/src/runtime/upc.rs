@@ -22,6 +22,7 @@ impl<S> PrepareContextImpl<S>
 where
     S: StateAccessor,
 {
+    /// Builds a UPC prepare context from the host call context.
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
             lyquid_id: ctx.lyquid_id,
@@ -57,6 +58,7 @@ where
     S: StateAccessor,
     I: StateAccessor,
 {
+    /// Builds a UPC request context from the host call context and request identity.
     pub fn new(ctx: CallContext, from: NodeID, id: u64) -> LyquidResult<Self> {
         Ok(Self {
             lyquid_id: ctx.lyquid_id,
@@ -92,6 +94,7 @@ impl<S> ResponseContextImpl<S>
 where
     S: StateAccessor,
 {
+    /// Builds a UPC response context from the host call context and optional continuation cache.
     pub fn new(ctx: CallContext, from: NodeID, id: u64, cache: Option<CachePtr>) -> LyquidResult<Self> {
         Ok(Self {
             lyquid_id: ctx.lyquid_id,
@@ -112,6 +115,7 @@ where
 #[doc(hidden)]
 pub struct CacheMem(Box<dyn Any>);
 
+/// Type-erased cache that carries UPC response continuation state across calls.
 pub struct Cache {
     inner: Option<Box<CacheMem>>,
 }
@@ -120,6 +124,7 @@ pub struct Cache {
 // parallel. However, UPC logic may confine the access of Cache so may not be any parallel possible
 // runs.
 impl Cache {
+    /// Rebuilds cache state from an opaque pointer passed through the UPC host ABI.
     #[doc(hidden)]
     pub fn new(cache_ptr: Option<CachePtr>) -> Self {
         Self {
@@ -129,18 +134,22 @@ impl Cache {
 
     // NOTE: Naming mimicks std::cell::OnceCell
 
+    /// Replaces the cache contents with a value of type `T`.
     pub fn set<T: 'static>(&mut self, data: T) {
         self.inner = Some(Box::new(CacheMem(Box::new(data))));
     }
 
+    /// Returns the cached value when it has type `T`.
     pub fn get<T: 'static>(&self) -> Option<&T> {
         self.inner.as_ref().and_then(|e| e.0.as_ref().downcast_ref())
     }
 
+    /// Returns the mutable cached value when it has type `T`.
     pub fn get_mut<T: 'static>(&mut self) -> Option<&mut T> {
         self.inner.as_mut().and_then(|e| e.0.as_mut().downcast_mut())
     }
 
+    /// Returns the cached value, initializing it with `init` when empty.
     pub fn get_or_init<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &T {
         if self.inner.is_none() {
             self.inner = Some(Box::new(CacheMem(Box::new(init()))));
@@ -154,6 +163,7 @@ impl Cache {
             .expect("UPC: incorrect cache type.")
     }
 
+    /// Returns the mutable cached value, initializing it with `init` when empty.
     pub fn get_mut_or_init<T: 'static>(&mut self, init: impl FnOnce() -> T) -> &mut T {
         if self.inner.is_none() {
             self.inner = Some(Box::new(CacheMem(Box::new(init()))));
@@ -167,6 +177,7 @@ impl Cache {
             .expect("UPC: incorrect cache type.")
     }
 
+    /// Takes ownership of the boxed cache payload for transfer through the UPC host ABI.
     #[doc(hidden)]
     pub fn take_cache(&mut self) -> Option<Box<CacheMem>> {
         self.inner.take()

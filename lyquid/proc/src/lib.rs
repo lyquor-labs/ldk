@@ -1,5 +1,13 @@
 #![allow(dead_code)]
 
+//! Compile-time expansion for Lyquid state, method, and call syntax.
+//!
+//! `lyquid-proc` translates the source-level Lyquid DSL into the guest ABI exported by `lyquid`.
+//! It validates method signatures, prefixes network, instance, Ethereum, oracle, and UPC entry
+//! point names, encodes method metadata into custom sections, builds context wrappers, and emits
+//! state-variable initialization glue. Runtime crates consume the generated names and metadata
+//! after `lyquor-wasm` extracts them from the compiled module.
+
 use proc_macro2::*;
 
 use std::collections::HashMap;
@@ -906,6 +914,7 @@ fn is_option_certified_call_params(ty: &syn::Type) -> bool {
 }
 
 // Internal helper: prefixes a function or module name.
+/// Rewrites an item with a generated export prefix for Lyquid runtime entry points.
 #[proc_macro_attribute]
 pub fn prefix_item(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     use quote::ToTokens;
@@ -924,6 +933,7 @@ pub fn prefix_item(attr: proc_macro::TokenStream, item: proc_macro::TokenStream)
 }
 
 // #[lyquid::method::network]
+/// Marks a function as a network Lyquid method and emits the runtime entry point metadata.
 #[proc_macro_attribute]
 pub fn network_function(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let func = syn::parse_macro_input!(item as syn::ItemFn);
@@ -934,6 +944,7 @@ pub fn network_function(attr: proc_macro::TokenStream, item: proc_macro::TokenSt
 }
 
 // #[lyquid::method::instance]
+/// Marks a function as an instance Lyquid method and emits the runtime entry point metadata.
 #[proc_macro_attribute]
 pub fn instance_function(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let func = syn::parse_macro_input!(item as syn::ItemFn);
@@ -944,6 +955,7 @@ pub fn instance_function(attr: proc_macro::TokenStream, item: proc_macro::TokenS
 }
 
 // Internal helper: prefix a call site to match prefixed items.
+/// Expands a prefixed runtime call expression used by generated Lyquid wrappers.
 #[proc_macro]
 pub fn prefix_call(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     struct Input {
@@ -989,6 +1001,7 @@ pub fn prefix_call(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }
 }
 
+/// Generates Lyquid state accessors and the initialization entry point for state variables.
 #[proc_macro]
 pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut toplevel_tokens = TokenStream::from(item).into_iter(); // use proc_macro2 instead of proc_macro as it is more convenient
@@ -1147,7 +1160,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         let init_ts = struct_inits.entry(cat.clone()).or_insert_with(TokenStream::new);
         let sname = quote::format_ident!("{}{}", cat_prefix, struct_suffix);
         structs.extend([quote::quote! {
-            pub struct #sname {
+        /// Macro-generated Lyquid state accessor for one state category.
+        pub struct #sname {
                 #field_ts
             }
 

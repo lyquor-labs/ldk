@@ -65,6 +65,7 @@ fn verify_oracle_cert_signatures(
 }
 
 // TODO: allow a different sequence backend ID from this Lyquid's environment.
+/// Builds an oracle target for the current sequence backend and selected destination type.
 pub fn oracle_target_from_address(target_addr: Address, is_evm: bool) -> LyquidResult<OracleTarget> {
     let seq_id = lyquor_api::sequence_backend_id()?;
     let target = if is_evm {

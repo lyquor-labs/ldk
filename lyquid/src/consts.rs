@@ -1,12 +1,18 @@
 use crate::runtime::ethabi::EthAbiTypeDesc;
 
+/// Method metadata category for network methods.
 pub const CATEGORY_NETWORK: u8 = 0;
+/// Method metadata category for instance methods.
 pub const CATEGORY_INSTANCE: u8 = 1;
 
+/// Custom WASM section name that stores Lyquid method descriptors.
 pub const INFO_SECTION: &str = "lyquor.method.info";
+/// Version tag for `INFO_SECTION` payloads.
 pub const INFO_VERSION: u8 = 1;
 
+/// Custom WASM section name that stores Ethereum export descriptors.
 pub const EXPORT_SECTION: &str = "lyquor.method.export.eth";
+/// Version tag for `EXPORT_SECTION` payloads.
 pub const EXPORT_VERSION: u8 = 1;
 
 const fn write_u16(out: &mut [u8], idx: &mut usize, val: u16) {
@@ -24,11 +30,13 @@ const fn write_bytes(out: &mut [u8], idx: &mut usize, bytes: &[u8]) {
     *idx += bytes.len();
 }
 
+/// Returns the encoded byte length for a Lyquid method info descriptor.
 pub const fn info_len(group: &str, method: &str) -> usize {
     // version + category + mutable + group_len + method_len
     1 + 1 + 1 + 2 + 2 + group.len() + method.len()
 }
 
+/// Encodes a Lyquid method info descriptor into a fixed-size WASM section payload.
 pub const fn info_encode<const LEN: usize>(category: u8, mutable: bool, group: &str, method: &str) -> [u8; LEN] {
     let mut out = [0u8; LEN];
     let mut idx = 0;
@@ -59,6 +67,7 @@ const fn needs_location(desc: EthAbiTypeDesc) -> bool {
     false
 }
 
+/// Returns the encoded byte length for an Ethereum export descriptor.
 pub const fn export_len(group: &str, method: &str, params: &[EthAbiTypeDesc], returns: &[EthAbiTypeDesc]) -> usize {
     let mut len = 0;
     // version + category + mutable + param_count + return_count + group_len + method_len
@@ -80,6 +89,7 @@ pub const fn export_len(group: &str, method: &str, params: &[EthAbiTypeDesc], re
     len
 }
 
+/// Encodes an Ethereum export descriptor into a fixed-size WASM section payload.
 pub const fn export_encode<const LEN: usize>(
     category: u8, mutable: bool, group: &str, method: &str, params: &[EthAbiTypeDesc], returns: &[EthAbiTypeDesc],
 ) -> [u8; LEN] {

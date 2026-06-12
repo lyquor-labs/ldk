@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX_STAGING_OPS: usize = 1024;
 
+/// Committee signer entry with verification material for LVM and EVM destinations.
 #[derive(Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Signer {
     pub id: SignerID,
@@ -46,6 +47,7 @@ impl Signer {
     }
 }
 
+/// Source-side oracle committee configuration for one topic and target.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OracleConfig {
     pub committee: HashMap<NodeID, Signer>,
@@ -62,6 +64,7 @@ impl OracleConfig {
         }
     }
 
+    /// Returns whether the committee and threshold can certify calls.
     #[inline]
     pub fn is_valid(&self) -> bool {
         self.threshold != 0 &&
@@ -79,6 +82,7 @@ impl OracleConfig {
         }
     }
 
+    /// Returns the canonical hash for this configuration under the target cipher.
     pub fn to_hash(&self, cipher: Cipher) -> Hash {
         match cipher {
             Cipher::Ed25519 => self.to_wire(Cipher::Ed25519).to_hash(),
@@ -117,6 +121,7 @@ enum OracleConfigOp {
     SetThreshold(u16),
 }
 
+/// Per-target source-side oracle state, including active and staged configurations.
 #[derive(Clone)]
 pub struct SourceState {
     cipher: Cipher,
@@ -126,6 +131,7 @@ pub struct SourceState {
     staging_ops: Vec<OracleConfigOp>,
 }
 
+/// Source-side oracle state for one topic across all configured targets.
 pub struct OracleSrc {
     topic: String,
     states: HashMap<OracleTarget, SourceState>,
@@ -150,6 +156,7 @@ impl SourceState {
         }
     }
 
+    /// Materializes a prefix of staged config operations into the next config and delta.
     pub fn materialize_prefix(&self, change_count: u32) -> Option<(OracleConfig, OracleConfigDeltaWire)> {
         if change_count > self.staging_ops.len() as u32 {
             return None;
@@ -269,18 +276,22 @@ impl SourceState {
         self.push_op(OracleConfigOp::SetThreshold(new_thres))
     }
 
+    /// Returns the currently finalized source-side configuration.
     pub fn current_config(&self) -> &OracleConfig {
         &self.current
     }
 
+    /// Returns the hash of the currently finalized source-side configuration.
     pub fn current_config_hash(&self) -> Hash {
         self.current_hash
     }
 
+    /// Returns the currently finalized source-side epoch.
     pub fn get_epoch(&self) -> u32 {
         self.current.epoch
     }
 
+    /// Returns the configuration context used to verify source finalization certificates.
     pub(super) fn finalize_cert_context(&self, change_count: u32) -> Option<(u32, Hash, OracleConfig)> {
         if self.current.epoch == 0 {
             let (config, _) = self.materialize_prefix(change_count)?;
@@ -300,6 +311,7 @@ impl SourceState {
 }
 
 impl OracleSrc {
+    /// Creates empty source-side oracle state for a topic.
     pub fn new(topic: &str) -> Self {
         Self {
             topic: topic.to_string(),
@@ -313,11 +325,13 @@ impl OracleSrc {
         self.states.entry(target).or_insert_with(|| SourceState::new(&target))
     }
 
+    /// Returns a target state when source-side oracle state has been initialized for it.
     #[inline(always)]
     pub fn source_state(&self, target: OracleTarget) -> Option<&SourceState> {
         self.states.get(&target)
     }
 
+    /// Initializes the first staged committee for a target.
     pub fn initialize(&mut self, target: OracleTarget, committee: Vec<NodeID>, threshold: u16) -> bool {
         if let Some(state) = self.states.get(&target) {
             if state.current.epoch != 0 {
@@ -370,6 +384,7 @@ impl OracleSrc {
             .is_some_and(|state| state.set_threshold(new_thres))
     }
 
+    /// Finalizes the source-side epoch once the destination reports matching epoch information.
     pub fn finalize_epoch(&mut self, target: OracleTarget, target_info: OracleEpochInfo) -> bool {
         let state = self.source_state_mut(target);
         let next_config_hash: Hash = <[u8; 32]>::from(target_info.config_hash).into();
@@ -400,6 +415,7 @@ impl OracleSrc {
         true
     }
 
+    /// Returns the data needed to propose a destination epoch advance.
     pub fn propose_advance_epoch(
         &self, target: OracleTarget,
     ) -> Option<(u32, &OracleConfig, OracleConfigDeltaWire, Hash, u32)> {
@@ -421,6 +437,7 @@ impl OracleSrc {
         Some((state.staging.epoch, config, delta, config_hash, change_count))
     }
 
+    /// Checks that a proposed epoch advance matches the locally staged source-side operations.
     pub fn validate_advance_epoch(
         &self, target: OracleTarget, topic: &str, epoch: u32, config_hash: &Hash, config_delta: &OracleConfigDeltaWire,
         change_count: u32,
@@ -442,6 +459,7 @@ impl OracleSrc {
             })
     }
 
+    /// Checks observed destination epoch information before voting for source finalization.
     pub fn validate_finalize_epoch(&self, target: OracleTarget, target_info: &OracleEpochInfo) -> bool {
         lyquor_api::fetch_oracle_info(self.topic.to_string(), target, false)
             .ok()
@@ -455,6 +473,7 @@ impl OracleSrc {
             })
     }
 
+    /// Verifies a certificate authorizing source-side finalization for a destination epoch.
     pub fn verify_finalize_cert(
         &self, lyquid_id: LyquidID, params: &lyquor_primitives::CallParams, oc: &OracleCert,
     ) -> bool {
@@ -507,10 +526,12 @@ pub struct StateVar<'a> {
 }
 
 impl<'b> StateVar<'b> {
+    /// Creates a per-topic source-side oracle state wrapper.
     pub fn new(topic: &'b str) -> Self {
         Self { topic }
     }
 
+    /// Returns the oracle topic key used by this wrapper.
     pub fn topic(&self) -> &str {
         self.topic
     }
@@ -551,6 +572,7 @@ impl<'b> StateVar<'b> {
         }
     }
 
+    /// Returns the finalized epoch for the target, or zero when the target is unknown.
     pub fn get_epoch<T>(&self, _ctx: &T, target: OracleTarget) -> u32 {
         crate::runtime::internal::builtin_network_state()
             .oracle_src(self.topic())

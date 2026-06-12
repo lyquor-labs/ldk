@@ -1,3 +1,10 @@
+//! Stable primitive types shared below Lyquor subsystem boundaries.
+//!
+//! This crate is intentionally low in the dependency graph. It defines identifiers, address and
+//! byte aliases, sequence positions, Lyquid numbers, call parameters, state categories, log and
+//! console records, and oracle wire types. API, VM, networking, state, and tooling crates depend on
+//! these primitives when they need the same serialized shape without importing each other's logic.
+
 extern crate self as lyquor_primitives;
 pub extern crate serde;
 
@@ -13,14 +20,16 @@ pub use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 
 mod id;
+/// Oracle configuration, certificates, and wire-message primitives.
 pub mod oracle;
 pub use id::{LyquidID, LyquidNumber, NodeID, RequiredLyquid, SequenceBackendID, sequence_backend_id};
 
-// Custom serde module for Arc<Option<T>>
+/// Serde helpers for fields shaped as `Option<Arc<T>>`.
 pub mod arc_option_serde {
     use super::*;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    /// Serialize `Option<Arc<T>>` as if it were `Option<T>`.
     pub fn serialize<T, S>(value: &Option<Arc<T>>, serializer: S) -> Result<S::Ok, S::Error>
     where
         T: Serialize,
@@ -32,6 +41,7 @@ pub mod arc_option_serde {
         }
     }
 
+    /// Deserialize `Option<T>` and wrap the present value in `Arc`.
     pub fn deserialize<'de, T, D>(deserializer: D) -> Result<Option<Arc<T>>, D::Error>
     where
         T: Deserialize<'de>,
@@ -42,6 +52,7 @@ pub mod arc_option_serde {
     }
 }
 
+/// Canonical hash type used for Lyquor primitive wrappers.
 pub type Hash = blake3::Hash;
 
 // Network definitions moved to lyquor-api::profile.
@@ -49,26 +60,32 @@ pub type Hash = blake3::Hash;
 /// Position of a slot in the sequencer's backend.
 ///
 /// Typically, a sequencing backend may be a chain that carries Lyquid slots in some of its blocks.
-/// This means the [SlotNumber]s do not necessarily correspond to continuous [ChainPos] in the sequencing backend.
+/// This means sequencer slot numbers do not necessarily correspond to continuous [`ChainPos`]
+/// values in the sequencing backend.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChainPos(u128);
 
 impl ChainPos {
+    /// Zero block position and zero block index.
     pub const ZERO: Self = Self(0);
+    /// Construct a packed chain position from a block position and in-block index.
     pub fn new(block_position: u64, block_index: u32) -> Self {
         Self((block_position as u128) << 32 | (block_index as u128))
     }
 
+    /// Return the block position component.
     #[inline(always)]
     pub fn block(&self) -> u64 {
         (self.0 >> 32) as u64
     }
 
+    /// Return the in-block index component.
     #[inline(always)]
     pub fn block_index(&self) -> u32 {
         self.0 as u32
     }
 
+    /// Return the first position in the next block.
     #[inline(always)]
     pub fn next_block(&self) -> Self {
         Self(((self.0 >> 32) + 1) << 32)
@@ -128,12 +145,16 @@ impl<'de> Deserialize<'de> for ChainPos {
     }
 }
 
+/// Input ABI used to decode a Lyquid method call.
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
 pub enum InputABI {
+    /// Native Lyquor field encoding.
     Lyquor,
+    /// Ethereum ABI encoding.
     Eth,
 }
 
+/// Scheduling mode for an instance trigger.
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum TriggerMode {
     /// Trigger repeatedly at the specified interval in milliseconds.
@@ -146,14 +167,17 @@ pub enum TriggerMode {
     Stop,
 }
 
+/// Serializable wrapper around a 32-byte BLAKE3 hash.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct HashBytes(Hash);
 
 impl HashBytes {
+    /// Wrap a BLAKE3 hash.
     pub fn new(hash: Hash) -> Self {
         Self(hash)
     }
 
+    /// Consume the wrapper and return the inner BLAKE3 hash.
     pub fn into_inner(self) -> Hash {
         self.0
     }
@@ -219,6 +243,7 @@ impl<'de> Deserialize<'de> for HashBytes {
     }
 }
 
+/// Encoded call metadata delivered to Lyquid methods.
 #[derive(Serialize, Deserialize, PartialEq, Clone, TypedBuilder)]
 pub struct CallParams {
     /// The ultimate origin of the call (the transaction signer, for example if the call comes from
@@ -227,10 +252,14 @@ pub struct CallParams {
     pub origin: Address,
     /// The direct caller.
     pub caller: Address,
+    /// Method group namespace; defaults to [`GROUP_DEFAULT`].
     #[builder(default = GROUP_DEFAULT.into())]
     pub group: String,
+    /// Method name within the selected group.
     pub method: String,
+    /// Encoded input payload.
     pub input: Bytes,
+    /// ABI used to decode `input`.
     #[builder(default = InputABI::Lyquor)]
     pub abi: InputABI,
 }
@@ -252,21 +281,31 @@ impl fmt::Debug for CallParams {
     }
 }
 
+/// Default method group used when no explicit group is selected.
 pub const GROUP_DEFAULT: &str = "main";
+/// Built-in node group used for node-membership calls.
 pub const GROUP_NODE: &str = "node";
+/// Built-in UPC prepare group.
 pub const GROUP_UPC_PREPARE: &str = "upc::prepare";
+/// Built-in UPC request group.
 pub const GROUP_UPC_REQ: &str = "upc::request";
+/// Built-in UPC response group.
 pub const GROUP_UPC_RESP: &str = "upc::response";
 
+/// Log topic hash type.
 pub type LyteLogTopic = B256;
 
+/// Log record emitted by a Lyquid network function.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LyteLog {
+    /// Up to four optional indexed topics.
     pub topics: [Option<Box<LyteLogTopic>>; 4],
+    /// Encoded event payload.
     pub data: Bytes,
 }
 
 impl LyteLog {
+    /// Build a log from a tag and serializable value.
     pub fn new_from_tagged_value<V: Serialize>(tag: &str, value: &V) -> Self {
         let topic0 = Box::new(Self::tagged_value_topic(tag));
         Self {
@@ -275,6 +314,7 @@ impl LyteLog {
         }
     }
 
+    /// Compute the first topic used for a tagged value log.
     pub fn tagged_value_topic(tag: &str) -> LyteLogTopic {
         let mut hasher = blake3::Hasher::new();
         hasher.update(tag.as_bytes());
@@ -283,9 +323,12 @@ impl LyteLog {
     }
 }
 
+/// Registry event emitted when a Lyquid deployment is registered.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RegisterEvent {
+    /// Registered Lyquid ID.
     pub id: LyquidID,
+    /// Direct Lyquid dependencies declared at registration time.
     pub deps: Vec<LyquidID>,
 }
 
@@ -307,14 +350,17 @@ impl fmt::Debug for LyteLog {
     }
 }
 
+/// Decode a postcard object, returning `None` on malformed bytes.
 pub fn decode_object<T: for<'a> Deserialize<'a>>(raw: &[u8]) -> Option<T> {
     postcard::from_bytes(raw).ok()
 }
 
+/// Encode a serializable object with postcard.
 pub fn encode_object<T: Serialize + ?Sized>(obj: &T) -> Vec<u8> {
     postcard::to_stdvec(obj).expect("postcard serialization failed")
 }
 
+/// Encode a serializable object with a raw prefix prepended before the postcard payload.
 pub fn encode_object_with_prefix<T: Serialize + ?Sized>(prefix: &[u8], obj: &T) -> Vec<u8> {
     let mut vec = Vec::with_capacity(prefix.len() + core::mem::size_of_val(obj));
     vec.extend_from_slice(prefix);
@@ -322,13 +368,17 @@ pub fn encode_object_with_prefix<T: Serialize + ?Sized>(prefix: &[u8], obj: &T) 
     vec
 }
 
+/// State category that determines sequencing and persistence semantics.
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StateCategory {
+    /// Globally sequenced state.
     Network,
+    /// Node-local state.
     Instance,
 }
 
 impl StateCategory {
+    /// Return the numeric runtime tag used in guest memory headers.
     pub fn as_runtime(&self) -> u8 {
         match self {
             Self::Instance => 0x1,
@@ -337,13 +387,17 @@ impl StateCategory {
     }
 }
 
+/// Console stream selected by a guest log message.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, Copy, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum ConsoleSink {
+    /// Standard output stream.
     StdOut,
+    /// Standard error stream.
     StdErr,
 }
 
+/// Encode a `(category prefix, group, method)` tuple into the exported WASM function name.
 pub fn encode_method_name(cat_prefix: &str, group: &str, method: &str) -> String {
     let mut output = cat_prefix.to_string();
     output.push('_');
@@ -401,9 +455,12 @@ macro_rules! decode_by_fields {
     }};
 }
 
+/// Optional range used by API filters.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Range<T> {
+    /// Optional start bound.
     pub start: Option<T>,
+    /// Optional end bound.
     pub end: Option<T>,
 }
 

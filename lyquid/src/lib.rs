@@ -1,3 +1,12 @@
+//! Guest-side development kit for Lyquid WASM modules.
+//!
+//! `lyquid` is the crate Lyquid authors import inside contract crates. It exposes the ABI tags,
+//! call context, result and error types, LyteMemory layout constants, HTTP request shapes, guest
+//! memory helpers, runtime host imports, and the `method` proc-macro facade. Those pieces line up
+//! with the metadata decoded by `lyquor-wasm` and the entry points executed by `lyquor-vm`: method
+//! macros generate network, instance, Ethereum-exported, and UPC entry points, while runtime
+//! helpers perform host calls from inside the WASM guest.
+//!
 //! - [Litepaper](https://docs.lyquor.dev/docs/litepaper/arch)
 //! - [Tutorial](https://docs.lyquor.dev/docs/tutorial/)
 //! - [Lyquor Development Kit Documentation](https://docs.lyquor.dev/docs/ldk/)
@@ -5,19 +14,24 @@
 #[cfg(feature = "ldk")] pub use hashbrown;
 #[cfg(feature = "ldk")] pub use lyquor_primitives;
 
-#[cfg(feature = "ldk")] pub mod consts;
-#[cfg(feature = "ldk")] pub mod runtime;
+/// Method metadata categories and WASM custom-section encoding helpers.
+#[cfg(feature = "ldk")]
+pub mod consts;
+/// Guest runtime support for memory, calls, oracle, UPC, and synchronization.
+#[cfg(feature = "ldk")]
+pub mod runtime;
 #[cfg(feature = "ldk")] pub use runtime::prelude;
 
 pub use alloy_sol_types;
+/// HTTP request and response types exposed to Lyquid instance functions.
 pub mod http;
+/// Guest pointer and memory-layout helpers.
 pub mod mem;
 
 use lyquor_primitives::{Address, Bytes, LyquidID, NodeID};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[cfg(feature = "ldk")]
 /// Lyquid method syntax (attribute macros).
 ///
 /// Lyquid functions are defined with attribute macros. These methods may execute with network or
@@ -106,11 +120,13 @@ use thiserror::Error;
 ///   context type depends on the method category (network/instance/UPC).
 /// - UPC `response` functions are optional. If omitted, UPC behaves like a request-response call
 ///   that returns the first result.
+#[cfg(feature = "ldk")]
 pub mod method {
     pub use lyquid_proc::instance_function as instance;
     pub use lyquid_proc::network_function as network;
 }
 
+/// Invocation context supplied by the host for one Lyquid method call.
 #[cfg_attr(feature = "ldk", doc(hidden))]
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CallContext {
@@ -121,6 +137,7 @@ pub struct CallContext {
     pub node_id: Option<NodeID>,
 }
 
+/// Error type shared by generated Lyquid wrappers and host-facing runtime helpers.
 #[derive(Serialize, Deserialize, Debug, Error)]
 pub enum LyquidError {
     #[error("Fail to initialize Lyquid.")]
@@ -143,9 +160,12 @@ pub enum LyquidError {
     OracleError(String),
 }
 
+/// Numeric ABI tag for Ethereum-compatible call payloads.
 pub const ABI_ETH: u32 = 0x1;
+/// Numeric ABI tag for native Lyquor call payloads.
 pub const ABI_LYQUOR: u32 = 0x0;
 
+/// Standard result type for Lyquid runtime and generated wrapper operations.
 pub type LyquidResult<T> = Result<T, LyquidError>;
 
 /// The starting address for stacks used by Lyquid.
@@ -165,29 +185,42 @@ pub const VOLATILE_MEMSIZE_IN_MB: usize = 1024; // 1GB
 
 /// Prefix bytes used for varaiable catalog in versioned state.
 pub const VAR_CATALOG_PREFIX: [u8; 1] = [0x2a];
+/// Prefix bytes used for runtime-owned state in versioned state.
 pub const INTERNAL_STATE_PREFIX: [u8; 1] = [0x20];
 /// Prefix bytes used for lite pages in versioned state.
 pub const LYTEMEM_PAGE_PREFIX: [u8; 1] = [0x00];
 
+/// Exported guest initialization function name.
 pub const WASM_INIT_FUNC: &str = "__lyquid_initialize";
+/// Exported guest state-variable initialization function name.
 pub const WASM_INIT_VAR_FUNC: &str = "__lyquid_initialize_state_variables";
+/// Exported guest function name that marks Lyquid state uninitialized; the VM calls it to reset
+/// network state when a new Lyquid image is loaded.
 pub const WASM_NUKE_STATE_FUNC: &str = "__lyquid_nuke_state";
 
+/// Exported guest volatile-memory allocation function name.
 pub const WASM_VOLATILE_ALLOC_FUNC: &str = "__lyquid_volatile_alloc";
+/// Exported guest volatile-memory deallocation function name.
 pub const WASM_VOLATILE_DEALLOC_FUNC: &str = "__lyquid_volatile_dealloc";
+/// WASM global name for the guest stack pointer.
 pub const WASM_STACK_POINTER: &str = "__stack_pointer";
+/// Prefix for exported network method entry points.
 pub const WASM_NETWORK_METHOD_PREFIX: &str = "__lyquid_method_network";
+/// Prefix for exported instance method entry points.
 pub const WASM_INSTANCE_METHOD_PREFIX: &str = "__lyquid_method_instance";
 /// The maximum size of a stack per call.
 pub const WASM_CALLSTACK_LIMIT: u32 = 0x100000; // 1M
+/// Default stack base address for Lyquid guest modules.
 pub const WASM_DEFAULT_STACK_BASE: u32 = 0x100000;
 
+/// Ethereum export metadata for a Lyquid method.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FuncEthInfo {
     pub decl: String,
     pub canonical: String,
 }
 
+/// Method metadata decoded from Lyquid WASM custom sections.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FuncInfo {
     pub eth: Option<FuncEthInfo>,
@@ -198,6 +231,7 @@ pub mod upc {
     use super::*;
     use lyquor_primitives::NodeID;
 
+    /// UPC request payload passed from the host to a receiving Lyquid instance method.
     #[derive(Serialize, Deserialize)]
     pub struct RequestInput {
         pub from: NodeID,
@@ -206,10 +240,13 @@ pub mod upc {
     }
 
     // TODO: refactor request output to be a struct with more sophisticated error handling
+    /// Raw UPC request output bytes returned to the caller.
     pub type RequestOutput = Vec<u8>;
 
+    /// Opaque pointer to response cache state owned by a UPC continuation.
     pub type CachePtr = u64;
 
+    /// UPC response payload passed back to the initiating Lyquid instance method.
     #[derive(Serialize, Deserialize)]
     pub struct ResponseInput {
         pub from: NodeID,
@@ -226,11 +263,13 @@ pub mod upc {
         Return(Vec<u8>),
     }
 
+    /// UPC prepare payload containing the original client call parameters.
     #[derive(Serialize, Deserialize)]
     pub struct PrepareInput {
         pub client_params: Bytes,
     }
 
+    /// UPC prepare output containing selected nodes and optional continuation cache.
     #[derive(Serialize, Deserialize)]
     pub struct PrepareOutput {
         pub result: Vec<NodeID>,

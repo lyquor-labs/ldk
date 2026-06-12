@@ -7,7 +7,7 @@
 /// with this macro preserve their state from call to call. (This also applies to the third-party
 /// libraries you include, so you should make sure they don't rely on the global state in any statics.)
 /// - Invoke this macro **once** per Lyquid (your crate) in your **crate root** (i.e.,
-/// `src/lib.rs`) to be correctly accessed by your Lyquid functions defined through [lyquid::method!](crate::method).
+/// `src/lib.rs`) to be correctly accessed by your Lyquid functions defined through [lyquid::method!](crate::method!).
 /// Using it multiple times will result in a **compilation error**, as it would lead to conflicting
 /// `__lyquid` modules.
 ///
@@ -135,13 +135,21 @@ macro_rules! __lyquid_state_generate {
                 [(network Network StateCategory::Network)
                 (instance Instance StateCategory::Instance)] $($token)*);
 
+            /// Generated context type for mutable network methods.
             pub type NetworkContext = $crate::runtime::NetworkContextImpl<NetworkState>;
+            /// Generated context type for certified network methods.
             pub type CertifiedContext = $crate::runtime::CertifiedContextImpl<NetworkState>;
+            /// Generated context type for read-only network methods.
             pub type ImmutableNetworkContext = $crate::runtime::ImmutableNetworkContextImpl<NetworkState>;
+            /// Generated context type for mutable instance methods.
             pub type InstanceContext = $crate::runtime::InstanceContextImpl<NetworkState, InstanceState>;
+            /// Generated context type for read-only instance methods.
             pub type ImmutableInstanceContext = $crate::runtime::ImmutableInstanceContextImpl<NetworkState, InstanceState>;
+            /// Generated context type for UPC prepare handlers.
             pub type UpcPrepareContext = $crate::runtime::upc::PrepareContextImpl<NetworkState>;
+            /// Generated context type for UPC request handlers.
             pub type UpcRequestContext = $crate::runtime::upc::RequestContextImpl<NetworkState, InstanceState>;
+            /// Generated context type for UPC response handlers.
             pub type UpcResponseContext = $crate::runtime::upc::ResponseContextImpl<NetworkState>;
         }
 
@@ -153,7 +161,7 @@ macro_rules! __lyquid_state_generate {
 /// Defines network, instance, and UPC methods (functions) for a Lyquid contract.
 #[deprecated(
     since = "0.0.1",
-    note = "use #[lyquid::method::network] or #[lyquid::method::instance] instead"
+    note = "use `#[lyquid::method::network]` or `#[lyquid::method::instance]` instead"
 )]
 #[macro_export]
 macro_rules! method {
@@ -454,6 +462,7 @@ macro_rules! __lyquid_categorize_methods {
      {$($internal_funcs:tt)*}) => {
          $crate::__lyquid_categorize_methods!({$($rest)*}, {$($network_funcs)*}, {$($instance_funcs)*},
          {$($internal_funcs)*
+             /// Generated two-phase oracle proposal aggregation entry point.
              #[$crate::runtime::internal::prefix_item("__lyquid_method_instance", (oracle::two_phase::$name))]
              #[unsafe(no_mangle)]
              pub fn aggregate(ctx: $crate::runtime::oracle::ProposalAggregationContext) -> LyquidResult<Option<CertifiedCallParams>> {

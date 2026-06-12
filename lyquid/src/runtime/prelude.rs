@@ -14,12 +14,16 @@ pub use super::oracle::{CertifiedCallParams, OracleServiceTarget, OracleTarget};
 pub use super::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 pub use crate::{LyquidError, LyquidResult};
 
+/// Deterministically seeded hash map used by Lyquid runtime data structures.
 pub type HashMap<K, V> = hashbrown::HashMap<K, V, ahash::RandomState>;
+/// Deterministically seeded hash set used by Lyquid runtime data structures.
 pub type HashSet<K> = hashbrown::HashSet<K, ahash::RandomState>;
 
+/// Creates a deterministically seeded hash map.
 pub fn new_hashmap<K, V>() -> HashMap<K, V> {
     HashMap::with_hasher(ahash::RandomState::with_seed(0))
 }
+/// Creates a deterministically seeded hash set.
 pub fn new_hashset<K>() -> HashSet<K> {
     HashSet::with_hasher(ahash::RandomState::with_seed(0))
 }

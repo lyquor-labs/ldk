@@ -15,6 +15,7 @@ const ID_ALPHABET: base32::Alphabet = base32::Alphabet::Rfc4648Lower { padding: 
 pub struct NodeID(pub [u8; 32], pub [u8; 3]);
 
 impl NodeID {
+    /// Build a node ID from a raw 32-byte Ed25519 public key and derive its checksum.
     pub fn new(id: [u8; 32]) -> Self {
         let mut checksum = [0; 3];
         // Calculate SHA-256 hash of the ID
@@ -30,10 +31,12 @@ impl NodeID {
 }
 
 impl NodeID {
+    /// Return the low 64 bits of the public key, mainly for compact deterministic test IDs.
     pub fn as_u64(&self) -> u64 {
         u64::from_be_bytes(self.0[32 - 8..].try_into().unwrap())
     }
 
+    /// Return the DNS-label-safe base32 payload without the `Node-` display prefix.
     pub fn as_dns_label(&self) -> String {
         // Combine the ID and checksum into a single array
         let mut id: [u8; 35] = [0; 35];
@@ -157,9 +160,11 @@ impl<'de> Deserialize<'de> for NodeID {
     }
 }
 
+/// Required Lyquid dependency wrapper used by generated Lyquid contracts.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
 pub struct RequiredLyquid(pub LyquidID);
 
+/// Stable identifier for a deployed Lyquid.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct LyquidID(pub [u8; 20]);
 
@@ -249,6 +254,7 @@ impl fmt::Debug for LyquidID {
 }
 
 impl LyquidID {
+    /// Derive a deterministic Lyquid ID from an owner address and deployment nonce.
     pub fn from_owner_nonce(owner: &Address, nonce: u64) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(owner.as_slice());
@@ -257,6 +263,7 @@ impl LyquidID {
         hash[12..].try_into().unwrap()
     }
 
+    /// Return the DNS-label-safe base32 payload without the `Lyquid-` display prefix.
     pub fn as_dns_label(&self) -> String {
         let mut id = [0; 23];
         id[..20].copy_from_slice(&self.0);
@@ -269,6 +276,7 @@ impl LyquidID {
         base32::encode(ID_ALPHABET, &id)
     }
 
+    /// Return a compact human-readable form for logs and UI labels.
     pub fn readable_short(&self) -> String {
         let s = self.to_string();
         format!("{}..{}", &s[..15], &s[s.len() - 8..])
@@ -284,11 +292,16 @@ impl FromHex for LyquidID {
     }
 }
 
+/// Error returned when parsing canonical node or Lyquid display IDs.
 #[derive(Debug)]
 pub enum IDError {
+    /// The expected `Node-` or `Lyquid-` prefix was missing.
     Prefix,
+    /// The base32 payload could not be decoded.
     Base32,
+    /// The decoded checksum did not match the identifier payload.
     Checksum,
+    /// The decoded payload had an unexpected length.
     Length,
 }
 
@@ -327,8 +340,8 @@ impl AsRef<[u8]> for LyquidID {
     }
 }
 
+/// The version number that uniquely identifies code image and network-variable state.
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
-/// The verison number that uniquely identifies (and determines) the state of network variables.
 pub struct LyquidNumber {
     /// The version number for the Lyquid code image.
     pub image: u32,
@@ -343,6 +356,7 @@ impl fmt::Display for LyquidNumber {
 }
 
 impl LyquidNumber {
+    /// Zero image and variable version.
     pub const ZERO: Self = LyquidNumber { image: 0, var: 0 };
 }
 
@@ -375,6 +389,7 @@ impl std::str::FromStr for LyquidNumber {
     }
 }
 
+/// Identifier for a sequence backend in oracle headers.
 pub type SequenceBackendID = HashBytes;
 
 /// Sequence backend ID used in oracle headers.

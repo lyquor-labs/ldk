@@ -1,10 +1,18 @@
+//! Guest runtime internals for Lyquid WASM modules.
+//!
+//! This module owns guest allocation, state-category context wrappers, host-call ABI glue,
+//! oracle helpers, UPC exports, and synchronization primitives used by generated Lyquid code.
+
 mod allocator;
 #[doc(hidden)] pub mod ethabi;
 #[doc(hidden)] pub mod internal;
+/// Oracle source, destination, and certification protocol helpers.
 pub mod oracle;
+/// Prelude exported to Lyquid source crates.
 pub mod prelude;
 #[doc(hidden)] pub mod sync;
 #[doc(hidden)] pub mod syntax;
+/// UPC helper types used by generated guest code.
 pub mod upc;
 
 use std::alloc;
@@ -20,12 +28,17 @@ use super::{
 use internal::StateAccessor;
 use prelude::*;
 
+/// Native guest ABI marker for the current WASM compilation target.
 #[cfg(all(target_arch = "wasm32", target_pointer_width = "32"))]
 pub type NativeGuestAbi = crate::mem::Wasm32;
+/// Native guest ABI marker for the current WASM compilation target.
 #[cfg(all(target_arch = "wasm64", target_pointer_width = "64"))]
 pub type NativeGuestAbi = crate::mem::Wasm64;
+/// Unsigned pointer-sized integer for the native guest ABI.
 pub type GuestUsize = <NativeGuestAbi as crate::mem::Guest>::Usize;
+/// Signed pointer-sized integer for the native guest ABI.
 pub type GuestIsize = <NativeGuestAbi as crate::mem::Guest>::Isize;
+/// Slice header type for the native guest ABI.
 pub type GuestSlice = crate::mem::Slice<NativeGuestAbi>;
 
 const VOLATILE_SEGMENT_SIZE: usize = VOLATILE_MEMSIZE_IN_MB << 20;
@@ -225,6 +238,7 @@ fn initialize_persistent_heap() -> Option<u32> {
 /// control to the Lyquor host and returns upon completion.
 macro_rules! host_api {
     ($fn:ident($($param:ident: $type:ty),*) -> $rt:ty; $($rest:tt)*) => {
+        /// Calls the corresponding Lyquor host API from guest code.
         pub fn $fn($($param:$type),*) -> Result<$rt, $crate::LyquidError> {
             use $crate::prelude::decode_object;
 
@@ -422,9 +436,11 @@ macro_rules! upc {
     };
 }
 
+/// Wrapper that exposes immutable access to a generated state accessor.
 pub struct Immutable<T>(T);
 
 impl<T> Immutable<T> {
+    /// Wraps a state accessor as immutable.
     pub fn new(inner: T) -> Self {
         Self(inner)
     }
@@ -437,9 +453,11 @@ impl<T> std::ops::Deref for Immutable<T> {
     }
 }
 
+/// Wrapper that exposes mutable access to a generated state accessor.
 pub struct Mutable<T>(T);
 
 impl<T> Mutable<T> {
+    /// Wraps a state accessor as mutable.
     pub fn new(inner: T) -> Self {
         Self(inner)
     }
@@ -474,6 +492,7 @@ impl<S> NetworkContextImpl<S>
 where
     S: StateAccessor,
 {
+    /// Builds a mutable network-method context from the host call context.
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
             lyquid_id: ctx.lyquid_id,
@@ -503,6 +522,7 @@ impl<S> CertifiedContextImpl<S>
 where
     S: StateAccessor,
 {
+    /// Builds a certified network-method context from the host call context.
     pub fn new(ctx: CallContext, cert: oracle::OracleCert, topic: &'static str) -> LyquidResult<Self> {
         Ok(Self {
             lyquid_id: ctx.lyquid_id,
@@ -520,6 +540,7 @@ impl<S> CertifiedContextImpl<S>
 where
     S: StateAccessor,
 {
+    /// Resolves a certificate signer ID to the current oracle committee node ID.
     pub fn signer_node_id(&mut self, id: u64) -> Option<NodeID> {
         let sid: oracle::SignerID = id.try_into().ok()?;
         internal::builtin_network_state()
@@ -544,6 +565,7 @@ impl<S> ImmutableNetworkContextImpl<S>
 where
     S: StateAccessor,
 {
+    /// Builds an immutable network-method context from the host call context.
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
             lyquid_id: ctx.lyquid_id,
@@ -576,6 +598,7 @@ where
     S: StateAccessor,
     I: StateAccessor,
 {
+    /// Builds a mutable instance-method context from the host call context.
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
             lyquid_id: ctx.lyquid_id,
@@ -609,6 +632,7 @@ where
     S: StateAccessor,
     I: StateAccessor,
 {
+    /// Builds an immutable instance-method context from the host call context.
     pub fn new(ctx: CallContext) -> LyquidResult<Self> {
         Ok(Self {
             lyquid_id: ctx.lyquid_id,

@@ -1,21 +1,10 @@
-// =============================================================================
-// Lyquid ERC-20 Token Implementation
-// =============================================================================
-//
-// This module implements a standard ERC-20 compliant token in the Lyquid framework.
-// It closely follows the OpenZeppelin ERC-20 implementation pattern from Solidity.
-//
-// Features:
-// - Full ERC-20 standard compliance
-// - Token name: "Lyquor"
-// - Token symbol: "LYQ"
-// - Decimals: 18
-// - Initial supply: 1000 LYQ minted to the contract deployer
-// - Standard transfer, allowance, and approval mechanisms
-// - Internal minting and burning capabilities
-//
-// Note: Some Ethereum-specific features like events are currently marked as TODOs.
-// =============================================================================
+//! ERC-20-style token surface implemented with Lyquid network state.
+//!
+//! Balances, allowances, and total supply live in network LyteMemory, and the exported methods
+//! follow the OpenZeppelin ERC-20 naming shape for construction, transfers, approvals,
+//! `transferFrom`, and read APIs. Metadata reads are instance methods because they do not mutate
+//! shared token state. The event-emission TODOs remain at the helper call sites where `Transfer`
+//! and approval events would be emitted once event support is wired into this Lyquid.
 
 use lyquid::prelude::*;
 

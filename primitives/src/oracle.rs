@@ -1,10 +1,11 @@
 use super::*;
 
+/// Destination class for an oracle-certified call.
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum OracleServiceTarget {
-    // Lyquor network fn
+    /// Lyquor network function destination.
     LVM(LyquidID),
-    // EVM-based sequence backend
+    /// EVM-based sequence backend destination.
     EVM {
         /// Final destination contract that the sequencing contract calls into.
         target: Address,
@@ -13,6 +14,7 @@ pub enum OracleServiceTarget {
     },
 }
 
+/// Fully qualified oracle destination, including the sequence backend namespace.
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub struct OracleTarget {
     /// Service destination of the certified call.
@@ -22,6 +24,7 @@ pub struct OracleTarget {
 }
 
 impl OracleTarget {
+    /// Return the signature cipher expected for certificates targeting this destination.
     pub fn cipher(&self) -> Cipher {
         match self.target {
             OracleServiceTarget::EVM { .. } => Cipher::Secp256k1,
@@ -45,55 +48,78 @@ pub struct OracleHeader {
     pub nonce: HashBytes,
 }
 
+/// Epoch metadata known by an oracle source or destination.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleEpochInfo {
+    /// Current epoch number.
     pub epoch: u32,
+    /// Current oracle config hash.
     pub config_hash: HashBytes,
+    /// Number of config changes materialized in this epoch.
     pub change_count: u32,
+    /// Optional full config payload when requested by the caller.
     pub config: Option<OracleConfig>,
 }
 
+/// Small signer index used inside oracle certificates.
 pub type SignerID = u32;
 
+/// Oracle signer entry in a config.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleSigner {
+    /// Stable signer index used by signatures and deltas.
     pub id: SignerID,
+    /// Public key bytes in the cipher selected by the target.
     pub key: Bytes,
 }
 
+/// Oracle committee config.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleConfig {
+    /// Committee signer set.
     pub committee: Vec<OracleSigner>,
+    /// Number of valid signatures required to certify a call.
     pub threshold: u16,
 }
 
 impl OracleConfig {
+    /// Hash this config with the native Lyquor serialization.
     pub fn to_hash(&self) -> Hash {
         blake3::hash(&encode_object(self))
     }
 }
 
+/// Incremental config update for an oracle committee.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct OracleConfigDelta {
+    /// Signers to add or replace.
     pub upsert: Vec<OracleSigner>,
+    /// Signer IDs to remove.
     pub remove: Vec<SignerID>,
+    /// Optional threshold update.
     pub threshold: Option<u16>,
 }
 
+/// Signed preimage for oracle validation votes.
 #[derive(Serialize, Deserialize)]
 pub struct ValidatePreimage {
+    /// Certificate header being approved or rejected.
     pub header: OracleHeader,
+    /// Call parameters being certified.
     pub params: CallParams,
+    /// Validation decision. `true` means approval.
     pub approval: bool,
 }
 
 impl ValidatePreimage {
     const PREFIX: &'static [u8] = b"lyquor_validate_preimage_v1\0";
 
+    /// Return the domain-separated serialized preimage bytes.
     pub fn to_preimage(&self) -> Vec<u8> {
         encode_object_with_prefix(Self::PREFIX, self)
     }
 
+    /// Hash the validation preimage.
     pub fn to_hash(&self) -> Hash {
         blake3::hash(&self.to_preimage())
     }
@@ -166,6 +192,7 @@ pub mod eth {
     }
 
     impl OracleConfig {
+        /// Hash this config with Ethereum ABI encoding.
         pub fn to_hash(&self) -> super::Hash {
             alloy_primitives::keccak256(SolValue::abi_encode(self)).0.into()
         }
@@ -203,12 +230,14 @@ pub mod eth {
     impl ValidatePreimage {
         const PREFIX: &'static [u8] = b"lyquor_validate_preimage_v1\0";
 
+        /// Return the Ethereum ABI domain-separated preimage bytes.
         pub fn to_preimage(&self) -> Vec<u8> {
             let mut buf = Vec::from(Self::PREFIX);
             buf.extend_from_slice(&SolValue::abi_encode(self));
             buf
         }
 
+        /// Hash the Ethereum ABI validation preimage.
         pub fn to_hash(&self) -> super::Hash {
             alloy_primitives::keccak256(self.to_preimage()).0.into()
         }

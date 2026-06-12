@@ -120,22 +120,27 @@ impl OracleDest {
     /// Min nonce set size for epoch advancement.
     const MIN_NONCE_NEXT_EPOCH: usize = Self::MAX_NONCE_PER_EPOCH * 9 / 10;
 
+    /// Returns the currently accepted destination epoch.
     pub fn get_epoch(&self) -> u32 {
         self.epoch
     }
 
+    /// Returns the configuration hash for the current destination epoch.
     pub fn get_config_hash(&self) -> &HashBytes {
         &self.config_hash
     }
 
+    /// Returns the source-side change prefix accepted for the current destination epoch.
     pub fn get_change_count(&self) -> u32 {
         self.change_count
     }
 
+    /// Returns the current destination oracle configuration in wire format.
     pub fn get_config(&self) -> lyquor_primitives::oracle::OracleConfig {
         self.config.to_wire()
     }
 
+    /// Resolves a signer ID from the current destination committee to a node ID.
     pub fn signer_node_id(&self, id: SignerID) -> Option<NodeID> {
         let key = self.config.committee.get(&id)?;
         let key: [u8; 32] = key.as_slice().try_into().ok()?;
@@ -204,6 +209,7 @@ impl OracleDest {
         self.used_nonce.insert(nonce)
     }
 
+    /// Verifies and consumes a certified call for this Lyquid destination.
     pub fn verify(&mut self, me: LyquidID, params: lyquor_primitives::CallParams, oc: &OracleCert) -> bool {
         // Mirrors eth/src/lib/oracle.sol::verify for the LVM destination path.
         if !Self::verify_lvm_binding(me, &params, oc) {
@@ -228,6 +234,7 @@ impl OracleDest {
         self.update(&oc.header, None, self.change_count)
     }
 
+    /// Verifies and applies a certificate that advances this destination to the next oracle epoch.
     pub fn verify_epoch_advance(
         &mut self, me: LyquidID, caller: Address, topic: &str, config_delta: &OracleConfigDeltaWire, change_count: u32,
         oc: &OracleCert,

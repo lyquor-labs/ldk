@@ -40,7 +40,7 @@ pub struct CertifiedCallParams {
 ///
 /// The entire flow done by `validate()` looks like this:
 ///
-/// ```
+/// ```text
 /// [header] --------------------------LDK checked-------------------.--> signed [header] & [params]
 /// [params] ---[custom validation]\____validate()---> true/false ---/
 /// [extra]  ---[custom validation]/
@@ -87,7 +87,7 @@ pub struct ProposeRequest {
 pub struct ProposeResponse {
     /// The produced input value.
     pub input: Bytes,
-    /// [ProposePreimage] signature.
+    /// `ProposePreimage` signature.
     pub sig: Bytes,
 }
 
@@ -157,7 +157,7 @@ impl ProposePreimage {
 /// `output == aggregate(inputs)`.
 /// The `output` field is used to form the `params` field of [ValidateResponse].
 /// The `inputs` field is given to the `extra` field of [ValidateResponse], used by
-/// LDK-generated validation code (see [super::syntax]).
+/// LDK-generated validation code (see `runtime::syntax`).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Proposal {
     nonce: HashBytes,
@@ -492,6 +492,7 @@ impl<'a> StateVar<'a> {
     ///    of [ProposalInput]) into an output ([CertifiedCallParams]), and also decides when it is
     ///    ok to stop waiting for more inputs.
     ///
+    /// ```text
     ///                            ------> <Node A>
     ///                           /        ...
     /// <proposer>---init----------------> <Node B>
@@ -503,6 +504,7 @@ impl<'a> StateVar<'a> {
     ///             \---input_C----------< <Node C>
     ///
     /// <proposer>: output = aggregate({input_A, input_B, input_C})
+    /// ```
     ///
     /// 2. **Validate**: The proposer then uses a second UPC (through [Self::certify]) to form a
     ///    certified call to be sequenced by the sequence backend.
@@ -530,6 +532,7 @@ impl<'a> StateVar<'a> {
         advance_epoch(ctx, self.topic(), target)
     }
 
+    /// Generate a finalization certificate for the source Lyquid after the target has advanced.
     #[inline]
     pub fn finalize_epoch<S: crate::runtime::internal::StateAccessor, I: crate::runtime::internal::StateAccessor>(
         &self, ctx: &mut crate::runtime::InstanceContextImpl<S, I>, target: OracleTarget,
@@ -537,6 +540,7 @@ impl<'a> StateVar<'a> {
         finalize_epoch(ctx, self.topic(), target)
     }
 
+    /// Performs pre-validation checks before this node signs an oracle validation response.
     pub fn __pre_validation(
         &self, oracle: &OracleSrc, header: &OracleHeader, params: &CallParams, group: &str, from: NodeID,
         lyquid_id: LyquidID,
@@ -668,6 +672,7 @@ impl<'a> StateVar<'a> {
         Ok(Some((payload.init, payload.nonce, payload.inputs)))
     }
 
+    /// Signs this node's oracle validation decision after user code has approved or rejected it.
     pub fn __post_validation(
         &self, header: OracleHeader, params: CallParams, approval: bool,
     ) -> LyquidResult<ValidateResponse> {
@@ -689,6 +694,7 @@ impl<'a> StateVar<'a> {
         Ok(ValidateResponse { approval, sig })
     }
 
+    /// Signs this node's oracle proposal response after user proposal code produced an input.
     pub fn __post_propose(
         &self, lyquid_id: LyquidID, group: &str, proposer: NodeID, init: Bytes, nonce: HashBytes, input: Bytes,
     ) -> LyquidResult<ProposeResponse> {
@@ -732,6 +738,7 @@ pub struct ProposalAggregation {
 }
 
 impl ProposalAggregation {
+    /// Creates an empty proposal aggregation for one nonce and oracle configuration.
     pub fn new(init: Bytes, nonce: HashBytes, config: OracleConfig) -> Self {
         let committee = config.committee;
         let threshold = config.threshold;
@@ -746,6 +753,7 @@ impl ProposalAggregation {
         }
     }
 
+    /// Adds one proposal response and returns a final proposal once aggregation succeeds or fails.
     pub fn add_response(
         &mut self, node: NodeID, resp: ProposeResponse,
         agg: fn(ProposalAggregationContext) -> LyquidResult<Option<CertifiedCallParams>>, lyquid_id: LyquidID,
@@ -813,6 +821,7 @@ impl ProposalAggregation {
 }
 
 impl ValidateAggregation {
+    /// Creates an empty validation aggregation for one oracle header and voting configuration.
     pub fn new(header: OracleHeader, yea_msg: Bytes, nay_msg: Bytes, vote_config: OracleConfig) -> Self {
         let committee = vote_config.committee;
         let threshold = vote_config.threshold;
@@ -829,6 +838,7 @@ impl ValidateAggregation {
         }
     }
 
+    /// Adds one validation response and returns a certificate once the threshold is met.
     pub fn add_response(&mut self, node: NodeID, resp: ValidateResponse) -> Option<Option<OracleCert>> {
         if self.result.is_some() {
             return self.result.clone();
@@ -881,6 +891,7 @@ impl ValidateAggregation {
         self.result.clone()
     }
 }
+/// Borrowed inputs passed to user aggregation code for two-phase oracle proposals.
 pub struct ProposalAggregationContext<'a> {
     pub init: &'a [u8],
     pub inputs: &'a [ProposalInput],
