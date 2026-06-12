@@ -59,6 +59,7 @@ lyquid-llm = { path = "lyquid-llm" }
 lyquid-proc = { path = "lyquid/proc" }
 lyquor-api = { path = "api" }
 lyquor-cli = { path = "cli" }
+lyquor-config = { path = "config" }
 lyquor-crypto = { path = "crypto" }
 lyquor-db = { path = "db" }
 lyquor-eth = { path = "eth" }
