@@ -124,7 +124,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typed-builder = "0.23"
 wasmparser = "0.251"
 x509-parser = "0.18.1"
-xz2 = "0.1.7"
+xz2 = { version = "0.1.7", features = ["static"] }
 
 # These crates run hot during Wasmtime JIT compilation (module lowering, instruction selection,
 # and codegen) at *runtime*, so raising opt-level here gives most of the speedup without
