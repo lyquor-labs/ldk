@@ -1,4 +1,4 @@
-use crate::runtime::ethabi::EthAbiTypeDesc;
+#[cfg(feature = "ldk")] use crate::runtime::ethabi::EthAbiTypeDesc;
 
 /// Method metadata category for network methods.
 pub const CATEGORY_NETWORK: u8 = 0;
@@ -14,6 +14,14 @@ pub const INFO_VERSION: u8 = 1;
 pub const EXPORT_SECTION: &str = "lyquor.method.export.eth";
 /// Version tag for `EXPORT_SECTION` payloads.
 pub const EXPORT_VERSION: u8 = 1;
+
+/// Custom WASM section name that stores the LDK build descriptor.
+pub const LDK_SECTION: &str = "lyquor.ldk.version";
+/// Version tag for `LDK_SECTION` payloads.
+pub const LDK_SECTION_VERSION: u8 = 1;
+
+/// The version of the LDK (this crate), as recorded at its own compile time.
+pub const LDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const fn write_u16(out: &mut [u8], idx: &mut usize, val: u16) {
     out[*idx] = (val >> 8) as u8;
@@ -53,6 +61,16 @@ pub const fn info_encode<const LEN: usize>(category: u8, mutable: bool, group: &
     out
 }
 
+/// Encoded `LDK_SECTION` payload: the version tag followed by the UTF-8 LDK version string.
+pub const LDK_PAYLOAD: [u8; LDK_VERSION.len() + 1] = {
+    let mut out = [0u8; LDK_VERSION.len() + 1];
+    out[0] = LDK_SECTION_VERSION;
+    let mut idx = 1;
+    write_bytes(&mut out, &mut idx, LDK_VERSION.as_bytes());
+    out
+};
+
+#[cfg(feature = "ldk")]
 const fn needs_location(desc: EthAbiTypeDesc) -> bool {
     if desc.is_dynamic {
         return true;
@@ -68,6 +86,7 @@ const fn needs_location(desc: EthAbiTypeDesc) -> bool {
 }
 
 /// Returns the encoded byte length for an Ethereum export descriptor.
+#[cfg(feature = "ldk")]
 pub const fn export_len(group: &str, method: &str, params: &[EthAbiTypeDesc], returns: &[EthAbiTypeDesc]) -> usize {
     let mut len = 0;
     // version + category + mutable + param_count + return_count + group_len + method_len
@@ -90,6 +109,7 @@ pub const fn export_len(group: &str, method: &str, params: &[EthAbiTypeDesc], re
 }
 
 /// Encodes an Ethereum export descriptor into a fixed-size WASM section payload.
+#[cfg(feature = "ldk")]
 pub const fn export_encode<const LEN: usize>(
     category: u8, mutable: bool, group: &str, method: &str, params: &[EthAbiTypeDesc], returns: &[EthAbiTypeDesc],
 ) -> [u8; LEN] {
@@ -134,6 +154,7 @@ pub const fn export_encode<const LEN: usize>(
     out
 }
 
+#[cfg(feature = "ldk")]
 const fn write_type(out: &mut [u8], idx: &mut usize, desc: EthAbiTypeDesc) {
     write_bytes(out, idx, desc.base.as_bytes());
     let mut i = 0usize;
@@ -156,6 +177,7 @@ const fn write_type(out: &mut [u8], idx: &mut usize, desc: EthAbiTypeDesc) {
     }
 }
 
+#[cfg(feature = "ldk")]
 const fn write_u32(out: &mut [u8], idx: &mut usize, mut val: u32) {
     let mut buf = [0u8; 10];
     let mut len = 0usize;

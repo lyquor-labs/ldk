@@ -151,6 +151,13 @@ macro_rules! __lyquid_state_generate {
             pub type UpcRequestContext = $crate::runtime::upc::RequestContextImpl<NetworkState, InstanceState>;
             /// Generated context type for UPC response handlers.
             pub type UpcResponseContext = $crate::runtime::upc::ResponseContextImpl<NetworkState>;
+
+            #[doc(hidden)]
+            const _: () = {
+                #[unsafe(link_section = "lyquor.ldk.version")]
+                #[used]
+                static LDK_INFO: [u8; $crate::consts::LDK_PAYLOAD.len()] = $crate::consts::LDK_PAYLOAD;
+            };
         }
 
         $crate::__lyquid_define_oracle_internal_methods!();

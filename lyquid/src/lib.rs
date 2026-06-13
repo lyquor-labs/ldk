@@ -15,7 +15,6 @@
 #[cfg(feature = "ldk")] pub use lyquor_primitives;
 
 /// Method metadata categories and WASM custom-section encoding helpers.
-#[cfg(feature = "ldk")]
 pub mod consts;
 /// Guest runtime support for memory, calls, oracle, UPC, and synchronization.
 #[cfg(feature = "ldk")]
