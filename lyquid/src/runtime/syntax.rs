@@ -7,7 +7,8 @@
 /// with this macro preserve their state from call to call. (This also applies to the third-party
 /// libraries you include, so you should make sure they don't rely on the global state in any statics.)
 /// - Invoke this macro **once** per Lyquid (your crate) in your **crate root** (i.e.,
-/// `src/lib.rs`) to be correctly accessed by your Lyquid functions defined through [lyquid::method!](crate::method!).
+/// `src/lib.rs`) to be correctly accessed by your Lyquid functions defined through
+/// `#[lyquid::method::network]` and `#[lyquid::method::instance]`.
 /// Using it multiple times will result in a **compilation error**, as it would lead to conflicting
 /// `__lyquid` modules.
 ///
@@ -162,18 +163,6 @@ macro_rules! __lyquid_state_generate {
 
         $crate::__lyquid_define_oracle_internal_methods!();
         $crate::__lyquid_define_oracle_epoch_vote_handlers!($($token)*);
-    }
-}
-
-/// Defines network, instance, and UPC methods (functions) for a Lyquid contract.
-#[deprecated(
-    since = "0.0.1",
-    note = "use `#[lyquid::method::network]` or `#[lyquid::method::instance]` instead"
-)]
-#[macro_export]
-macro_rules! method {
-    {$($rest:tt)*} => {
-        $crate::__lyquid_categorize_methods!({$($rest)*}, {}, {}, {});
     }
 }
 

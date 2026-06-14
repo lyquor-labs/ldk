@@ -493,7 +493,7 @@ fn expand_instance_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result
     }
 }
 
-// Lower constructor into the same wrapper shape used by legacy lyquid::method!.
+// Lower constructor into the same wrapper shape used by generated network methods.
 fn expand_constructor(parsed: ParsedConstructor, export: Option<ExportKind>) -> syn::Result<TokenStream> {
     let ParsedConstructor {
         ctx_ident,
