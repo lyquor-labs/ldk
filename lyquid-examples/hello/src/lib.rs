@@ -48,8 +48,10 @@ fn greet_me(ctx: &mut _) -> LyquidResult<String> {
     let mut per_user_count = ctx.instance.per_user_count.write();
     let user = per_user_count.entry(ctx.caller).or_default();
     *user += 1;
-    Ok(format!(
+    let message = format!(
         "{} I've greeted {} times to on-chain users, and {} times to you",
         ctx.network.greeting, ctx.network.greet_count, *user
-    ))
+    );
+    lyquid::println!("hello.greet_me: {message}");
+    Ok(message)
 }

@@ -49,10 +49,10 @@ docker compose -f docker/multi/docker-compose.yaml ps
 Host-exposed endpoints:
 
 - Registry (OCI): `http://localhost:8000`
-- Node 1 API: `http://localhost:10087/api` (`ws://localhost:10087/ws`)
-- Node 2 API: `http://localhost:11087/api` (`ws://localhost:11087/ws`)
-- Node 3 API: `http://localhost:12087/api` (`ws://localhost:12087/ws`)
-- Node 4 API: `http://localhost:13087/api` (`ws://localhost:13087/ws`)
+- Node 1 API: `http://localhost:10087/api` (`ws://localhost:10087/ws`, dashboard `http://localhost:10087/lyquor/`)
+- Node 2 API: `http://localhost:11087/api` (`ws://localhost:11087/ws`, dashboard `http://localhost:11087/lyquor/`)
+- Node 3 API: `http://localhost:12087/api` (`ws://localhost:12087/ws`, dashboard `http://localhost:12087/lyquor/`)
+- Node 4 API: `http://localhost:13087/api` (`ws://localhost:13087/ws`, dashboard `http://localhost:13087/lyquor/`)
 
 Inside the Docker network:
 
@@ -78,6 +78,12 @@ curl --data '{}' \
   -s http://localhost:10087/lyquor.lyquid.v1.LyquidService/GetLyquidInfo
 ```
 
+Check dashboard reachability:
+
+```bash
+curl -sSf http://localhost:10087/lyquor/ >/dev/null
+```
+
 ## Persistence
 
 Anvil state is persisted via the named volume `anvil-state`, mounted at `/home/foundry`, with state file:
@@ -99,7 +105,7 @@ Each node config includes fallback repos:
 - `http://registry:8000/lyquids`
 - `ghcr.io/lyquor-labs/lyquids`
 
-Note: current `setup-devnet` service bootstraps bartender by running `shaker deploy --is-bartender --reference ghcr.io/lyquor-labs/lyquids:bartender-main-latest --endpoint ws://node1:10087/ws`, with an idempotency check to skip redeploy when already present.
+Note: current `setup-devnet` service bootstraps bartender by running `shaker deploy --is-bartender --reference ghcr.io/lyquor-labs/lyquids:bartender-v0.0.2 --endpoint ws://node1:10087/ws`, with an idempotency check to skip redeploy when already present.
 
 ## Stop / Reset
 
