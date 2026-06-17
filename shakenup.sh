@@ -290,10 +290,16 @@ setup_lyquor() {
     local version_file="$SHAKENUP_DIR/.lyquor_version"
     local platform=$(detect_platform "lyquor")
 
-    # Get latest version info
-    local latest_filename=$(curl -s --connect-timeout 30 --max-time 60 https://api.github.com/repos/lyquor-labs/ldk/releases/tags/latest | \
-        grep "browser_download_url.*${platform}\.tar\.gz" | sed -E 's|.*/([^"/]+\.tar\.gz)".*|\1|')
-    [[ -n "$latest_filename" ]] || { log_error "No Lyquor tools for $platform"; exit 1; }
+    # Resolve the latest LDK release. The versioned mirror release is published as a
+    # non-prerelease marked make_latest, so GitHub's /releases/latest endpoint
+    # resolves to it. The same release carries both the platform tools archive and
+    # ldk.tar.gz.
+    local latest=$(curl -s --connect-timeout 30 --max-time 60 https://api.github.com/repos/lyquor-labs/ldk/releases/latest)
+    local tools_url=$(echo "$latest" | grep "browser_download_url.*${platform}\.tar\.gz" | head -n1 | sed -E 's|.*"(https://[^"]+)".*|\1|')
+    local ldk_url=$(echo "$latest" | grep "browser_download_url.*/ldk\.tar\.gz" | head -n1 | sed -E 's|.*"(https://[^"]+)".*|\1|')
+    [[ -n "$tools_url" ]] || { log_error "No Lyquor tools for $platform"; exit 1; }
+    [[ -n "$ldk_url" ]] || { log_error "No LDK archive in the latest release"; exit 1; }
+    local latest_filename=$(basename "$tools_url")
 
     if ! needs_lyquor_update "$bin_dir" "$ldk_dir" "$version_file" "$latest_filename"; then
         log_success "Lyquor tools and LDK already up to date"
@@ -304,11 +310,11 @@ setup_lyquor() {
     mkdir -p "$bin_dir" "$ldk_dir"
 
     # Download and install tools
-    download_extract "https://github.com/lyquor-labs/ldk/releases/download/latest/$latest_filename" "$bin_dir" 1 || exit 1
+    download_extract "$tools_url" "$bin_dir" 1 || exit 1
     chmod +x "$bin_dir"/*
 
     # Download and install LDK
-    download_extract "https://github.com/lyquor-labs/ldk/releases/download/latest/ldk.tar.gz" "$ldk_dir" 1 || exit 1
+    download_extract "$ldk_url" "$ldk_dir" 1 || exit 1
 
     # Save version info
     echo "$latest_filename" > "$version_file"
