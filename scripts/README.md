@@ -33,7 +33,7 @@ point every process is stopped and the scratch directory is removed.
 ### Choosing the bartender image
 
 Bartender is **not built from source**; it is deployed straight from
-`ghcr.io/lyquor-labs/lyquids`. By default the `bartender-v0.1.0` tag is used.
+`ghcr.io/lyquor-labs/lyquids`. By default the `bartender-v0.1.1` tag is used.
 
 ```bash
 # Pin to a released version.
@@ -81,7 +81,7 @@ shaker deploy --endpoint ws://127.0.0.1:10087/ws \
 
 | Variable                     | Purpose                                                        |
 | ---------------------------- | ------------------------------------------------------------- |
-| `LYQUOR_IMAGE_TAG`           | Tag used to build the bartender reference (`v0.1.0`).     |
+| `LYQUOR_IMAGE_TAG`           | Tag used to build the bartender reference (`v0.1.1`).     |
 | `LYQUOR_BARTENDER_REFERENCE` | Full bartender OCI reference; overrides `LYQUOR_IMAGE_TAG`.    |
 | `LYQUOR_BIN_DIR`             | Directory containing `lyquor`/`shaker` if not already on PATH. |
 | `LYQUOR_LOG`                 | Node log level (`info`, `debug`, ...).                         |

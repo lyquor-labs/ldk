@@ -41,8 +41,13 @@ _LOCALNET_NODE_IDS=(
     "Node-oq2lcra5u4ksufzsv2ciqbl56dkp5c653ikzkx3lh62tai566d7dseia"
 )
 
-# Anvil key 0; matches docker/multi so oracle epoch internal submits can sign.
-_LOCALNET_SUBMITTER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+# Anvil-funded account keys used as per-node submitter keys in the multi-node topology.
+_LOCALNET_SUBMITTER_KEYS=(
+    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+    "0x59c6995e998f97a5a0044966f094538b292d4b6ec65dc1d614831ea8775e8ece"
+    "0x5de4111b365a7a9898a14f3e60feec33b047b1c4ae38d8e76cfb7ec4fe99e995"
+    "0x7c852118294d6bd9e0f73f6a7f9ff8ad6dde4170f18a30b8f78cd9a50b2e5c9f"
+)
 
 # Host ports. Node i (0-based) listens on API 10087+1000*i and UPC 10080+1000*i,
 # matching the host-exposed ports in docker/multi/docker-compose.yaml.
@@ -59,12 +64,12 @@ _localnet_log() {
 
 # Resolve the bartender OCI reference to deploy. Precedence:
 #   1. LYQUOR_BARTENDER_REFERENCE (full reference)
-#   2. ghcr.io/lyquor-labs/lyquids:bartender-<LYQUOR_IMAGE_TAG> (defaults to v0.1.0)
+#   2. ghcr.io/lyquor-labs/lyquids:bartender-<LYQUOR_IMAGE_TAG> (defaults to v0.1.1)
 localnet_bartender_reference() {
     if [[ -n "${LYQUOR_BARTENDER_REFERENCE:-}" ]]; then
         printf '%s' "$LYQUOR_BARTENDER_REFERENCE"
     else
-        printf 'ghcr.io/lyquor-labs/lyquids:bartender-%s' "${LYQUOR_IMAGE_TAG:-v0.1.0}"
+        printf 'ghcr.io/lyquor-labs/lyquids:bartender-%s' "${LYQUOR_IMAGE_TAG:-v0.1.1}"
     fi
 }
 
@@ -166,17 +171,33 @@ _localnet_wait_anvil() {
     return 1
 }
 
+_localnet_write_submitter_key() {
+    local idx="$1"
+    local path="$2"
+    local key="${_LOCALNET_SUBMITTER_KEYS[$idx]:-}"
+    if [[ -z "$key" ]]; then
+        _localnet_log "No Anvil submitter key configured for localnet node index ${idx}."
+        return 1
+    fi
+    printf '%s\n' "$key" > "$path"
+    chmod 600 "$path"
+}
+
 # Write a multi-node config for node index $1 (0-based) to file $2.
 _localnet_write_multi_config() {
     local idx="$1"
     local file="$2"
     local seed
+    local submitter_key_file
     seed="0x$(printf '%064d' "$idx")"
+    submitter_key_file="$(dirname "$file")/eth-submitter.key"
 
     {
         printf '[profile]\n'
         printf 'base = "devnet"\n'
         printf 'sequencer = "ws://127.0.0.1:%s"\n\n' "$_LOCALNET_ANVIL_PORT"
+        printf '[submitter]\n'
+        printf 'key_file = "%s"\n\n' "$submitter_key_file"
         printf '[node_key]\n'
         printf 'type = "seed"\n'
         printf 'value = "%s"\n\n' "$seed"
@@ -273,12 +294,12 @@ _localnet_up_multi() {
         data_dir="$LOCALNET_WORK_DIR/node${idx}/data"
         log="$LOCALNET_WORK_DIR/node${idx}/lyquor.log"
         mkdir -p "$data_dir" "$(dirname "$cfg")"
-        _localnet_write_multi_config "$idx" "$cfg"
+        _localnet_write_submitter_key "$idx" "$(dirname "$cfg")/eth-submitter.key" || return 1
+        _localnet_write_multi_config "$idx" "$cfg" || return 1
 
         _localnet_log "Starting Lyquor node $((idx + 1)) at ${http_url}"
         LYQUOR_LOG="${LYQUOR_LOG:-info}" \
         LYQUOR_DATA_DIR="$data_dir" \
-        LYQUOR_ETH_SUBMITTER_KEY="$_LOCALNET_SUBMITTER_KEY" \
             lyquor --config "$cfg" > "$log" 2>&1 &
         _LOCALNET_PIDS+=("$!")
 

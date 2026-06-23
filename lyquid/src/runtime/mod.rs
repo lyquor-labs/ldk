@@ -276,6 +276,8 @@ macro_rules! host_api {
 /// make these calls, serialize/deserialize parameters and the result.
 pub mod lyquor_api {
     use super::*;
+    pub use crate::well_known;
+
     host_api!(
         state_set(cat: StateCategory, key: Vec<u8>, value: Option<Vec<u8>>);
         state_get(cat: StateCategory, key: Vec<u8>) -> Option<Vec<u8>>;

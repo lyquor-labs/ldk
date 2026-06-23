@@ -14,6 +14,10 @@ pub const INFO_VERSION: u8 = 1;
 pub const EXPORT_SECTION: &str = "lyquor.method.export.eth";
 /// Version tag for `EXPORT_SECTION` payloads.
 pub const EXPORT_VERSION: u8 = 1;
+/// Custom WASM section name that stores HTTP export descriptors.
+pub const HTTP_EXPORT_SECTION: &str = "lyquor.method.export.http";
+/// Version tag for `HTTP_EXPORT_SECTION` payloads.
+pub const HTTP_EXPORT_VERSION: u8 = 1;
 
 /// Custom WASM section name that stores the LDK build descriptor.
 pub const LDK_SECTION: &str = "lyquor.ldk.version";
@@ -58,6 +62,33 @@ pub const fn info_encode<const LEN: usize>(category: u8, mutable: bool, group: &
     write_u16(&mut out, &mut idx, method.len() as u16);
     write_bytes(&mut out, &mut idx, group.as_bytes());
     write_bytes(&mut out, &mut idx, method.as_bytes());
+    out
+}
+
+/// Returns the encoded byte length for an HTTP export descriptor.
+pub const fn http_export_len(group: &str, method: &str, http_method: &str, path_prefix: &str) -> usize {
+    // version + category + group_len + method_len + http_method_len + path_prefix_len
+    1 + 1 + 2 + 2 + 2 + 2 + group.len() + method.len() + http_method.len() + path_prefix.len()
+}
+
+/// Encodes an HTTP export descriptor into a fixed-size WASM section payload.
+pub const fn http_export_encode<const LEN: usize>(
+    category: u8, group: &str, method: &str, http_method: &str, path_prefix: &str,
+) -> [u8; LEN] {
+    let mut out = [0u8; LEN];
+    let mut idx = 0;
+    out[idx] = HTTP_EXPORT_VERSION;
+    idx += 1;
+    out[idx] = category;
+    idx += 1;
+    write_u16(&mut out, &mut idx, group.len() as u16);
+    write_u16(&mut out, &mut idx, method.len() as u16);
+    write_u16(&mut out, &mut idx, http_method.len() as u16);
+    write_u16(&mut out, &mut idx, path_prefix.len() as u16);
+    write_bytes(&mut out, &mut idx, group.as_bytes());
+    write_bytes(&mut out, &mut idx, method.as_bytes());
+    write_bytes(&mut out, &mut idx, http_method.as_bytes());
+    write_bytes(&mut out, &mut idx, path_prefix.as_bytes());
     out
 }
 

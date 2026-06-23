@@ -12,7 +12,7 @@ For the single-node topology, see `docker/single/`.
 
 - Starts a full-mesh UPC peer network across 4 nodes.
 - Uses deterministic node seeds in `node1.toml`..`node4.toml` so peer IDs are stable.
-- Sets `LYQUOR_ETH_SUBMITTER_KEY` on all nodes (Anvil key0) so oracle epoch advance/finalize internal submits can be sequenced.
+- Configures each node's `[submitter]` from an Anvil-funded key so oracle epoch advance/finalize internal submits can be sequenced.
 - Exposes each node API port on the host.
 - Persists Anvil chain state in a Docker volume.
 - Starts/uses a local OCI registry on host port `8000`.
@@ -105,7 +105,7 @@ Each node config includes fallback repos:
 - `http://registry:8000/lyquids`
 - `ghcr.io/lyquor-labs/lyquids`
 
-Note: current `setup-devnet` service bootstraps bartender by running `shaker deploy --is-bartender --reference ghcr.io/lyquor-labs/lyquids:bartender-v0.1.0 --endpoint ws://node1:10087/ws`, with an idempotency check to skip redeploy when already present.
+Note: current `setup-devnet` service bootstraps bartender by running `shaker deploy --is-bartender --reference ghcr.io/lyquor-labs/lyquids:bartender-v0.1.1 --endpoint ws://node1:10087/ws`, with an idempotency check to skip redeploy when already present.
 
 ## Stop / Reset
 

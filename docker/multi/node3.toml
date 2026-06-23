@@ -2,6 +2,9 @@
 base = "devnet"
 sequencer = "ws://anvil:8545"
 
+[submitter]
+inline = "0x5de4111b365a7a9898a14f3e60feec33b047b1c4ae38d8e76cfb7ec4fe99e995"
+
 [node_key]
 type = "seed"
 value = "0x0000000000000000000000000000000000000000000000000000000000000002"

@@ -24,6 +24,13 @@ pub mod runtime;
 pub use alloy_sol_types;
 /// HTTP request and response types exposed to Lyquid instance functions.
 pub mod http;
+/// Stable hostnames and endpoint URLs exposed by the Lyquor runtime.
+pub mod well_known {
+    /// Hostname routed by the node to its configured sequencing backend HTTP endpoint.
+    pub const SEQUENCER_RPC_HOST: &str = "sequencer.lyquor.internal";
+    /// URL Lyquid instance functions can use with `lyquor_api::http_request` for sequencer JSON-RPC reads.
+    pub const SEQUENCER_RPC: &str = "http://sequencer.lyquor.internal";
+}
 /// Guest pointer and memory-layout helpers.
 pub mod mem;
 
