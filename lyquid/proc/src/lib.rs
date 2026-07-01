@@ -59,7 +59,7 @@ fn add_prefix(attr: TokenStream, ident: Ident) -> Ident {
             TokenTree::Group(g) => {
                 // Handle grouped tokens like ($($group)::*) - stringify the contents
                 let mut group_result = String::new();
-                for token in g.stream().into_iter() {
+                for token in g.stream() {
                     match token {
                         TokenTree::Ident(id) => group_result.push_str(&id.to_string()),
                         TokenTree::Punct(p) => group_result.push(p.as_char()),
@@ -116,8 +116,18 @@ struct HttpExportAttr {
     path_prefix: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EthExportGuard {
+    None,
+    Creator,
+}
+
+struct EthExportAttr {
+    guard: EthExportGuard,
+}
+
 enum ExportKind {
-    Ethereum,
+    Ethereum(EthExportAttr),
     Http(HttpExportAttr),
 }
 
@@ -187,14 +197,11 @@ fn parse_function_common(func: syn::ItemFn) -> syn::Result<ParsedFunctionCommon>
                     "context parameter must be a named identifier",
                 ));
             }
-            let ctx_ref = match &*pat_type.ty {
-                syn::Type::Reference(reference) => reference,
-                _ => {
-                    return Err(syn::Error::new_spanned(
-                        &pat_type.ty,
-                        "context parameter must be a reference: `ctx: &mut _` or `ctx: &_`",
-                    ));
-                }
+            let syn::Type::Reference(ctx_ref) = &*pat_type.ty else {
+                return Err(syn::Error::new_spanned(
+                    &pat_type.ty,
+                    "context parameter must be a reference: `ctx: &mut _` or `ctx: &_`",
+                ));
             };
             (ctx_ident, ctx_ref.mutability.is_some())
         }
@@ -253,11 +260,8 @@ fn parse_function_signature(func: syn::ItemFn) -> syn::Result<ParsedFunction> {
 
     let ret_inner = match &output {
         syn::ReturnType::Type(_, ty) => {
-            let ty_path = match &**ty {
-                syn::Type::Path(path) => path,
-                _ => {
-                    return Err(syn::Error::new_spanned(&output, "return type must be LyquidResult<T>"));
-                }
+            let syn::Type::Path(ty_path) = &**ty else {
+                return Err(syn::Error::new_spanned(&output, "return type must be LyquidResult<T>"));
             };
             let segment = ty_path
                 .path
@@ -358,7 +362,7 @@ fn expand_network_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result<
         }
         if matches!(parsed_attr.export.as_ref(), Some(ExportKind::Http(_))) {
             return Err(syn::Error::new_spanned(
-                func.sig.ident.clone(),
+                func.sig.ident,
                 "`export = http` is only supported on #[lyquid::method::instance]",
             ));
         }
@@ -373,7 +377,7 @@ fn expand_network_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result<
     } = parse_method_attr(attr, "lyquid::method::network")?;
     if matches!(export.as_ref(), Some(ExportKind::Http(_))) {
         return Err(syn::Error::new_spanned(
-            func.sig.ident.clone(),
+            func.sig.ident,
             "`export = http` is only supported on #[lyquid::method::instance]",
         ));
     }
@@ -396,7 +400,7 @@ fn expand_network_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result<
         quote::quote! { & #ctx_ident }
     };
     let params_ts = params.iter().map(|(ident, ty)| quote::quote! { #ident: #ty });
-    let export_flag = if matches!(export.as_ref(), Some(ExportKind::Ethereum)) {
+    let export_flag = if matches!(export.as_ref(), Some(ExportKind::Ethereum(_))) {
         quote::quote! { true }
     } else {
         quote::quote! { false }
@@ -494,7 +498,7 @@ fn expand_instance_function(attr: TokenStream, func: syn::ItemFn) -> syn::Result
                 quote::quote! { & #ctx_ident }
             };
             let params_ts = params.iter().map(|(ident, ty)| quote::quote! { #ident: #ty });
-            let export_flag = if matches!(export.as_ref(), Some(ExportKind::Ethereum)) {
+            let export_flag = if matches!(export.as_ref(), Some(ExportKind::Ethereum(_))) {
                 quote::quote! { true }
             } else {
                 quote::quote! { false }
@@ -613,11 +617,7 @@ fn expand_instance_upc_function(upc_path: syn::Path, func: syn::ItemFn) -> syn::
     } else {
         quote::quote! { & #ctx_ident }
     };
-    let is_response = upc_path
-        .segments
-        .first()
-        .map(|seg| seg.ident == "response")
-        .unwrap_or(false);
+    let is_response = upc_path.segments.first().is_some_and(|seg| seg.ident == "response");
 
     let (params_ts, ret_tokens): (Vec<TokenStream>, TokenStream) = if is_response {
         if ctx_mut {
@@ -630,14 +630,11 @@ fn expand_instance_upc_function(upc_path: syn::Path, func: syn::ItemFn) -> syn::
             ));
         }
 
-        let inner = match option_inner_type(&ret_inner) {
-            Some(inner) => inner,
-            None => {
-                return Err(syn::Error::new_spanned(
-                    ret_inner,
-                    "upc(response) must return LyquidResult<Option<T>>",
-                ));
-            }
+        let Some(inner) = option_inner_type(&ret_inner) else {
+            return Err(syn::Error::new_spanned(
+                ret_inner,
+                "upc(response) must return LyquidResult<Option<T>>",
+            ));
         };
 
         let (returned_ident, _returned_ty) = &params[0];
@@ -662,10 +659,7 @@ fn expand_instance_upc_function(upc_path: syn::Path, func: syn::ItemFn) -> syn::
 }
 
 fn option_inner_type(ty: &syn::Type) -> Option<syn::Type> {
-    let path = match ty {
-        syn::Type::Path(path) => path,
-        _ => return None,
-    };
+    let syn::Type::Path(path) = ty else { return None };
     let segment = path.path.segments.last()?;
     if segment.ident != "Option" {
         return None;
@@ -744,6 +738,7 @@ fn parse_method_attr(attr: TokenStream, attr_name: &str) -> syn::Result<MethodAt
         let mut export_kind = None::<String>;
         let mut http_method = None;
         let mut http_path_prefix = None;
+        let mut eth_guard = None;
 
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
@@ -793,11 +788,25 @@ fn parse_method_attr(attr: TokenStream, attr_name: &str) -> syn::Result<MethodAt
                     return Err(syn::Error::new_spanned(key, "duplicate `path_prefix` argument"));
                 }
                 http_path_prefix = Some(canonical_http_path_prefix(lit)?);
+            } else if key == "eth_guard" {
+                let value: syn::Ident = input.parse()?;
+                if eth_guard.is_some() {
+                    return Err(syn::Error::new_spanned(key, "duplicate `eth_guard` argument"));
+                }
+                eth_guard = match value.to_string().as_str() {
+                    "creator" => Some(EthExportGuard::Creator),
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            value,
+                            "unsupported Ethereum export guard; expected `creator`",
+                        ))
+                    }
+                };
             } else {
                 return Err(syn::Error::new_spanned(
                     key,
                     format!(
-                        "expected `group = foo::bar`, `export = eth`, or `export = http, method = \"GET\", path_prefix = \"/api\"` for #[{attr_name}]"
+                        "expected `group = foo::bar`, `export = eth`, `eth_guard = creator`, or `export = http, method = \"GET\", path_prefix = \"/api\"` for #[{attr_name}]"
                     ),
                 ));
             }
@@ -813,6 +822,12 @@ fn parse_method_attr(attr: TokenStream, attr_name: &str) -> syn::Result<MethodAt
                 "`method` and `path_prefix` are only valid with `export = http`",
             ));
         }
+        if !matches!(export_kind.as_deref(), Some("eth")) && eth_guard.is_some() {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "`eth_guard` is only valid with `export = eth`",
+            ));
+        }
 
         let export = match export_kind.as_deref() {
             Some("http") => {
@@ -823,7 +838,9 @@ fn parse_method_attr(attr: TokenStream, attr_name: &str) -> syn::Result<MethodAt
                 })?;
                 Some(ExportKind::Http(HttpExportAttr { method, path_prefix }))
             }
-            Some("eth") => Some(ExportKind::Ethereum),
+            Some("eth") => Some(ExportKind::Ethereum(EthExportAttr {
+                guard: eth_guard.unwrap_or(EthExportGuard::None),
+            })),
             None => None,
             _ => unreachable!("unsupported export kind should be rejected while parsing"),
         };
@@ -919,17 +936,31 @@ fn export_metadata(input: ExportMetadata<'_>) -> syn::Result<TokenStream> {
         ret_inner,
     } = input;
     match kind {
-        ExportKind::Ethereum => export_metadata_eth(is_network, group, fn_name, ctx_mut, params, ret_inner),
+        ExportKind::Ethereum(eth) => export_metadata_eth(is_network, group, fn_name, ctx_mut, params, ret_inner, &eth),
         ExportKind::Http(http) => export_metadata_http(is_network, group, fn_name, params, ret_inner, &http),
     }
 }
 
 fn export_metadata_eth(
     is_network: bool, group: Option<&syn::Path>, fn_name: &syn::Ident, ctx_mut: bool,
-    params: &[(syn::Ident, syn::Type)], ret_inner: &syn::Type,
+    params: &[(syn::Ident, syn::Type)], ret_inner: &syn::Type, eth: &EthExportAttr,
 ) -> syn::Result<TokenStream> {
     let group_string = group_path_string(group);
     let method_string = fn_name.to_string();
+    if matches!(eth.guard, EthExportGuard::Creator) {
+        if method_string == "__lyquid_constructor" {
+            return Err(syn::Error::new_spanned(
+                fn_name,
+                "`eth_guard = creator` is not supported on constructors",
+            ));
+        }
+        if !is_network || !ctx_mut || !matches!(group_string.as_str(), "main" | "node") {
+            return Err(syn::Error::new_spanned(
+                fn_name,
+                "`eth_guard = creator` is only supported on mutable network Ethereum exports in the `main` or `node` group",
+            ));
+        }
+    }
     let param_types = params
         .iter()
         .map(|(_, ty)| quote::quote! { <#ty as lyquid::runtime::ethabi::EthAbiType>::DESC })
@@ -945,6 +976,10 @@ fn export_metadata_eth(
         quote::quote! { true }
     } else {
         quote::quote! { false }
+    };
+    let eth_guard = match eth.guard {
+        EthExportGuard::None => quote::quote! { lyquid::consts::ETH_GUARD_NONE },
+        EthExportGuard::Creator => quote::quote! { lyquid::consts::ETH_GUARD_CREATOR },
     };
 
     Ok(quote::quote! {
@@ -966,9 +1001,10 @@ fn export_metadata_eth(
 
             #[unsafe(link_section = #section_name)]
             #[used]
-            static EXPORT: [u8; LEN] = lyquid::consts::export_encode::<LEN>(
+            static EXPORT: [u8; LEN] = lyquid::consts::export_encode_with_guard::<LEN>(
                 #category,
                 #mutable,
+                #eth_guard,
                 GROUP,
                 METHOD,
                 &PARAM_TYPES,
@@ -1150,9 +1186,8 @@ fn is_option_certified_call_params(ty: &syn::Type) -> bool {
         return false;
     };
     let mut iter = args.args.iter();
-    let inner = match iter.next() {
-        Some(syn::GenericArgument::Type(inner)) => inner,
-        _ => return false,
+    let Some(syn::GenericArgument::Type(inner)) = iter.next() else {
+        return false;
     };
     if iter.next().is_some() {
         return false;
@@ -1164,8 +1199,7 @@ fn is_option_certified_call_params(ty: &syn::Type) -> bool {
         .path
         .segments
         .last()
-        .map(|seg| seg.ident == "CertifiedCallParams")
-        .unwrap_or(false)
+        .is_some_and(|seg| seg.ident == "CertifiedCallParams")
 }
 
 // Internal helper: prefixes a function or module name.
@@ -1264,12 +1298,12 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
     let init_func = next_token_is_ident(&mut toplevel_tokens).expect("expect init func name");
     let categories = next_token_is_group(&mut toplevel_tokens).expect("expect a list of categories");
     let mut cats = HashMap::new();
-    for token in categories.stream().into_iter() {
+    for token in categories.stream() {
         let grp = token_is_group(token).expect("expect category info");
         let mut iter = grp.stream().into_iter();
         let cat_id = next_token_is_ident(&mut iter).expect("expect category identifer");
         let cat_prefix = next_token_is_ident(&mut iter).expect("expect category prefix");
-        cats.insert(cat_id.to_string(), (TokenStream::from_iter(iter), cat_prefix));
+        cats.insert(cat_id.to_string(), (iter.collect::<TokenStream>(), cat_prefix));
     }
     let mut struct_fields = HashMap::new(); // maps from categories to a token stream of struct fields
     let mut struct_inits = HashMap::new(); // maps from categories to a token stream of field initializers
@@ -1305,9 +1339,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         let mut type_ = type_;
         let mut init = init;
 
-        let (cat_value, _) = match cats.get(&cat_str) {
-            Some(v) => v,
-            None => panic!("invalid category {}", cat),
+        let Some((cat_value, _)) = cats.get(&cat_str) else {
+            panic!("invalid category {cat}")
         };
 
         let field_ts = struct_fields.entry(cat_str.clone()).or_insert_with(TokenStream::new);
@@ -1376,7 +1409,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         .entry("network".to_string())
         .or_insert_with(TokenStream::new)
         .extend([quote::quote! {
-            pub __internal: &'static mut runtime::internal::BuiltinNetworkState,
+            #[allow(dead_code)]
+            __internal: &'static mut runtime::internal::BuiltinNetworkState,
         }]);
     struct_inits
         .entry("network".to_string())
@@ -1394,7 +1428,8 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
         .entry("instance".to_string())
         .or_insert_with(TokenStream::new)
         .extend([quote::quote! {
-            pub __internal: &'static mut runtime::internal::BuiltinInstanceState,
+            #[allow(dead_code)]
+            __internal: &'static mut runtime::internal::BuiltinInstanceState,
         }]);
     struct_inits
         .entry("instance".to_string())
@@ -1410,7 +1445,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
 
     // now we summary up each category and generate output
     let mut structs = TokenStream::new();
-    for (cat, (_, cat_prefix)) in cats.iter() {
+    for (cat, (_, cat_prefix)) in &cats {
         let field_ts = struct_fields.entry(cat.clone()).or_insert_with(TokenStream::new);
         let init_ts = struct_inits.entry(cat.clone()).or_insert_with(TokenStream::new);
         let sname = quote::format_ident!("{}{}", cat_prefix, struct_suffix);
@@ -1468,25 +1503,45 @@ mod tests {
     }
 
     #[test]
+    fn eth_export_attr_accepts_creator_guard() {
+        let attr = parse_method_attr(
+            quote::quote!(eth_guard = creator, export = eth),
+            "lyquid::method::network",
+        )
+        .expect("Ethereum export guard should parse");
+
+        let Some(ExportKind::Ethereum(eth)) = attr.export else {
+            panic!("Ethereum metadata should be present");
+        };
+        assert!(matches!(eth.guard, EthExportGuard::Creator));
+    }
+
+    #[test]
+    fn eth_export_attr_rejects_guard_without_eth_export() {
+        let Err(err) = parse_method_attr(quote::quote!(eth_guard = creator), "lyquid::method::network") else {
+            panic!("guard without an Ethereum export should fail")
+        };
+        assert!(err.to_string().contains("only valid with `export = eth`"));
+    }
+
+    #[test]
     fn http_export_attr_rejects_unsupported_method() {
-        let err = match parse_method_attr(
+        let Err(err) = parse_method_attr(
             quote::quote!(export = http, method = "CONNECT", path_prefix = "/api"),
             "lyquid::method::instance",
-        ) {
-            Ok(_) => panic!("unsupported HTTP method should fail"),
-            Err(err) => err,
+        ) else {
+            panic!("unsupported HTTP method should fail")
         };
         assert!(err.to_string().contains("unsupported HTTP export method"));
     }
 
     #[test]
     fn http_export_attr_rejects_non_absolute_prefix() {
-        let err = match parse_method_attr(
+        let Err(err) = parse_method_attr(
             quote::quote!(export = http, method = "GET", path_prefix = "api"),
             "lyquid::method::instance",
-        ) {
-            Ok(_) => panic!("non-absolute path prefix should fail"),
-            Err(err) => err,
+        ) else {
+            panic!("non-absolute path prefix should fail")
         };
         assert!(err.to_string().contains("absolute path"));
     }
@@ -1508,8 +1563,26 @@ mod tests {
     }
 
     #[test]
+    fn eth_export_signature_validation_rejects_creator_guard_without_public_wrapper() {
+        let Err(err) = export_metadata_eth(
+            true,
+            Some(&syn::parse_quote!(aux)),
+            &quote::format_ident!("setup"),
+            true,
+            &[],
+            &syn::parse_quote!(()),
+            &EthExportAttr {
+                guard: EthExportGuard::Creator,
+            },
+        ) else {
+            panic!("creator guard on an unwrapped group should fail")
+        };
+        assert!(err.to_string().contains("mutable network Ethereum exports"));
+    }
+
+    #[test]
     fn http_export_signature_validation_rejects_network_methods() {
-        let err = match export_metadata_http(
+        let Err(err) = export_metadata_http(
             true,
             None,
             &quote::format_ident!("api"),
@@ -1519,9 +1592,8 @@ mod tests {
                 method: "GET".to_owned(),
                 path_prefix: "/api".to_owned(),
             },
-        ) {
-            Ok(_) => panic!("network HTTP export should fail"),
-            Err(err) => err,
+        ) else {
+            panic!("network HTTP export should fail")
         };
         assert!(err.to_string().contains("only supported on"));
     }
@@ -1529,7 +1601,7 @@ mod tests {
     #[test]
     fn http_export_signature_validation_rejects_oversized_metadata() {
         let path_prefix = format!("/{}", "a".repeat(u16::MAX as usize));
-        let err = match export_metadata_http(
+        let Err(err) = export_metadata_http(
             false,
             None,
             &quote::format_ident!("api"),
@@ -1539,9 +1611,8 @@ mod tests {
                 method: "GET".to_owned(),
                 path_prefix,
             },
-        ) {
-            Ok(_) => panic!("oversized HTTP metadata should fail"),
-            Err(err) => err,
+        ) else {
+            panic!("oversized HTTP metadata should fail")
         };
         assert!(err.to_string().contains("path_prefix"));
     }

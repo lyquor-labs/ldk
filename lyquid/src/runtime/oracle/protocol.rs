@@ -542,6 +542,13 @@ impl<'a> StateVar<'a> {
 
     /// Performs pre-validation checks before this node signs an oracle validation response.
     pub fn __pre_validation(
+        &self, header: &OracleHeader, params: &CallParams, group: &str, from: NodeID, lyquid_id: LyquidID,
+    ) -> Option<bool> {
+        let oracle = crate::runtime::internal::builtin_network_state().oracle_src(self.topic())?;
+        self.__pre_validation_with_oracle(oracle, header, params, group, from, lyquid_id)
+    }
+
+    fn __pre_validation_with_oracle(
         &self, oracle: &OracleSrc, header: &OracleHeader, params: &CallParams, group: &str, from: NodeID,
         lyquid_id: LyquidID,
     ) -> Option<bool> {
@@ -636,6 +643,15 @@ impl<'a> StateVar<'a> {
 
     /// Decode and verify two-phase proposal payload and signatures against current oracle state.
     pub fn __pre_validation_two_phase(
+        &self, header: &OracleHeader, extra: &Bytes, lyquid_id: LyquidID, group: &str, proposer: NodeID,
+    ) -> LyquidResult<Option<(Bytes, HashBytes, Vec<ProposalInput>)>> {
+        let Some(oracle) = crate::runtime::internal::builtin_network_state().oracle_src(self.topic()) else {
+            return Ok(None);
+        };
+        self.__pre_validation_two_phase_with_oracle(oracle, header, extra, lyquid_id, group, proposer)
+    }
+
+    fn __pre_validation_two_phase_with_oracle(
         &self, oracle: &OracleSrc, header: &OracleHeader, extra: &Bytes, lyquid_id: LyquidID, group: &str,
         proposer: NodeID,
     ) -> LyquidResult<Option<(Bytes, HashBytes, Vec<ProposalInput>)>> {

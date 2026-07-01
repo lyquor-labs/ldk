@@ -85,6 +85,19 @@ use thiserror::Error;
 /// }
 /// ```
 ///
+/// #### Ethereum export creator guard
+/// ```ignore
+/// #[lyquid::method::network(export = eth, eth_guard = creator)]
+/// fn setup(ctx: &mut _, value: U256) -> LyquidResult<()> {
+///     *ctx.network.value = value;
+///     Ok(())
+/// }
+/// ```
+/// `eth_guard = creator` adds a `msg.sender == creator` check to the generated EVM transaction
+/// wrapper for mutable `main` or `node` network exports. It does not protect calls that arrive
+/// through other Lyquor paths; methods that require runtime authorization should still validate
+/// the call context inside the method body.
+///
 /// ### UPC Methods
 ///
 /// UPC expands into three instance functions using dedicated groups.

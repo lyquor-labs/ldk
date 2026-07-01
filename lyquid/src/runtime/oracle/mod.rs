@@ -147,21 +147,19 @@ macro_rules! __lyquid_define_oracle_internal_methods {
 
         // Initialize source-side oracle staging for a target. This does not touch target state;
         // the topic becomes active only after the first epoch advance/finalize round settles.
-        #[$crate::method::network(group = oracle::internal, export = eth)]
-        fn __lyquor_oracle_on_initialize(
+        #[$crate::method::network(export = eth, eth_guard = creator)]
+        fn __lyquor_oracle_initialize(
             ctx: &mut _,
             topic: String,
             target_addr: $crate::lyquor_primitives::Address,
             is_evm: bool,
             committee: Vec<$crate::lyquor_primitives::NodeID>,
             threshold: u16,
-        ) -> LyquidResult<bool> {
+        ) -> LyquidResult<()> {
             let target = $crate::runtime::oracle::oracle_target_from_address(target_addr, is_evm)?;
-            Ok(ctx
-                .network
-                .__internal
-                .oracle_src_mut(topic.as_str())
-                .initialize(target, committee, threshold))
+            let _ = $crate::runtime::oracle::StateVar::new(topic.as_str())
+                .initialize(&mut ctx, target, committee, threshold);
+            Ok(())
         }
 
         // LVM target-side epoch advance method.

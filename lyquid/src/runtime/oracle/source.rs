@@ -536,6 +536,16 @@ impl<'b> StateVar<'b> {
         self.topic
     }
 
+    /// Stage the first committee for a target.
+    ///
+    /// The staged committee becomes active only after the first oracle epoch
+    /// advance/finalize round settles.
+    pub fn initialize<T>(&self, _ctx: &mut T, target: OracleTarget, committee: Vec<NodeID>, threshold: u16) -> bool {
+        crate::runtime::internal::builtin_network_state()
+            .oracle_src_mut(self.topic())
+            .initialize(target, committee, threshold)
+    }
+
     /// Add a node to the committee. If the node exists, returns false.
     pub fn add_node<T>(&self, _ctx: &mut T, target: OracleTarget, id: NodeID) -> bool {
         crate::runtime::internal::builtin_network_state()

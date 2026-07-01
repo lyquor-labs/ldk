@@ -549,6 +549,20 @@ where
             .oracle_dest(self.topic)
             .signer_node_id(sid)
     }
+
+    #[doc(hidden)]
+    pub fn __lyquid_verify_oracle_finalize_cert(&mut self, params: &CallParams) -> bool {
+        internal::builtin_network_state()
+            .oracle_src(self.topic)
+            .is_some_and(|oracle| oracle.verify_finalize_cert(self.lyquid_id, params, &self.cert))
+    }
+
+    #[doc(hidden)]
+    pub fn __lyquid_verify_oracle_dest_cert(&mut self, params: CallParams) -> bool {
+        internal::builtin_network_state()
+            .oracle_dest(self.topic)
+            .verify(self.lyquid_id, params, &self.cert)
+    }
 }
 
 /// Read-only wrapper for network state variables.

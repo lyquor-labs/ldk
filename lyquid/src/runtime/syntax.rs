@@ -159,10 +159,10 @@ macro_rules! __lyquid_state_generate {
                 #[used]
                 static LDK_INFO: [u8; $crate::consts::LDK_PAYLOAD.len()] = $crate::consts::LDK_PAYLOAD;
             };
-        }
 
-        $crate::__lyquid_define_oracle_internal_methods!();
-        $crate::__lyquid_define_oracle_epoch_vote_handlers!($($token)*);
+            $crate::__lyquid_define_oracle_internal_methods!();
+            $crate::__lyquid_define_oracle_epoch_vote_handlers!($($token)*);
+        }
     }
 }
 
@@ -189,15 +189,8 @@ macro_rules! __lyquid_categorize_methods {
                         input: input_raw.clone(),
                         abi: $crate::lyquor_primitives::InputABI::Lyquor,
                     };
-                    let me = ctx.lyquid_id;
                     let mut $handle = crate::__lyquid::CertifiedContext::new(ctx, oc, topic)?;
-                    let cert = &$handle.cert;
-                    if !$handle
-                        .network
-                        .__internal
-                        .oracle_src(topic)
-                        .is_some_and(|oracle| oracle.verify_finalize_cert(me, &params, cert))
-                    {
+                    if !$handle.__lyquid_verify_oracle_finalize_cert(&params) {
                         return Err(LyquidError::InputCert)
                     }
 
@@ -231,11 +224,9 @@ macro_rules! __lyquid_categorize_methods {
                         input: input_raw.clone(),
                         abi: $crate::lyquor_primitives::InputABI::Lyquor,
                     };
-                    let me = ctx.lyquid_id;
                     let mut $handle = crate::__lyquid::CertifiedContext::new(ctx, oc, topic)?;
-                    let cert = &$handle.cert;
 
-                    if !$handle.network.__internal.oracle_dest(topic).verify(me, params, cert) {
+                    if !$handle.__lyquid_verify_oracle_dest_cert(params) {
                         return Err(LyquidError::InputCert)
                     }
 
@@ -544,12 +535,8 @@ macro_rules! __lyquid_categorize_methods {
                 // NOTE: We don't need to check `_target` here, because in a two-phase process, the
                 // target is determined by the user-defined aggregate function, and thus already
                 // implicitly checked during validate() (as it invokes aggregate() independently).
-                let Some(oracle) = ctx.network.__internal.oracle_src(stringify!($name)) else {
-                    return Ok(false);
-                };
                 let (init, _nonce, inputs) = match ctx.network.$name.clone()
                     .__pre_validation_two_phase(
-                        oracle,
                         &header,
                         &extra,
                         ctx.lyquid_id,
@@ -621,11 +608,7 @@ macro_rules! __lyquid_categorize_methods {
             ) -> LyquidResult<$crate::runtime::oracle::ValidateResponse> {
                 let expected_group = concat!(stringify!($name) $(, "::", stringify!($group))*);
                 let src = ctx.network.$name.clone();
-                let Some(oracle) = ctx.network.__internal.oracle_src(stringify!($name)) else {
-                    return Err(LyquidError::LyquidRuntime("Mismatch config".into()))
-                };
                 let epoch_advance = match src.__pre_validation(
-                    oracle,
                     &msg.header,
                     &msg.params,
                     expected_group,

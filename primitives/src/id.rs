@@ -47,10 +47,10 @@ impl NodeID {
 }
 
 impl From<u64> for NodeID {
-    fn from(x: u64) -> NodeID {
+    fn from(x: u64) -> Self {
         let mut id = [0; 32];
         id[32 - 8..].copy_from_slice(&x.to_be_bytes());
-        NodeID::new(id)
+        Self::new(id)
     }
 }
 
@@ -117,8 +117,8 @@ impl std::str::FromStr for NodeID {
         id.copy_from_slice(&bytes[..32]);
         let mut checksum = [0u8; 3];
         checksum.copy_from_slice(&bytes[32..]);
-        let provided = NodeID(id, checksum);
-        let computed = NodeID::new(id);
+        let provided = Self(id, checksum);
+        let computed = Self::new(id);
         if provided != computed {
             return Err(IDError::Checksum);
         }
@@ -146,7 +146,7 @@ impl Serialize for NodeID {
 }
 
 impl<'de> Deserialize<'de> for NodeID {
-    fn deserialize<D>(deserializer: D) -> Result<NodeID, D::Error>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -155,7 +155,7 @@ impl<'de> Deserialize<'de> for NodeID {
             s.parse().map_err(|e| serde::de::Error::custom(format!("{e:?}")))
         } else {
             let (id, checksum) = <([u8; 32], [u8; 3]) as Deserialize>::deserialize(deserializer)?;
-            Ok(NodeID(id, checksum))
+            Ok(Self(id, checksum))
         }
     }
 }
@@ -182,7 +182,7 @@ impl Serialize for LyquidID {
 }
 
 impl<'de> Deserialize<'de> for LyquidID {
-    fn deserialize<D>(deserializer: D) -> Result<LyquidID, D::Error>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -191,7 +191,7 @@ impl<'de> Deserialize<'de> for LyquidID {
             s.parse().map_err(|e| serde::de::Error::custom(format!("{e:?}")))
         } else {
             let arr = <[u8; 20] as Deserialize>::deserialize(deserializer)?;
-            Ok(LyquidID(arr))
+            Ok(Self(arr))
         }
     }
 }
@@ -203,8 +203,8 @@ impl From<LyquidID> for [u8; 20] {
 }
 
 impl From<LyquidID> for Address {
-    fn from(id: LyquidID) -> Address {
-        Address(id.0.into())
+    fn from(id: LyquidID) -> Self {
+        Self(id.0.into())
     }
 }
 
@@ -228,7 +228,7 @@ impl From<Address> for LyquidID {
 
 impl TryFrom<&[u8]> for LyquidID {
     type Error = std::array::TryFromSliceError;
-    fn try_from(s: &[u8]) -> Result<LyquidID, Self::Error> {
+    fn try_from(s: &[u8]) -> Result<Self, Self::Error> {
         Ok(Self(s.try_into()?))
     }
 }
@@ -330,7 +330,7 @@ impl std::str::FromStr for LyquidID {
             return Err(IDError::Checksum);
         }
 
-        Ok(LyquidID(id))
+        Ok(Self(id))
     }
 }
 
@@ -357,7 +357,7 @@ impl fmt::Display for LyquidNumber {
 
 impl LyquidNumber {
     /// Zero image and variable version.
-    pub const ZERO: Self = LyquidNumber { image: 0, var: 0 };
+    pub const ZERO: Self = Self { image: 0, var: 0 };
 }
 
 impl From<u64> for LyquidNumber {
@@ -370,13 +370,13 @@ impl From<u64> for LyquidNumber {
 }
 
 impl From<&LyquidNumber> for u64 {
-    fn from(n: &LyquidNumber) -> u64 {
-        ((n.image as u64) << 32) | n.var as u64
+    fn from(n: &LyquidNumber) -> Self {
+        ((n.image as Self) << 32) | n.var as Self
     }
 }
 
 impl From<LyquidNumber> for u64 {
-    fn from(n: LyquidNumber) -> u64 {
+    fn from(n: LyquidNumber) -> Self {
         (&n).into()
     }
 }
@@ -454,7 +454,7 @@ mod tests {
     fn test_lyquid_id_rejects_invalid_labels() {
         let valid = "Lyquid-ahjg4huwvban3bvhxue7rcbaw4mnltwyolhqa";
         let mut bad_checksum = valid.to_string();
-        bad_checksum.replace_range("Lyquid-".len().."Lyquid-".len() + 1, "b");
+        bad_checksum.replace_range("Lyquid-".len()..="Lyquid-".len(), "b");
 
         assert!(matches!(bad_checksum.parse::<LyquidID>(), Err(IDError::Checksum)));
         assert!(matches!(

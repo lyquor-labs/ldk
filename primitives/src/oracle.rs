@@ -321,8 +321,7 @@ pub mod eth {
                     params
                         .group
                         .split_once("::")
-                        .map(|(topic, _)| topic)
-                        .unwrap_or(params.group.as_str())
+                        .map_or(params.group.as_str(), |(topic, _)| topic)
                         .to_string(),
                     params.input.to_vec(),
                 )

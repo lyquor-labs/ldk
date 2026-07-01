@@ -1,15 +1,11 @@
 [workspace]
-members = [
-    "primitives",
-    "lyquid",
-    "lyquid/proc",
-]
+members = ["primitives", "lyquid", "lyquid/proc"]
 exclude = ["lyquid-template"]
 resolver = "3"
 
 [workspace.package]
 edition = "2024"
-version = "0.1.1"
+version = "0.2.1"
 homepage = "https://lyquor.xyz/"
 repository = "https://github.com/lyquor-labs/ldk"
 license = "Apache-2.0"
@@ -18,141 +14,52 @@ license = "Apache-2.0"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(rust_analyzer)'] }
 
 [workspace.lints.clippy]
+# Always-deny footguns (zero occurrences today; these are regression guards).
 dbg_macro = "deny"
 todo = "deny"
+unimplemented = "deny"
+mem_forget = "deny"
+rc_mutex = "deny"
+mutex_atomic = "deny"
+lossy_float_literal = "deny"
+float_cmp_const = "deny"
+empty_drop = "deny"
+string_add = "deny"
+wildcard_dependencies = "deny"
+# Style/perf cleanups kept clippy-clean (CI gates on `-D warnings`, so `warn` is
+# blocking in CI; promote to `deny` if you want the same failure locally).
+uninlined_format_args = "warn"
+use_self = "warn"
+semicolon_if_nothing_returned = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+redundant_closure_for_method_calls = "warn"
+redundant_clone = "warn"
+explicit_iter_loop = "warn"
+explicit_into_iter_loop = "warn"
+match_same_arms = "warn"
+or_fun_call = "warn"
+manual_string_new = "warn"
+needless_continue = "warn"
+redundant_else = "warn"
+single_char_pattern = "warn"
+range_plus_one = "warn"
+stable_sort_primitive = "warn"
+unnested_or_patterns = "warn"
+bool_to_int_with_if = "warn"
+collapsible_else_if = "warn"
+from_iter_instead_of_collect = "warn"
 
 [workspace.dependencies]
 alloy-sol-types = { version = "1.6", default-features = false }
-anyhow = "1.0"
-assert_cmd = "2.2"
-async-trait = "0.1"
-axum = { version = "0.8" }
-barstrainer-client = { path = "platform/barstrainer/client" }
-barstrainer-proto = { path = "platform/barstrainer/proto" }
-barstrainer-server = { path = "platform/barstrainer/server" }
-base64 = "0.22"
 bytes = "1.11"
-clap = { version = "4.6.1" }
-config = { version = "0.15", default-features = false, features = ["toml", "json", "yaml"] }
-const-hex = "1.19"
-criterion = { version = "0.8", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
-derive_more = { version = "2.1", features = ["debug"] }
-duct = "1.1"
-ed25519-dalek = { version = "2.2", default-features = false, features = ["fast", "pkcs8", "pem", "std"] }
-futures = "0.3"
 hashbrown = { version = "0.17", default-features = false }
-http = "1.4"
-http-body-util = "0.1"
-hyper = { version = "1.9", features = ["http2", "server", "client"] }
-hyper-util = { version = "0.1", features = ["tokio", "http2", "client", "server"] }
-instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "aws-lc-rs"] }
-ipnet = "2.12"
-jsonrpsee = { version = "0.26" }
-jsonrpsee-client-transport = { version = "0.26", default-features = false }
-jsonrpsee-ws-client = { version = "0.26", default-features = false }
-k256 = { version = "0.13", default-features = false }
-lazy_static = "1.5"
-lru = "0.18"
-lyquid = { path = "lyquid", version = "0.1.1" }
-lyquid-agent = { path = "lyquid-agent" }
-lyquid-examples = { path = "lyquid-examples" }
-lyquid-fixtures = { path = "testing/lyquid-fixtures" }
-lyquid-llm = { path = "lyquid-llm" }
-lyquid-proc = { path = "lyquid/proc", version = "=0.1.1" }
-lyquor-api = { path = "platform/api" }
-lyquor-cli = { path = "toolchain/cli" }
-lyquor-config = { path = "toolchain/config" }
-lyquor-crypto = { path = "platform/crypto" }
-lyquor-db = { path = "platform/db" }
-lyquor-eth = { path = "toolchain/eth" }
-lyquor-hosting = { path = "platform/hosting" }
-lyquor-image-store = { path = "platform/image-store" }
-lyquor-jsonrpc = { path = "toolchain/jsonrpc" }
-lyquor-net = { path = "platform/net" }
-lyquor-oci = { path = "toolchain/oci" }
-lyquor-primitives = { path = "primitives", version = "0.1.1" }
-lyquor-proto = { path = "toolchain/proto" }
-lyquor-seq = { path = "platform/seq" }
-lyquor-state = { path = "platform/state" }
-lyquor-test = { path = "testing/test" }
-lyquor-test-harness = { path = "testing/test-harness" }
-lyquor-tls = { path = "toolchain/tls" }
-lyquor-ui = { path = "platform/ui" }
-lyquor-upc = { path = "platform/upc" }
-lyquor-vm = { path = "platform/vm" }
-lyquor-wasm = { path = "toolchain/wasm" }
-nix = { version = "0.31.2", default-features = false, features = ["signal"] }
-oci-client = { version = "0.17.0", default-features = false, features = ["rustls-tls"] }
-parking_lot = { version = "0.12" }
-paste = "1.0"
-pbjson = "0.9"
-pbjson-build = "0.9"
+lyquid-proc = { path = "lyquid/proc", version = "=0.2.1" }
+lyquor-primitives = { path = "primitives", version = "0.2.1" }
 proc-macro2 = "1.0.106"
-prost = "0.14"
-prost-build = "0.14"
-prost-types = "0.14"
-protoc-bin-vendored = "3.2"
 quote = "1.0"
-rand = "0.10.1"
-rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
-regex = "1.12.3"
-reqwest = { version = "0.13.3", default-features = false }
-rust-embed = "8.11"
-rustls = { version = "0.23", features = ["aws_lc_rs"], default-features = false }
-rustls-pki-types = { version = "1.14" }
-rustls-platform-verifier = { version = "0.7", default-features = false }
-rustls-webpki = { version = "0.103.13", features = ["aws-lc-rs"] }
-scc = "3.7"
-semver = "1"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
-serde_json = "1.0.150"
 sha2 = { version = "0.11", default-features = false }
-shaker = { path = "toolchain/shaker" }
 syn = "2.0"
-tar = "0.4.46"
-tempfile = { version = "3.27" }
-testcontainers = { version = "0.27.3", default-features = false, features = ["aws-lc-rs"] }
 thiserror = "2.0"
-tokio = { version = "1.52", features = ["full"] }
-tokio-rustls = { version = "0.26" }
-tokio-stream = "0.1.18"
-tokio-util = { version = "0.7", features = ["rt", "time"] }
-tonic = { version = "0.14", features = ["transport", "tls-native-roots"] }
-tonic-prost = "0.14"
-tonic-prost-build = "0.14"
-tower = { version = "0.5", features = ["retry", "util"] }
-tower-http = { version = "0.7" }
-tracing = { version = "0.1" }
-tracing-futures = "0.2.5"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 typed-builder = "0.23"
-wasmparser = "0.252"
-x509-parser = "0.18.1"
-xz2 = { version = "0.1.7", features = ["static"] }
-
-# These crates run hot during Wasmtime JIT compilation (module lowering, instruction selection,
-# and codegen) at *runtime*, so raising opt-level here gives most of the speedup without
-# sacrificing debuggability of our own application code.
-[profile.dev.package.cranelift-codegen]
-opt-level = 2
-
-[profile.dev.package.cranelift-frontend]
-opt-level = 2
-
-[profile.dev.package.cranelift-native]
-opt-level = 2
-
-[profile.dev.package.regalloc2]
-opt-level = 2
-
-[profile.dev.package.wasmtime-environ]
-opt-level = 1
-
-[profile.dev.package.wasmtime-internal-cranelift]
-opt-level = 2
-
-[profile.dev.package.wasmtime-internal-unwinder]
-opt-level = 1
-
-[profile.dev.package.cranelift-isle]
-opt-level = 1

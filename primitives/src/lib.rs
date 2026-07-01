@@ -239,7 +239,7 @@ impl<'de> Deserialize<'de> for HashBytes {
         }
         let mut array = [0u8; 32];
         array.copy_from_slice(&bytes);
-        Ok(HashBytes(blake3::Hash::from(array)))
+        Ok(Self(blake3::Hash::from(array)))
     }
 }
 

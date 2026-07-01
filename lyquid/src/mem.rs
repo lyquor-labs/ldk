@@ -52,11 +52,11 @@ pub struct Slice<A: Guest> {
 impl<A: Guest> Slice<A> {
     /// Returns the encoded size of this guest slice header.
     pub const fn size() -> usize {
-        core::mem::size_of::<Slice<A>>()
+        core::mem::size_of::<Self>()
     }
 
     /// Returns the encoded alignment of this guest slice header.
     pub const fn align() -> usize {
-        core::mem::align_of::<Slice<A>>()
+        core::mem::align_of::<Self>()
     }
 }

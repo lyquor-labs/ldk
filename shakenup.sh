@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Shakenup - Lyquor development environment setup
-FOUNDRY_VERSION="v1.5.0"
+FOUNDRY_VERSION="v1.7.1"
 SHAKENUP_DIR="${SHAKENUP_DIR:-$HOME/.shakenup}"
 
 # Colors and logging
@@ -241,9 +241,21 @@ setup_wasm_target() {
 
 setup_foundry() {
     local foundry_home="$SHAKENUP_DIR/foundry" bin_dir="$SHAKENUP_DIR/bin"
-    [[ -f "$foundry_home/bin/forge" ]] && { log_success "Foundry already installed"; return; }
+    if [[ -x "$foundry_home/bin/forge" ]]; then
+        local installed_raw installed_version
+        installed_raw="$("$foundry_home/bin/forge" --version 2>/dev/null || true)"
+        installed_version="$(sed -nE 's/.*Version: ([0-9]+\.[0-9]+\.[0-9]+).*/v\1/p' <<< "$installed_raw" | head -n1)"
 
-    log_step "Installing Foundry..."
+        if [[ "$FOUNDRY_VERSION" == "stable" || "$installed_version" == "$FOUNDRY_VERSION" ]]; then
+            log_success "Foundry already installed"
+            return
+        fi
+
+        log_step "Updating Foundry from ${installed_version:-unknown version} to $FOUNDRY_VERSION..."
+    else
+        log_step "Installing Foundry..."
+    fi
+
     mkdir -p "$foundry_home/bin" "$bin_dir"
     local platform=$(detect_platform "foundry") url
 

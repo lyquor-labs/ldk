@@ -64,12 +64,12 @@ _localnet_log() {
 
 # Resolve the bartender OCI reference to deploy. Precedence:
 #   1. LYQUOR_BARTENDER_REFERENCE (full reference)
-#   2. ghcr.io/lyquor-labs/lyquids:bartender-<LYQUOR_IMAGE_TAG> (defaults to v0.1.1)
+#   2. ghcr.io/lyquor-labs/lyquids:bartender-<LYQUOR_IMAGE_TAG> (defaults to v0.2.1)
 localnet_bartender_reference() {
     if [[ -n "${LYQUOR_BARTENDER_REFERENCE:-}" ]]; then
         printf '%s' "$LYQUOR_BARTENDER_REFERENCE"
     else
-        printf 'ghcr.io/lyquor-labs/lyquids:bartender-%s' "${LYQUOR_IMAGE_TAG:-v0.1.1}"
+        printf 'ghcr.io/lyquor-labs/lyquids:bartender-%s' "${LYQUOR_IMAGE_TAG:-v0.2.1}"
     fi
 }
 
@@ -131,7 +131,7 @@ _localnet_wait_bartender() {
     local i
     for i in $(seq 1 120); do
         if curl --data '{}' --header 'content-type: application/json' \
-            -sf "${http_url}/lyquor.lyquid.v1.LyquidService/GetLyquidInfo" | grep -q contract; then
+            -sf "${http_url}/lyquor.lyquid.v1.LyquidService/GetLyquidInfo" | _localnet_has_bartender_contract; then
             return 0
         fi
         sleep 1
@@ -148,7 +148,7 @@ _localnet_deploy_bartender() {
     reference="$(localnet_bartender_reference)"
 
     if curl --data '{}' --header 'content-type: application/json' \
-        -sf "${http_url}/lyquor.lyquid.v1.LyquidService/GetLyquidInfo" | grep -q contract; then
+        -sf "${http_url}/lyquor.lyquid.v1.LyquidService/GetLyquidInfo" | _localnet_has_bartender_contract; then
         _localnet_log "Bartender already deployed."
         return 0
     fi
@@ -169,6 +169,10 @@ _localnet_wait_anvil() {
     done
     _localnet_log "Anvil did not become ready at ${rpc_url}."
     return 1
+}
+
+_localnet_has_bartender_contract() {
+    grep -Eq '"value"[[:space:]]*:[[:space:]]*"0x[0-9a-fA-F]{40}"'
 }
 
 _localnet_write_submitter_key() {

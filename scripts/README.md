@@ -33,7 +33,7 @@ point every process is stopped and the scratch directory is removed.
 ### Choosing the bartender image
 
 Bartender is **not built from source**; it is deployed straight from
-`ghcr.io/lyquor-labs/lyquids`. By default the `bartender-v0.1.1` tag is used.
+`ghcr.io/lyquor-labs/lyquids`. By default the `bartender-v0.2.1` tag is used.
 
 ```bash
 # Pin to a released version.
@@ -77,11 +77,24 @@ shaker deploy --endpoint ws://127.0.0.1:10087/ws \
   --reference http://127.0.0.1:10087/lyquids:hello lyquid-examples/hello/Cargo.toml
 ```
 
+## Serving a lyquid locally
+
+Localnet does not publish wildcard DNS for per-lyquid virtual hosts. After
+deployment, use `shaker serve` to expose one Lyquid through localhost while
+preserving the node's virtual-host routing:
+
+```bash
+shaker serve <LYQUID_ID> --endpoint ws://127.0.0.1:10087/ws
+```
+
+Open the printed `http://127.0.0.1:<port>/` URL to reach the Lyquid's HTTP
+exports, static assets, and relative `/lyquid/*` paths.
+
 ## Environment variables
 
 | Variable                     | Purpose                                                        |
 | ---------------------------- | ------------------------------------------------------------- |
-| `LYQUOR_IMAGE_TAG`           | Tag used to build the bartender reference (`v0.1.1`).     |
+| `LYQUOR_IMAGE_TAG`           | Tag used to build the bartender reference (`v0.2.1`).     |
 | `LYQUOR_BARTENDER_REFERENCE` | Full bartender OCI reference; overrides `LYQUOR_IMAGE_TAG`.    |
 | `LYQUOR_BIN_DIR`             | Directory containing `lyquor`/`shaker` if not already on PATH. |
 | `LYQUOR_LOG`                 | Node log level (`info`, `debug`, ...).                         |

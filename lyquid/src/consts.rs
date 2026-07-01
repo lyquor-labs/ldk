@@ -13,7 +13,11 @@ pub const INFO_VERSION: u8 = 1;
 /// Custom WASM section name that stores Ethereum export descriptors.
 pub const EXPORT_SECTION: &str = "lyquor.method.export.eth";
 /// Version tag for `EXPORT_SECTION` payloads.
-pub const EXPORT_VERSION: u8 = 1;
+pub const EXPORT_VERSION: u8 = 2;
+/// No EVM wrapper guard policy.
+pub const ETH_GUARD_NONE: u8 = 0;
+/// Restrict generated EVM wrapper transactions to the deployment creator.
+pub const ETH_GUARD_CREATOR: u8 = 1;
 /// Custom WASM section name that stores HTTP export descriptors.
 pub const HTTP_EXPORT_SECTION: &str = "lyquor.method.export.http";
 /// Version tag for `HTTP_EXPORT_SECTION` payloads.
@@ -120,8 +124,8 @@ const fn needs_location(desc: EthAbiTypeDesc) -> bool {
 #[cfg(feature = "ldk")]
 pub const fn export_len(group: &str, method: &str, params: &[EthAbiTypeDesc], returns: &[EthAbiTypeDesc]) -> usize {
     let mut len = 0;
-    // version + category + mutable + param_count + return_count + group_len + method_len
-    len += 1 + 1 + 1 + 1 + 1 + 2 + 2;
+    // version + category + mutable + eth_guard + param_count + return_count + group_len + method_len
+    len += 1 + 1 + 1 + 1 + 1 + 1 + 2 + 2;
     len += group.len();
     len += method.len();
 
@@ -144,6 +148,15 @@ pub const fn export_len(group: &str, method: &str, params: &[EthAbiTypeDesc], re
 pub const fn export_encode<const LEN: usize>(
     category: u8, mutable: bool, group: &str, method: &str, params: &[EthAbiTypeDesc], returns: &[EthAbiTypeDesc],
 ) -> [u8; LEN] {
+    export_encode_with_guard::<LEN>(category, mutable, ETH_GUARD_NONE, group, method, params, returns)
+}
+
+/// Encodes an Ethereum export descriptor with an EVM wrapper guard policy.
+#[cfg(feature = "ldk")]
+pub const fn export_encode_with_guard<const LEN: usize>(
+    category: u8, mutable: bool, eth_guard: u8, group: &str, method: &str, params: &[EthAbiTypeDesc],
+    returns: &[EthAbiTypeDesc],
+) -> [u8; LEN] {
     let mut out = [0u8; LEN];
     let mut idx = 0;
     out[idx] = EXPORT_VERSION;
@@ -151,6 +164,8 @@ pub const fn export_encode<const LEN: usize>(
     out[idx] = category;
     idx += 1;
     out[idx] = if mutable { 1 } else { 0 };
+    idx += 1;
+    out[idx] = eth_guard;
     idx += 1;
     out[idx] = params.len() as u8;
     idx += 1;
