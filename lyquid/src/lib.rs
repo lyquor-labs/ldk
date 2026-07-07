@@ -28,8 +28,12 @@ pub mod http;
 pub mod well_known {
     /// Hostname routed by the node to its configured sequencing backend HTTP endpoint.
     pub const SEQUENCER_RPC_HOST: &str = "sequencer.lyquor.internal";
-    /// URL Lyquid instance functions can use with `lyquor_api::http_request` for sequencer JSON-RPC reads.
+    /// Stable HTTP JSON-RPC path routed by the node to its configured sequencing backend.
+    pub const SEQUENCER_RPC_PATH: &str = "/api";
+    /// Internal sequencer egress origin.
     pub const SEQUENCER_RPC: &str = "http://sequencer.lyquor.internal";
+    /// URL Lyquid instance functions can use with `lyquor_api::http_request` for sequencer JSON-RPC reads.
+    pub const SEQUENCER_RPC_API: &str = "http://sequencer.lyquor.internal/api";
 }
 /// Guest pointer and memory-layout helpers.
 pub mod mem;

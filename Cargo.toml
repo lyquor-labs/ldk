@@ -5,7 +5,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-version = "0.2.1"
+version = "0.3.0"
 homepage = "https://lyquor.xyz/"
 repository = "https://github.com/lyquor-labs/ldk"
 license = "Apache-2.0"
@@ -54,8 +54,8 @@ from_iter_instead_of_collect = "warn"
 alloy-sol-types = { version = "1.6", default-features = false }
 bytes = "1.11"
 hashbrown = { version = "0.17", default-features = false }
-lyquid-proc = { path = "lyquid/proc", version = "=0.2.1" }
-lyquor-primitives = { path = "primitives", version = "0.2.1" }
+lyquid-proc = { path = "lyquid/proc", version = "=0.3.0" }
+lyquor-primitives = { path = "primitives", version = "0.3.0" }
 proc-macro2 = "1.0.106"
 quote = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
