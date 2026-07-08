@@ -338,7 +338,7 @@ macro_rules! eprint {
 #[macro_export]
 macro_rules! eprintln {
     ($($arg:tt)*) => {
-        lyquor_api::console_output($crate::lyquor_primitives::StdErr, format!($($arg)*) + "\n").unwrap();
+        lyquor_api::console_output($crate::lyquor_primitives::ConsoleSink::StdErr, format!($($arg)*) + "\n").unwrap();
     };
 }
 

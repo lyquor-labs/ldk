@@ -18,6 +18,7 @@ struct DeployInfo {
     image_digest: B256,
 }
 
+#[derive(Serialize, Clone, Debug)]
 struct LyquidMetadata {
     owner: Address,
     deploy_history: Vec<DeployInfo>,
@@ -26,13 +27,6 @@ struct LyquidMetadata {
 
 struct NodeMetadata {
     addr: Address,
-}
-
-#[derive(Serialize)]
-struct LyquidMetadataOutput {
-    owner: Address,
-    deploy_history: Vec<DeployInfo>,
-    dependencies: Vec<LyquidID>,
 }
 
 state! {
@@ -192,12 +186,8 @@ fn get_ed25519_by_address(ctx: &_, address: Address) -> LyquidResult<Option<Node
 }
 
 #[method::instance]
-fn get_lyquid_info(ctx: &_, id: LyquidID) -> LyquidResult<Option<LyquidMetadataOutput>> {
-    Ok(ctx.network.lyquid_registry.get(&id).map(|d| LyquidMetadataOutput {
-        owner: d.owner,
-        deploy_history: d.deploy_history.to_vec(),
-        dependencies: d.dependencies.to_vec(),
-    }))
+fn get_lyquid_info(ctx: &_, id: LyquidID) -> LyquidResult<Option<LyquidMetadata>> {
+    Ok(ctx.network.lyquid_registry.get(&id).cloned())
 }
 
 #[method::instance]
@@ -255,10 +245,4 @@ fn get_lyquid_list_with_deps(ctx: &_) -> LyquidResult<Vec<(LyquidID, Vec<LyquidI
         .iter()
         .map(|(id, metadata)| (*id, metadata.dependencies.to_vec()))
         .collect())
-}
-
-#[method::instance]
-fn eth_abi_test1(ctx: &_, x: U256, y: Vec<String>, z: [Vec<u64>; 4]) -> LyquidResult<U256> {
-    lyquid::println!("got x = {}, y = {:?}, z = {:?} from {}", x, y, z, ctx.caller);
-    Ok(x + uint!(1_U256))
 }
