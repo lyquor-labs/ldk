@@ -33,14 +33,15 @@ point every process is stopped and the scratch directory is removed.
 ### Choosing the bartender image
 
 Bartender is **not built from source**; it is deployed straight from
-`ghcr.io/lyquor-labs/lyquids`. By default the `bartender-v0.3.1` tag is used.
+`ghcr.io/lyquor-labs/lyquids`. By default the `bartender-v0.3.2` tag is used.
 
 ```bash
-# Pin to a released version.
-LYQUOR_IMAGE_TAG=v0.1.0 ./localnet.sh single
+# Pin to the release matching this LDK checkout. `v0.3.2` is replaced with
+# the release tag when this README is mirrored to a versioned LDK release.
+LYQUOR_IMAGE_TAG=v0.3.2 ./localnet.sh single
 
 # Or specify the full reference.
-LYQUOR_BARTENDER_REFERENCE=ghcr.io/lyquor-labs/lyquids:bartender-v0.1.0 ./localnet.sh multi
+LYQUOR_BARTENDER_REFERENCE=ghcr.io/lyquor-labs/lyquids:bartender-v0.3.2 ./localnet.sh multi
 ```
 
 ## Endpoints
@@ -94,7 +95,7 @@ exports, static assets, and relative `/lyquid/*` paths.
 
 | Variable                     | Purpose                                                        |
 | ---------------------------- | ------------------------------------------------------------- |
-| `LYQUOR_IMAGE_TAG`           | Tag used to build the bartender reference (`v0.3.1`).     |
+| `LYQUOR_IMAGE_TAG`           | Tag used to build the bartender reference (`v0.3.2`).     |
 | `LYQUOR_BARTENDER_REFERENCE` | Full bartender OCI reference; overrides `LYQUOR_IMAGE_TAG`.    |
 | `LYQUOR_BIN_DIR`             | Directory containing `lyquor`/`shaker` if not already on PATH. |
 | `LYQUOR_LOG`                 | Node log level (`info`, `debug`, ...).                         |

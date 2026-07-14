@@ -7,7 +7,7 @@
 #   ./localnet.sh multi     # a shared Anvil + a 4-node UPC mesh
 #
 # Bartender is pulled from a released GHCR image rather than built. Pick a
-# specific build with LYQUOR_IMAGE_TAG (e.g. v0.1.0) or LYQUOR_BARTENDER_REFERENCE.
+# specific build with LYQUOR_IMAGE_TAG (e.g. vX.Y.Z) or LYQUOR_BARTENDER_REFERENCE.
 #
 # Requirements on PATH: lyquor, shaker (install via shakenup.sh), plus the
 # Foundry tools cast and anvil, and curl. If lyquor/shaker are not on PATH, set

@@ -64,12 +64,12 @@ _localnet_log() {
 
 # Resolve the bartender OCI reference to deploy. Precedence:
 #   1. LYQUOR_BARTENDER_REFERENCE (full reference)
-#   2. ghcr.io/lyquor-labs/lyquids:bartender-<LYQUOR_IMAGE_TAG> (defaults to v0.3.1)
+#   2. ghcr.io/lyquor-labs/lyquids:bartender-<LYQUOR_IMAGE_TAG> (defaults to v0.3.2)
 localnet_bartender_reference() {
     if [[ -n "${LYQUOR_BARTENDER_REFERENCE:-}" ]]; then
         printf '%s' "$LYQUOR_BARTENDER_REFERENCE"
     else
-        printf 'ghcr.io/lyquor-labs/lyquids:bartender-%s' "${LYQUOR_IMAGE_TAG:-v0.3.1}"
+        printf 'ghcr.io/lyquor-labs/lyquids:bartender-%s' "${LYQUOR_IMAGE_TAG:-v0.3.2}"
     fi
 }
 

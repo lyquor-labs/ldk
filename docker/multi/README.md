@@ -105,7 +105,7 @@ Each node config includes fallback repos:
 - `http://registry:8000/lyquids`
 - `ghcr.io/lyquor-labs/lyquids`
 
-Note: current `setup-devnet` service bootstraps bartender by running `shaker deploy --is-bartender --reference ghcr.io/lyquor-labs/lyquids:bartender-v0.3.1 --endpoint ws://node1:10087/ws`, with an idempotency check to skip redeploy when already present.
+Note: current `setup-devnet` service bootstraps bartender by running `shaker deploy --is-bartender --reference ghcr.io/lyquor-labs/lyquids:bartender-v0.3.2 --endpoint ws://node1:10087/ws`, with an idempotency check to skip redeploy when already present.
 
 ## Stop / Reset
 

@@ -332,6 +332,36 @@ pub struct RegisterEvent {
     pub deps: Vec<LyquidID>,
 }
 
+/// Availability lifecycle of one Lyquid deployment in the bartender registry.
+///
+/// `Pending` deployments are registered but not yet hostable anywhere; a
+/// threshold certificate over "we hold this image digest" flips them to
+/// `Live`, which is when nodes start hosting. `Void` marks a deployment whose
+/// image was certified unavailable; it can never become hostable.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeployStatus {
+    /// Registered; awaiting an availability verdict. Not hostable.
+    Pending,
+    /// Availability certified (or the gate is inactive). Hostable.
+    Live,
+    /// Certified unavailable at deployment. Never hostable.
+    Void,
+}
+
+/// Registry event emitted when a deployment is registered with `Pending`
+/// availability, prompting nodes to pull the image and certify it.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AvailabilityPendingEvent {
+    /// Registered Lyquid ID.
+    pub id: LyquidID,
+    /// Index of this deployment in the Lyquid's deployment history.
+    pub nth: u32,
+    /// Content digest of the deployment's image pack.
+    pub image_digest: B256,
+    /// Advisory repository locator supplied at registration.
+    pub repo_hint: Option<String>,
+}
+
 impl fmt::Debug for LyteLog {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         write!(
