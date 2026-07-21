@@ -17,7 +17,6 @@
 #     LOCALNET_NODE_COUNT        number of nodes started
 #     LOCALNET_NODE_API_URLS     http API URLs, one per node
 #     LOCALNET_NODE_WS_URLS      ws API URLs, one per node
-#     LOCALNET_DASHBOARD_URLS    dashboard URLs, one per node
 #     LOCALNET_PRIMARY_WS        ws endpoint of the bootstrap node (node 1)
 #     LOCALNET_PRIMARY_API       http API endpoint of the bootstrap node
 #     LOCALNET_SECONDARY_WS      ws endpoint of a second node (== primary for single)
@@ -64,12 +63,12 @@ _localnet_log() {
 
 # Resolve the bartender OCI reference to deploy. Precedence:
 #   1. LYQUOR_BARTENDER_REFERENCE (full reference)
-#   2. ghcr.io/lyquor-labs/lyquids:bartender-<LYQUOR_IMAGE_TAG> (defaults to v0.3.2)
+#   2. ghcr.io/lyquor-labs/lyquids:bartender-<LYQUOR_IMAGE_TAG> (defaults to v0.4.0)
 localnet_bartender_reference() {
     if [[ -n "${LYQUOR_BARTENDER_REFERENCE:-}" ]]; then
         printf '%s' "$LYQUOR_BARTENDER_REFERENCE"
     else
-        printf 'ghcr.io/lyquor-labs/lyquids:bartender-%s' "${LYQUOR_IMAGE_TAG:-v0.3.2}"
+        printf 'ghcr.io/lyquor-labs/lyquids:bartender-%s' "${LYQUOR_IMAGE_TAG:-v0.4.0}"
     fi
 }
 
@@ -263,7 +262,6 @@ _localnet_up_single() {
 
     LOCALNET_NODE_API_URLS="${http_url}/api"
     LOCALNET_NODE_WS_URLS="$ws_url"
-    LOCALNET_DASHBOARD_URLS="${http_url}/lyquor/"
     LOCALNET_PRIMARY_WS="$ws_url"
     LOCALNET_PRIMARY_API="${http_url}/api"
     LOCALNET_SECONDARY_WS="$ws_url"
@@ -285,7 +283,6 @@ _localnet_up_multi() {
 
     LOCALNET_NODE_API_URLS=""
     LOCALNET_NODE_WS_URLS=""
-    LOCALNET_DASHBOARD_URLS=""
     local node_http_urls=""
 
     local idx
@@ -310,7 +307,6 @@ _localnet_up_multi() {
         node_http_urls="${node_http_urls:+$node_http_urls }${http_url}"
         LOCALNET_NODE_API_URLS="${LOCALNET_NODE_API_URLS:+$LOCALNET_NODE_API_URLS }${http_url}/api"
         LOCALNET_NODE_WS_URLS="${LOCALNET_NODE_WS_URLS:+$LOCALNET_NODE_WS_URLS }${ws_url}"
-        LOCALNET_DASHBOARD_URLS="${LOCALNET_DASHBOARD_URLS:+$LOCALNET_DASHBOARD_URLS }${http_url}/lyquor/"
     done
 
     local primary_http="http://127.0.0.1:${_LOCALNET_API_BASE}"
@@ -320,9 +316,8 @@ _localnet_up_multi() {
     secondary_http="http://127.0.0.1:${secondary_port}"
     secondary_ws="ws://127.0.0.1:${secondary_port}/ws"
 
-    # Wait for *every* node's API before returning: callers (the demo banner and
-    # the E2E dashboard checks) touch all nodes, so a still-booting node 3/4 would
-    # otherwise flake. Then bootstrap bartender via node 1 and confirm it
+    # Wait for *every* node's API before returning so a still-booting node 3/4
+    # does not flake callers. Then bootstrap bartender via node 1 and confirm it
     # propagated to node 2 (so cross-node calls in the demo/e2e are ready).
     local node_http
     for node_http in $node_http_urls; do
@@ -415,18 +410,15 @@ localnet_print_endpoints() {
     echo "Lyquor localnet (${LOCALNET_TOPOLOGY}) is up with ${LOCALNET_NODE_COUNT} node(s)."
     echo
     local i=1
-    local api ws dash
+    local api ws
     # Iterate the space-separated URL lists in lockstep.
     local apis="$LOCALNET_NODE_API_URLS"
     local wss="$LOCALNET_NODE_WS_URLS"
-    local dashes="$LOCALNET_DASHBOARD_URLS"
     for api in $apis; do
         ws="$(echo "$wss" | cut -d' ' -f"$i")"
-        dash="$(echo "$dashes" | cut -d' ' -f"$i")"
         echo "  Node ${i}:"
         echo "    API:       ${api}"
         echo "    WebSocket: ${ws}"
-        echo "    Dashboard: ${dash}"
         i=$(( i + 1 ))
     done
     echo

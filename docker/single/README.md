@@ -36,7 +36,6 @@ docker compose -f docker/single/docker-compose.yaml ps
 
 - Node API: `http://localhost:10087/api`
 - Node WebSocket: `ws://localhost:10087/ws`
-- Dashboard: `http://localhost:10087/lyquor/`
 
 ## Quick Health Checks
 
@@ -54,12 +53,6 @@ Check deployed Lyquid info:
 curl --data '{}' \
   --header 'content-type: application/json' \
   -s http://localhost:10087/lyquor.lyquid.v1.LyquidService/GetLyquidInfo
-```
-
-Check dashboard reachability:
-
-```bash
-curl -sSf http://localhost:10087/lyquor/ >/dev/null
 ```
 
 ## Stop / Reset

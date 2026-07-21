@@ -100,7 +100,7 @@ fn next_lyquid_id(
 
 fn update_eth_addr(
     ctx: &mut __lyquid::NetworkContext, owner: Address, old: Address, new: Address, repo_hint: Option<String>,
-    image_digest: B256, deps: Vec<LyquidID>,
+    image_digest: B256,
 ) -> LyquidResult<Option<(LyquidID, DeployStatus)>> {
     // otherwise we need to find the existing lyquid
     let Some(id) = ctx.network.lyquid_ids.get(&old).copied() else {
@@ -144,11 +144,7 @@ fn update_eth_addr(
         image_digest,
         status,
     });
-    // Update dependencies for this deployment
-    metadata.dependencies.clear();
-    for dep in deps {
-        metadata.dependencies.push(dep);
-    }
+    // Dependencies belong to the Lyquid ID and remain the ones recorded by its first registration.
     Ok(Some((id, status)))
 }
 
@@ -160,16 +156,19 @@ fn constructor(ctx: &mut _) {
 
 #[method::network(export = eth)]
 fn register(
-    ctx: &mut _, superseded: Address, deps: Vec<Address>, image_digest: B256, repo_hint: String,
+    ctx: &mut _, superseded: Address, deps: Vec<LyquidID>, image_digest: B256, repo_hint: String,
 ) -> LyquidResult<bool> {
     let owner = ctx.origin;
     let contract = ctx.caller;
 
-    // Convert dependency addresses to LyquidIDs
-    let deps: Vec<LyquidID> = deps
-        .iter()
-        .filter_map(|addr| ctx.network.lyquid_ids.get(addr).copied())
-        .collect();
+    if deps.contains(&ctx.lyquid_id) {
+        return Err(LyquidError::LyquidRuntime(
+            "bartender cannot be a Lyquid dependency".into(),
+        ));
+    }
+    if let Some(id) = deps.iter().find(|id| !ctx.network.lyquid_registry.contains_key(*id)) {
+        return Err(LyquidError::LyquidRuntime(format!("unknown Lyquid dependency {id}")));
+    }
     let repo_hint = if repo_hint.is_empty() { None } else { Some(repo_hint) };
 
     let (id, status) = if superseded == Address::ZERO {
@@ -178,33 +177,25 @@ fn register(
         let next_nonce = ctx.network.owner_nonce.get(&owner).copied().unwrap_or(0);
         let status = deployment_status_for_new(&ctx, LyquidID::from_owner_nonce(&owner, next_nonce))?;
         // create a new lyquid
-        let id = next_lyquid_id(
-            &mut ctx,
-            owner,
-            contract,
-            repo_hint.clone(),
-            image_digest,
-            deps.clone(),
-            status,
-        );
+        let id = next_lyquid_id(&mut ctx, owner, contract, repo_hint.clone(), image_digest, deps, status);
         (Some(id), status)
     } else {
         // Upgrade path; the assigned status depends on the superseded tail
         // (see `update_eth_addr`).
-        match update_eth_addr(
-            &mut ctx,
-            owner,
-            superseded,
-            contract,
-            repo_hint.clone(),
-            image_digest,
-            deps.clone(),
-        )? {
+        match update_eth_addr(&mut ctx, owner, superseded, contract, repo_hint.clone(), image_digest)? {
             Some((id, status)) => (Some(id), status),
             None => (None, DeployStatus::Live),
         }
     };
     let id = id.ok_or(LyquidError::LyquidRuntime("invalid register call".into()))?;
+    let deps = ctx
+        .network
+        .lyquid_registry
+        .get(&id)
+        .map(|metadata| metadata.dependencies.to_vec())
+        .ok_or(LyquidError::LyquidRuntime(
+            "registered Lyquid metadata is missing".into(),
+        ))?;
     ctx.network.lyquid_ids.insert(contract, id);
     lyquid::println!(
         "register {id} (owner={owner}, contract={contract}, deps={:?}, status={status:?})",

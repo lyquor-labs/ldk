@@ -30,7 +30,8 @@ case "$TOPOLOGY" in
     *) usage; exit 1 ;;
 esac
 
-trap localnet_down EXIT INT TERM
+trap localnet_down EXIT
+trap 'exit 130' INT TERM
 
 localnet_up "$TOPOLOGY"
 localnet_print_endpoints

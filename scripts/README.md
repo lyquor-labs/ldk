@@ -33,15 +33,15 @@ point every process is stopped and the scratch directory is removed.
 ### Choosing the bartender image
 
 Bartender is **not built from source**; it is deployed straight from
-`ghcr.io/lyquor-labs/lyquids`. By default the `bartender-v0.3.2` tag is used.
+`ghcr.io/lyquor-labs/lyquids`. By default the `bartender-v0.4.0` tag is used.
 
 ```bash
-# Pin to the release matching this LDK checkout. `v0.3.2` is replaced with
+# Pin to the release matching this LDK checkout. `v0.4.0` is replaced with
 # the release tag when this README is mirrored to a versioned LDK release.
-LYQUOR_IMAGE_TAG=v0.3.2 ./localnet.sh single
+LYQUOR_IMAGE_TAG=v0.4.0 ./localnet.sh single
 
 # Or specify the full reference.
-LYQUOR_BARTENDER_REFERENCE=ghcr.io/lyquor-labs/lyquids:bartender-v0.3.2 ./localnet.sh multi
+LYQUOR_BARTENDER_REFERENCE=ghcr.io/lyquor-labs/lyquids:bartender-v0.4.0 ./localnet.sh multi
 ```
 
 ## Endpoints
@@ -52,12 +52,11 @@ LYQUOR_BARTENDER_REFERENCE=ghcr.io/lyquor-labs/lyquids:bartender-v0.3.2 ./localn
 | --------- | -------------------------------- |
 | API       | `http://127.0.0.1:10087/api`     |
 | WebSocket | `ws://127.0.0.1:10087/ws`        |
-| Dashboard | `http://127.0.0.1:10087/lyquor/` |
 
 ### `multi`
 
 Node *i* (1..4) exposes its API on host port `1{i-1}0087` → `10087`, `11087`,
-`12087`, `13087` (WebSocket and dashboard on the same port). The shared Anvil
+`12087`, `13087` (WebSocket on the same port). The shared Anvil
 sequencer listens on `127.0.0.1:8545`.
 
 Peers pull deployed lyquid images from node 1's built-in OCI registry
@@ -95,7 +94,7 @@ exports, static assets, and relative `/lyquid/*` paths.
 
 | Variable                     | Purpose                                                        |
 | ---------------------------- | ------------------------------------------------------------- |
-| `LYQUOR_IMAGE_TAG`           | Tag used to build the bartender reference (`v0.3.2`).     |
+| `LYQUOR_IMAGE_TAG`           | Tag used to build the bartender reference (`v0.4.0`).     |
 | `LYQUOR_BARTENDER_REFERENCE` | Full bartender OCI reference; overrides `LYQUOR_IMAGE_TAG`.    |
 | `LYQUOR_BIN_DIR`             | Directory containing `lyquor`/`shaker` if not already on PATH. |
 | `LYQUOR_LOG`                 | Node log level (`info`, `debug`, ...).                         |

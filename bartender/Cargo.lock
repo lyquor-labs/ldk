@@ -119,7 +119,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "bartender"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "lyquid",
  "serde",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "ahash",
  "alloy-sol-types",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-proc"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "lyquor-primitives",
  "proc-macro2",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "lyquor-primitives"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -586,9 +586,9 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
 name = "rand"
-version = "0.8.6"
+version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
 dependencies = [
  "rand_core 0.6.4",
 ]
@@ -645,7 +645,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0298da754d1395046b0afdc2f20ee76d29a8ae310cd30ffa84ed42acba9cb12a"
 dependencies = [
  "proptest",
- "rand 0.8.6",
+ "rand 0.8.7",
  "rand 0.9.4",
  "ruint-macro",
  "serde_core",
@@ -745,9 +745,9 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "syn"
-version = "2.0.118"
+version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
+checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
 dependencies = [
  "proc-macro2",
  "quote",
