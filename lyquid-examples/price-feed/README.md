@@ -15,11 +15,12 @@ lyquid-examples/price-feed/scripts/run.sh
 ```
 
 The script starts the bundled native four-node `scripts/localnet.sh`, builds and
-deploys Price Feed with `shaker`, configures two Binance and two Coinbase
-reporters, and prints the first finalized market update. It then reports every
-five seconds and streams the Lyquid console until Ctrl-C stops the demo and
-localnet. The script exits instead of starting recurring reports if a live source
-failure leaves any asset in the first finalized update at zero.
+deploys Price Feed with `shaker`, stages the oracle committee through Price
+Feed's `configure_committee(bytes32[])` network method, configures two Binance
+and two Coinbase reporters, and prints the first finalized market update. It
+then reports every five seconds and streams the Lyquid console until Ctrl-C stops
+the demo and localnet. The script exits instead of starting recurring reports if
+a live source failure leaves any asset in the first finalized update at zero.
 
 The script sources the shared `lyquid-examples/scripts/lib/demo.sh` helper for
 localnet lifecycle, deployment, generic contract calls, and cleanup.

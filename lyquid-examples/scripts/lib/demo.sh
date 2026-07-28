@@ -225,18 +225,6 @@ demo_send() {
         "$@"
 }
 
-demo_initialize_oracle() {
-    local topic="$1"
-    local threshold="$2"
-    demo_send \
-        "__lyquor_oracle_initialize(string,address,bool,bytes32[],uint16)" \
-        "$topic" \
-        "$LYQUID_TARGET" \
-        false \
-        "$(demo_node_ids_array)" \
-        "$threshold"
-}
-
 demo_expect_true() {
     local result
     result="$(printf '%s' "$1" | tr -d '[:space:]')"

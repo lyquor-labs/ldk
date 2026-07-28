@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ahash",
  "alloy-sol-types",
@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-proc"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "lyquor-primitives",
  "proc-macro2",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "lyquor-primitives"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "price-feed"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "lyquid",
  "serde",

@@ -12,8 +12,8 @@ demo_start_localnet multi
 demo_deploy "price-feed" "$EXAMPLE_DIR/Cargo.toml"
 demo_wait_for_lyquid "get_node_ids() returns (string[])"
 
-echo "Initializing the four-node price-feed oracle."
-demo_initialize_oracle "price_feed" 3
+echo "Staging the Price Feed oracle committee."
+demo_send "configure_committee(bytes32[])" "$(demo_node_ids_array)"
 demo_activate_oracle "price_feed"
 demo_wait_for_committee 4
 

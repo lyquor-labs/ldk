@@ -1,9 +1,9 @@
 //! Oracle-backed price-feed Lyquid.
 //!
-//! Nodes join the `price_feed` oracle topic through a network method, then instance methods choose
-//! a price source, fetch Binance, Coinbase, or mock ticker data through the host HTTP API, cache
-//! per-instance observations, and submit proposals to the oracle two-phase group. Certified
-//! network callbacks store finalized price records with candidate data, source, and signer lists.
+//! The initializer configures the `price_feed` oracle committee, then instance methods choose a
+//! price source, fetch Binance or Coinbase ticker data through the host HTTP API, cache per-instance
+//! observations, and submit proposals to the oracle two-phase group. Certified network callbacks
+//! store finalized price records with candidate data, source, and signer lists.
 
 use lyquid::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,6 @@ enum PriceSource {
     #[default]
     Binance,
     Coinbase,
-    Mock,
 }
 
 impl PriceSource {
@@ -32,13 +31,12 @@ impl PriceSource {
         match s.trim().to_ascii_lowercase().as_str() {
             "binance" => Some(Self::Binance),
             "coinbase" => Some(Self::Coinbase),
-            "mock" => Some(Self::Mock),
             _ => None,
         }
     }
 }
 
-fn fetch_price(source: PriceSource, symbol: &str, mock_base_url: Option<&str>) -> LyquidResult<u64> {
+fn fetch_price(source: PriceSource, symbol: &str) -> LyquidResult<u64> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct BinanceTicker {
@@ -52,19 +50,30 @@ fn fetch_price(source: PriceSource, symbol: &str, mock_base_url: Option<&str>) -
         ask: String,
     }
 
-    use lyquid::http::{Method, Request};
+    use lyquid::http::{Header, Method, Request};
     let url = match source {
         PriceSource::Binance => format!("{BINANCE_API_BASE_URL}/api/v3/ticker/bookTicker?symbol={symbol}"),
         PriceSource::Coinbase => format!("{COINBASE_API_BASE_URL}/products/{symbol}/ticker"),
-        PriceSource::Mock => {
-            let base = mock_base_url.unwrap_or_default();
-            format!("{base}/api/v3/ticker/bookTicker?symbol={symbol}")
-        }
     };
     let req = Request {
         method: Method::Get,
         url,
-        headers: vec![],
+        headers: vec![
+            Header {
+                name: "accept".into(),
+                value: b"application/json".to_vec(),
+            },
+            Header {
+                name: "user-agent".into(),
+                value: concat!(
+                    "Mozilla/5.0 (X11; Linux x86_64) ",
+                    "AppleWebKit/537.36 (KHTML, like Gecko) ",
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
+                .as_bytes()
+                .to_vec(),
+            },
+        ],
         body: None,
     };
 
@@ -78,7 +87,7 @@ fn fetch_price(source: PriceSource, symbol: &str, mock_base_url: Option<&str>) -
     }
 
     let (bid_raw, ask_raw) = match source {
-        PriceSource::Binance | PriceSource::Mock => {
+        PriceSource::Binance => {
             let ticker: BinanceTicker = serde_json::from_slice(&resp.body)
                 .map_err(|e| LyquidError::LyquorRuntime(format!("JSON Parse Error: {}", e)))?;
             (ticker.bid_price, ticker.ask_price)
@@ -129,6 +138,7 @@ struct PriceRecord {
 struct PriceUpdate(HashMap<String, PriceRecord>);
 
 state! {
+    network initializer: Address = Address::ZERO;
     network oracle price_feed;
     network prices: HashMap<String, PriceRecord> = new_hashmap(); // "On-chain" current prices.
     instance local_price_source: PriceSource = PriceSource::Binance;
@@ -138,29 +148,49 @@ state! {
     // (a rolling buffer of (id, timestamp, chain_pos, update)).
     instance price_history_cache: VecDeque<(u64, u64, ChainPos, PriceUpdate)> = VecDeque::new();
     instance price_history_id: u64 = 0;
-
-    // Used for mock tests.
-    instance mock_api_base_url: String = String::new();
 }
 
-// Invoked when a node joins.
-#[method::network(export = eth, group = node)]
-fn join(ctx: &mut _, id: NodeID) -> LyquidResult<bool> {
-    let o = ctx.network.price_feed.clone();
+#[method::network(export = eth)]
+fn constructor(ctx: &mut _) {
+    *ctx.network.initializer = ctx.caller;
+}
+
+#[method::network(export = eth)]
+fn configure_committee(ctx: &mut _, node_ids: Vec<NodeID>) -> LyquidResult<bool> {
+    if ctx.caller != *ctx.network.initializer {
+        return Err(LyquidError::LyquorRuntime(
+            "only initializer can configure committee".into(),
+        ));
+    }
+    if node_ids.is_empty() {
+        return Err(LyquidError::LyquorRuntime("committee cannot be empty".into()));
+    }
+
     let target = OracleTarget {
         seq_id: lyquor_api::sequence_backend_id()?,
         target: OracleServiceTarget::LVM(ctx.lyquid_id),
     };
-    o.add_node(&mut ctx, target, id);
-    let threshold = (o.config_staging(&ctx, target).committee.len() / 2 + 1) as u16;
-    o.set_threshold(&mut ctx, target, threshold); // Update the threshold to majority.
+    let threshold = u16::try_from(node_ids.len() / 2 + 1)
+        .map_err(|_| LyquidError::LyquorRuntime("price-feed committee threshold overflow".into()))?;
+
+    if !ctx
+        .network
+        .price_feed
+        .clone()
+        .initialize(&mut ctx, target, node_ids, threshold)
+    {
+        return Err(LyquidError::LyquorRuntime(
+            "price-feed oracle committee initialization failed".into(),
+        ));
+    }
+
     Ok(true)
 }
 
 #[method::instance(export = eth)]
 fn set_price_source(ctx: &mut _, source: String) -> LyquidResult<bool> {
     let source = PriceSource::from_str(&source).ok_or(LyquidError::LyquorRuntime(
-        "source must be \"binance\", \"coinbase\", or \"mock\"".into(),
+        "source must be \"binance\" or \"coinbase\"".into(),
     ))?;
     *ctx.instance.local_price_source.write() = source;
     lyquid::println!("price-feed: local fetch source set to {:?}", source);
@@ -174,7 +204,6 @@ fn set_price_source(ctx: &mut _, source: String) -> LyquidResult<bool> {
 #[method::instance(group = oracle::two_phase::price_feed)]
 fn propose(ctx: &mut _, _avg_num: u16, _target: OracleTarget) -> LyquidResult<PriceProposal> {
     let source = *ctx.instance.local_price_source.read();
-    let mock_base_url = ctx.instance.mock_api_base_url.read().clone();
     let mut local_price = ctx.instance.local_price.write();
 
     let mut prices = Vec::with_capacity(ASSETS.len());
@@ -182,15 +211,9 @@ fn propose(ctx: &mut _, _avg_num: u16, _target: OracleTarget) -> LyquidResult<Pr
         let symbol = match source {
             PriceSource::Binance => binance_sym,
             PriceSource::Coinbase => coinbase_sym,
-            PriceSource::Mock => binance_sym,
-        };
-        let mock_url = if matches!(source, PriceSource::Mock) {
-            Some(mock_base_url.as_str())
-        } else {
-            None
         };
 
-        let price = match fetch_price(source, symbol, mock_url) {
+        let price = match fetch_price(source, symbol) {
             Ok(price) => {
                 local_price.insert(name.to_string(), price);
                 lyquid::println!("fetch_price: {:?} {} = {:?}.", source, symbol, price);
@@ -427,21 +450,4 @@ fn get_node_ids(ctx: &_) -> LyquidResult<Vec<String>> {
         .into_iter()
         .map(|node| node.to_string())
         .collect())
-}
-
-// Used for mock tests.
-#[method::instance(export = eth)]
-fn set_mock_api_base_url(ctx: &mut _, base_url: String) -> LyquidResult<bool> {
-    fn normalize_base_url(base_url: &str) -> LyquidResult<String> {
-        let normalized = base_url.trim().trim_end_matches('/').to_string();
-        if normalized.is_empty() {
-            return Err(LyquidError::LyquorRuntime("mock API base URL cannot be empty".into()));
-        }
-        Ok(normalized)
-    }
-
-    let base_url = normalize_base_url(&base_url)?;
-    *ctx.instance.mock_api_base_url.write() = base_url.clone();
-    lyquid::println!("price-feed: local mock API base URL set to {}", base_url);
-    Ok(true)
 }
