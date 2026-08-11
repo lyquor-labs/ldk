@@ -36,6 +36,11 @@ state! {
     network lyquid_ids: HashMap<Address, LyquidID> = new_hashmap();
     network node_ids: HashMap<Address, NodeID> = new_hashmap();
     network node_registry: HashMap<NodeID, NodeMetadata> = new_hashmap();
+    // Monotonic admission set keyed by content digest. Once the network
+    // certifies a digest, the platform assumes custody and later deployments
+    // reuse that admission instead of stalling in Pending. Epoch 0 and
+    // bartender use the same compatibility bypass as deployment admission.
+    network admitted_images: HashSet<B256> = new_hashset();
     // Committee-certified image-availability rail for deployment admission.
     network oracle availability;
     // Image digests this node has pulled and content-verified locally; written
@@ -50,11 +55,13 @@ fn availability_target(lyquid_id: LyquidID) -> LyquidResult<OracleTarget> {
     })
 }
 
-/// Availability status assigned to a brand-new Lyquid's first deployment.
-fn deployment_status_for_new(ctx: &__lyquid::NetworkContext, id: LyquidID) -> LyquidResult<DeployStatus> {
+/// Admission status assigned to a deployment referencing `image_digest`.
+fn deployment_status_for_registration(
+    ctx: &__lyquid::NetworkContext, id: LyquidID, image_digest: B256,
+) -> LyquidResult<DeployStatus> {
     // Bartender is exempt by identity: the availability rail runs through
     // bartender, so its own deployments must never wait on it.
-    if id == ctx.lyquid_id {
+    if id == ctx.lyquid_id || ctx.network.admitted_images.contains(&image_digest) {
         return Ok(DeployStatus::Live);
     }
     // Epoch-0 rule: until an availability committee has finalized its first
@@ -118,16 +125,12 @@ fn update_eth_addr(
         }
         tail.status
     };
-    // An upgrade on a Live tail registers Live in phase 1 (gating the image
-    // switch is #1299 phase 2). Superseding a tail that never went Live voids
-    // it — fork-safe, since the gate guarantees no node ever executed it — and
-    // the replacement is gated like a first deployment, so a mistaken deploy
-    // can be fixed without burning the Lyquid ID. `Void` entries therefore
-    // only ever precede a Lyquid's first `Live` deployment; hosting starts at
-    // that deployment and never touches the void prefix.
-    let status = match tail_status {
-        DeployStatus::Live => DeployStatus::Live,
-        DeployStatus::Pending | DeployStatus::Void => deployment_status_for_new(ctx, id)?,
+    let admission = deployment_status_for_registration(ctx, id, image_digest)?;
+    // A live Lyquid cannot wait at an unadmitted upgrade, and a voided Lyquid
+    // is not recoverable. Never-hosted Pending tails may still be replaced.
+    let status = match (tail_status, admission) {
+        (DeployStatus::Void, _) | (DeployStatus::Live, DeployStatus::Pending) => DeployStatus::Void,
+        (_, status) => status,
     };
     let Some(metadata) = ctx.network.lyquid_registry.get_mut(&id) else {
         return Ok(None);
@@ -175,13 +178,14 @@ fn register(
         // Peek the ID this registration will be assigned so the availability
         // status (bartender exemption, epoch-0 rule) can be decided up front.
         let next_nonce = ctx.network.owner_nonce.get(&owner).copied().unwrap_or(0);
-        let status = deployment_status_for_new(&ctx, LyquidID::from_owner_nonce(&owner, next_nonce))?;
+        let status =
+            deployment_status_for_registration(&ctx, LyquidID::from_owner_nonce(&owner, next_nonce), image_digest)?;
         // create a new lyquid
         let id = next_lyquid_id(&mut ctx, owner, contract, repo_hint.clone(), image_digest, deps, status);
         (Some(id), status)
     } else {
-        // Upgrade path; the assigned status depends on the superseded tail
-        // (see `update_eth_addr`).
+        // Upgrade path; an unadmitted image voids a live Lyquid instead of
+        // leaving its deployment Pending.
         match update_eth_addr(&mut ctx, owner, superseded, contract, repo_hint.clone(), image_digest)? {
             Some((id, status)) => (Some(id), status),
             None => (None, DeployStatus::Live),
@@ -197,6 +201,12 @@ fn register(
             "registered Lyquid metadata is missing".into(),
         ))?;
     ctx.network.lyquid_ids.insert(contract, id);
+    if status == DeployStatus::Live {
+        // Images admitted while the gate is disabled (and bartender's image)
+        // are grandfathered. Reusing identical content after the committee
+        // activates cannot introduce code that was not already admitted.
+        ctx.network.admitted_images.insert(image_digest);
+    }
     lyquid::println!(
         "register {id} (owner={owner}, contract={contract}, deps={:?}, status={status:?})",
         deps
@@ -223,42 +233,45 @@ fn register(
                 }
             )
         }
-        DeployStatus::Void => unreachable!("registration never assigns Void"),
+        // A void upgrade is terminal and produces no hosting work.
+        DeployStatus::Void => {}
     }
     Ok(true)
 }
 
-// Committee-certified availability verdict: flips a `Pending` deployment to
-// `Live` and announces it for hosting. Certificate verification (committee
-// signatures, epoch, nonce replay) is enforced by the generated
-// `oracle::certified` wrapper before this body runs.
+// Committee-certified availability verdict for content `image_digest`.
+// Every pending deployment referencing the digest becomes hostable.
+// Certificate verification (committee signatures, epoch, nonce replay) is
+// enforced by the generated `oracle::certified` wrapper before this body runs.
 #[method::network(group = oracle::certified::availability)]
-fn attest_available(ctx: &mut _, id: LyquidID, nth: u32, image_digest: B256) -> LyquidResult<bool> {
-    let Some(metadata) = ctx.network.lyquid_registry.get_mut(&id) else {
-        return Ok(false);
-    };
-    let deps = metadata.dependencies.to_vec();
-    let Some(info) = metadata.deploy_history.get_mut(nth as usize) else {
-        return Ok(false);
-    };
-    if info.image_digest != image_digest {
-        return Ok(false);
+fn attest_available(ctx: &mut _, image_digest: B256) -> LyquidResult<bool> {
+    if !ctx.network.admitted_images.insert(image_digest) {
+        return Ok(true);
     }
-    match info.status {
-        // Duplicate certificates are no-ops.
-        DeployStatus::Live => return Ok(true),
-        DeployStatus::Void => return Ok(false),
-        DeployStatus::Pending => {}
+    let mut activated = Vec::new();
+    for (id, metadata) in ctx.network.lyquid_registry.iter_mut() {
+        let Some(info) = metadata.deploy_history.last_mut() else {
+            continue;
+        };
+        if info.image_digest == image_digest && info.status == DeployStatus::Pending {
+            info.status = DeployStatus::Live;
+            activated.push((*id, metadata.dependencies.to_vec()));
+        }
     }
-    info.status = DeployStatus::Live;
-    lyquid::println!("attest_available {id}[{nth}] {image_digest} => Live");
-    lyquid::log!(Register, &RegisterEvent { id, deps });
+    activated.sort_by_key(|(id, _)| *id);
+    lyquid::println!(
+        "attest_available {image_digest} => Live ({} deployments)",
+        activated.len()
+    );
+    for (id, deps) in activated {
+        lyquid::log!(Register, &RegisterEvent { id, deps });
+    }
     Ok(true)
 }
 
 // Committee validator for availability certificates: votes yea only when the
-// referenced deployment is still `Pending` and this node has pulled and
-// content-verified the image locally.
+// proposed digest is not already admitted and this node has pulled and
+// content-verified the corresponding image locally.
 #[method::instance(group = oracle::single_phase::availability)]
 fn validate(ctx: &mut _, params: CallParams, _extra: Bytes, target: OracleTarget) -> LyquidResult<bool> {
     if target.seq_id != lyquor_api::sequence_backend_id()? {
@@ -270,18 +283,10 @@ fn validate(ctx: &mut _, params: CallParams, _extra: Bytes, target: OracleTarget
     if params.method != "attest_available" {
         return Ok(false);
     }
-    let Some(claim) = decode_by_fields!(&params.input, id: LyquidID, nth: u32, image_digest: B256) else {
+    let Some(claim) = decode_by_fields!(&params.input, image_digest: B256) else {
         return Ok(false);
     };
-    let Some(info) = ctx
-        .network
-        .lyquid_registry
-        .get(&claim.id)
-        .and_then(|m| m.deploy_history.get(claim.nth as usize))
-    else {
-        return Ok(false);
-    };
-    if info.image_digest != claim.image_digest || info.status != DeployStatus::Pending {
+    if ctx.network.admitted_images.contains(&claim.image_digest) {
         return Ok(false);
     }
     Ok(ctx.instance.verified_images.read().contains_key(&claim.image_digest))
@@ -296,24 +301,15 @@ fn note_image_verified(ctx: &mut _, image_digest: B256) -> LyquidResult<bool> {
     Ok(true)
 }
 
-// Propose an availability certificate for a `Pending` deployment this node
-// has verified locally. Runs the single-phase validate round across the
-// availability committee and submits the certified `attest_available` call.
+// Propose an availability certificate for content this node has verified
+// locally. Runs the single-phase validate round across the availability
+// committee and submits the certified `attest_available` call.
 #[method::instance]
-fn certify_availability(ctx: &mut _, id: LyquidID, nth: u32) -> LyquidResult<bool> {
-    let Some(info) = ctx
-        .network
-        .lyquid_registry
-        .get(&id)
-        .and_then(|m| m.deploy_history.get(nth as usize))
-        .cloned()
-    else {
-        return Ok(false);
-    };
-    if info.status != DeployStatus::Pending {
-        return Ok(false);
+fn certify_availability(ctx: &mut _, image_digest: B256) -> LyquidResult<bool> {
+    if ctx.network.admitted_images.contains(&image_digest) {
+        return Ok(true);
     }
-    if !ctx.instance.verified_images.read().contains_key(&info.image_digest) {
+    if !ctx.instance.verified_images.read().contains_key(&image_digest) {
         return Ok(false);
     }
     let target = availability_target(ctx.lyquid_id)?;
@@ -323,7 +319,7 @@ fn certify_availability(ctx: &mut _, id: LyquidID, nth: u32) -> LyquidResult<boo
         CertifiedCallParams {
             origin: Address::ZERO,
             method: "attest_available".into(),
-            input: encode_by_fields!(id: LyquidID = id, nth: u32 = nth, image_digest: B256 = info.image_digest).into(),
+            input: encode_by_fields!(image_digest: B256 = image_digest).into(),
             target,
         },
         Bytes::new(),
@@ -337,6 +333,13 @@ fn certify_availability(ctx: &mut _, id: LyquidID, nth: u32) -> LyquidResult<boo
         }
         None => Ok(false),
     }
+}
+
+// Whether content `image_digest` is admissible under the network's gate.
+#[method::instance]
+fn is_image_admitted(ctx: &_, image_digest: B256) -> LyquidResult<bool> {
+    let target = availability_target(ctx.lyquid_id)?;
+    Ok(ctx.network.availability.get_epoch(&ctx, target) == 0 || ctx.network.admitted_images.contains(&image_digest))
 }
 
 // List deployments still awaiting an availability verdict, for the node's
@@ -443,9 +446,8 @@ fn get_lyquid_deployment_info(ctx: &_, id: LyquidID, nth: u32) -> LyquidResult<O
     }))
 }
 
-// Index of the first `Live` deployment — where hosting starts. `Void` entries
-// only ever precede it (superseded deployments that never went Live); skipping
-// their history is fork-safe because the gate guaranteed no node executed it.
+// Index of the first `Live` deployment — where hosting starts. Any earlier
+// entries were never executable, so a fresh host can skip them safely.
 #[method::instance]
 fn get_hosting_base(ctx: &_, id: LyquidID) -> LyquidResult<Option<u32>> {
     Ok(ctx.network.lyquid_registry.get(&id).and_then(|d| {
