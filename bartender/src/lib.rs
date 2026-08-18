@@ -342,6 +342,31 @@ fn is_image_admitted(ctx: &_, image_digest: B256) -> LyquidResult<bool> {
     Ok(ctx.network.availability.get_epoch(&ctx, target) == 0 || ctx.network.admitted_images.contains(&image_digest))
 }
 
+// Source-side finalized epoch for the availability committee. Epoch 0 means
+// deployment admission is still running in compatibility mode.
+#[method::instance(export = eth)]
+fn get_availability_epoch(ctx: &_) -> LyquidResult<u32> {
+    let target = availability_target(ctx.lyquid_id)?;
+    Ok(ctx.network.availability.get_epoch(&ctx, target))
+}
+
+// Compact operator counts that are not derivable from node-local hosting data.
+#[method::instance(export = eth)]
+fn get_availability_counts(ctx: &_) -> LyquidResult<(u64, u64)> {
+    let pending = ctx
+        .network
+        .lyquid_registry
+        .values()
+        .filter(|metadata| {
+            metadata
+                .deploy_history
+                .last()
+                .is_some_and(|info| info.status == DeployStatus::Pending)
+        })
+        .count();
+    Ok((ctx.network.admitted_images.len() as u64, pending as u64))
+}
+
 // List deployments still awaiting an availability verdict, for the node's
 // availability worker to (re)try pulling and certifying.
 #[method::instance]

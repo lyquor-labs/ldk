@@ -1,18 +1,15 @@
 [package]
 name = "erc20"
+workspace = "../.."
 publish = false
-version = "0.4.3"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
-lyquid = { path = "../../lyquid/", features = ["ldk"] }
+lyquid = { workspace = true, features = ["ldk"] }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[profile.release]
-strip = "debuginfo"
-debug = false
-lto = true
-
-[workspace]
+[lints]
+workspace = true

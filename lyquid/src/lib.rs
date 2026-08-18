@@ -34,6 +34,10 @@ pub mod well_known {
     pub const SEQUENCER_RPC: &str = "http://sequencer.lyquor.internal";
     /// URL Lyquid instance functions can use with `lyquor_api::http_request` for sequencer JSON-RPC reads.
     pub const SEQUENCER_RPC_API: &str = "http://sequencer.lyquor.internal/api";
+    /// Hostname routed by the node to its own public API.
+    pub const NODE_API_HOST: &str = "node.lyquor.internal";
+    /// Internal node API origin for Lyquid instance functions.
+    pub const NODE_API: &str = "http://node.lyquor.internal";
 }
 /// Guest pointer and memory-layout helpers.
 pub mod mem;

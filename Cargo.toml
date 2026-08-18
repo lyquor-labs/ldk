@@ -1,20 +1,36 @@
 [workspace]
-members = ["primitives", "lyquid", "lyquid/proc"]
-exclude = ["lyquid-template"]
+members = ["bartender", "primitives", "lyquid", "lyquid/proc", "lyquid-examples/hello", "lyquid-examples/erc20", "lyquid-examples/basicswap", "lyquid-examples/price-feed"]
 resolver = "3"
+exclude = ["lyquid-template"]
 
 [workspace.package]
 edition = "2024"
-version = "0.4.3"
+version = "0.4.4"
 homepage = "https://lyquor.xyz/"
 repository = "https://github.com/lyquor-labs/ldk"
 license = "Apache-2.0"
+
+[workspace.dependencies]
+alloy-primitives = { version = "1.6", default-features = false }
+alloy-sol-types = { version = "1.6", default-features = false }
+bytes = "1.11"
+hashbrown = { version = "0.17", default-features = false }
+lyquid = { path = "lyquid", version = "0.4.4" }
+lyquid-proc = { path = "lyquid/proc", version = "=0.4.4" }
+lyquor-primitives = { path = "primitives", version = "0.4.4" }
+proc-macro2 = "1.0.106"
+quote = "1.0"
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = { version = "0.11", default-features = false }
+syn = "3.0"
+thiserror = "2.0"
+typed-builder = "0.23"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(rust_analyzer)'] }
 
 [workspace.lints.clippy]
-# Always-deny footguns (zero occurrences today; these are regression guards).
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
@@ -26,8 +42,6 @@ float_cmp_const = "deny"
 empty_drop = "deny"
 string_add = "deny"
 wildcard_dependencies = "deny"
-# Style/perf cleanups kept clippy-clean (CI gates on `-D warnings`, so `warn` is
-# blocking in CI; promote to `deny` if you want the same failure locally).
 uninlined_format_args = "warn"
 use_self = "warn"
 semicolon_if_nothing_returned = "warn"
@@ -50,16 +64,7 @@ bool_to_int_with_if = "warn"
 collapsible_else_if = "warn"
 from_iter_instead_of_collect = "warn"
 
-[workspace.dependencies]
-alloy-sol-types = { version = "1.6", default-features = false }
-bytes = "1.11"
-hashbrown = { version = "0.17", default-features = false }
-lyquid-proc = { path = "lyquid/proc", version = "=0.4.3" }
-lyquor-primitives = { path = "primitives", version = "0.4.3" }
-proc-macro2 = "1.0.106"
-quote = "1.0"
-serde = { version = "1.0", default-features = false, features = ["derive"] }
-sha2 = { version = "0.11", default-features = false }
-syn = "3.0"
-thiserror = "2.0"
-typed-builder = "0.23"
+[profile.release]
+strip = "debuginfo"
+debug = false
+lto = true

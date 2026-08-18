@@ -16,7 +16,7 @@ For the single-node topology, see `docker/single/`.
 - Exposes each node API port on the host.
 - Persists Anvil chain state in a Docker volume.
 - Starts/uses a local OCI registry on host port `8000`.
-- Bootstraps bartender once (idempotent check in the `setup-devnet` service command).
+- Bootstraps bartender once, waits for all peers, and activates the availability gate with all four nodes at threshold 1.
 
 ## Prerequisites
 
@@ -78,6 +78,13 @@ curl --data '{}' \
   -s http://localhost:10087/lyquor.lyquid.v1.LyquidService/GetLyquidInfo
 ```
 
+Check the availability gate:
+
+```bash
+docker compose -f docker/multi/docker-compose.yaml run --rm setup-devnet \
+  /usr/local/bin/shaker availability status --endpoint ws://node1:10087/ws
+```
+
 ## Persistence
 
 Anvil state is persisted via the named volume `anvil-state`, mounted at `/home/foundry`, with state file:
@@ -99,7 +106,7 @@ Each node config includes fallback repos:
 - `http://registry:8000/lyquids`
 - `ghcr.io/lyquor-labs/lyquids`
 
-Note: current `setup-devnet` service bootstraps bartender by running `shaker deploy --is-bartender --reference ghcr.io/lyquor-labs/lyquids:bartender-v0.4.3 --endpoint ws://node1:10087/ws`, with an idempotency check to skip redeploy when already present.
+The `setup-devnet` service bootstraps bartender with an idempotent deploy check, then runs `shaker availability activate --committee auto --threshold 1`. Threshold 1 preserves single-endpoint pushes in the published kit while still exercising registry-backed cross-node certification and the `Pending → Live` transition.
 
 ## Stop / Reset
 

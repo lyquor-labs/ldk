@@ -14,6 +14,25 @@ pub use super::oracle::{CertifiedCallParams, OracleServiceTarget, OracleTarget};
 pub use super::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 pub use crate::{LyquidError, LyquidResult};
 
+/// Types returned by [`oneshot()`].
+pub mod oneshot {
+    pub use crate::runtime::sync::oneshot::{Receiver, RecvError, Sender};
+}
+
+/// Creates a guest-side channel that transfers exactly one value between concurrent instance calls.
+///
+/// Sending never waits. Receiving blocks through the Lyquor host wait/notify primitives until a value
+/// arrives or the sender is dropped. The channel is backed by shared instance LyteMemory and is intended
+/// for coordination between Lyquid instance functions.
+///
+/// Like the guest [`Mutex`] and [`RwLock`], this primitive is only supported for short-lived coordination:
+/// a waiting receiver keeps its instance call in flight, and a host timeout or cancellation does not
+/// guarantee guest-side cleanup. Do not use it for durable external-input waits or recovery across node
+/// restarts.
+pub fn oneshot<T>() -> (oneshot::Sender<T>, oneshot::Receiver<T>) {
+    crate::runtime::sync::oneshot::channel()
+}
+
 /// Deterministically seeded hash map used by Lyquid runtime data structures.
 pub type HashMap<K, V> = hashbrown::HashMap<K, V, ahash::RandomState>;
 /// Deterministically seeded hash set used by Lyquid runtime data structures.

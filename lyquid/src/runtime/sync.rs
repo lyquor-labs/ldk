@@ -23,6 +23,168 @@ mod lyquor_api {
 }
 
 // ============================================================
+// One-shot channel
+// ============================================================
+
+pub(crate) mod oneshot {
+    use core::cell::UnsafeCell;
+    use core::fmt;
+    use core::mem::MaybeUninit;
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    use super::{GuestUsize, lyquor_api};
+
+    const VALUE_READY: u32 = 1 << 0;
+    const SENDER_CLOSED: u32 = 1 << 1;
+    const RECEIVER_CLOSED: u32 = 1 << 2;
+
+    struct Shared<T> {
+        state: AtomicU32,
+        value: UnsafeCell<MaybeUninit<T>>,
+    }
+
+    // The single Sender owns all writes and the single Receiver owns all reads. The state release/acquire
+    // transition publishes the initialized value before the Receiver accesses it.
+    unsafe impl<T: Send> Sync for Shared<T> {}
+
+    impl<T> Shared<T> {
+        fn new() -> Self {
+            Self {
+                state: AtomicU32::new(0),
+                value: UnsafeCell::new(MaybeUninit::uninit()),
+            }
+        }
+
+        fn notify_receiver(&self) {
+            unsafe {
+                lyquor_api::__notify(self.state.as_ptr() as GuestUsize, 1, 0 as GuestUsize);
+            }
+        }
+    }
+
+    impl<T> Drop for Shared<T> {
+        fn drop(&mut self) {
+            if *self.state.get_mut() & VALUE_READY != 0 {
+                unsafe {
+                    self.value.get_mut().assume_init_drop();
+                }
+            }
+        }
+    }
+
+    /// Sending half of a Lyquid guest one-shot channel.
+    ///
+    /// A sender cannot be cloned and can publish at most one value.
+    pub struct Sender<T> {
+        shared: Option<Arc<Shared<T>>>,
+    }
+
+    impl<T> Sender<T> {
+        /// Publishes the channel's value without waiting for the receiver.
+        ///
+        /// Returns the original value when the receiver was already dropped.
+        pub fn send(mut self, value: T) -> Result<(), T> {
+            let shared = self.shared.take().expect("one-shot sender is always initialized");
+
+            if shared.state.load(Ordering::Acquire) & RECEIVER_CLOSED != 0 {
+                return Err(value);
+            }
+
+            unsafe {
+                (*shared.value.get()).write(value);
+            }
+            let previous = shared.state.fetch_or(VALUE_READY | SENDER_CLOSED, Ordering::AcqRel);
+
+            if previous & RECEIVER_CLOSED != 0 {
+                let value = unsafe { (*shared.value.get()).assume_init_read() };
+                shared.state.fetch_and(!VALUE_READY, Ordering::Relaxed);
+                return Err(value);
+            }
+
+            shared.notify_receiver();
+            Ok(())
+        }
+    }
+
+    impl<T> Drop for Sender<T> {
+        fn drop(&mut self) {
+            let Some(shared) = self.shared.take() else {
+                return;
+            };
+            shared.state.fetch_or(SENDER_CLOSED, Ordering::Release);
+            shared.notify_receiver();
+        }
+    }
+
+    /// Receiving half of a Lyquid guest one-shot channel.
+    ///
+    /// A receiver cannot be cloned and can receive at most one value.
+    pub struct Receiver<T> {
+        shared: Option<Arc<Shared<T>>>,
+    }
+
+    impl<T> Receiver<T> {
+        /// Blocks the current guest call until the sender publishes a value or closes.
+        ///
+        /// This operation is intended only for short-lived instance-call coordination. It keeps the VM run
+        /// in flight while waiting, and host timeout or cancellation does not guarantee that this receiver's
+        /// destructor runs.
+        pub fn recv(mut self) -> Result<T, RecvError> {
+            let shared = Arc::clone(self.shared.as_ref().expect("one-shot receiver is always initialized"));
+
+            loop {
+                let state = shared.state.load(Ordering::Acquire);
+                if state & VALUE_READY != 0 {
+                    let value = unsafe { (*shared.value.get()).assume_init_read() };
+                    shared.state.fetch_and(!VALUE_READY, Ordering::Relaxed);
+                    self.shared.take();
+                    return Ok(value);
+                }
+                if state & SENDER_CLOSED != 0 {
+                    self.shared.take();
+                    return Err(RecvError);
+                }
+
+                unsafe {
+                    lyquor_api::__wait(shared.state.as_ptr() as GuestUsize, state, -1, 0 as GuestUsize);
+                }
+            }
+        }
+    }
+
+    impl<T> Drop for Receiver<T> {
+        fn drop(&mut self) {
+            if let Some(shared) = self.shared.take() {
+                shared.state.fetch_or(RECEIVER_CLOSED, Ordering::Release);
+            }
+        }
+    }
+
+    /// Error returned when the sender closes without publishing a value.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct RecvError;
+
+    impl fmt::Display for RecvError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("one-shot sender dropped without sending a value")
+        }
+    }
+
+    impl std::error::Error for RecvError {}
+
+    pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {
+        let shared = Arc::new(Shared::new());
+        (
+            Sender {
+                shared: Some(Arc::clone(&shared)),
+            },
+            Receiver { shared: Some(shared) },
+        )
+    }
+}
+
+// ============================================================
 // Mutex
 // ============================================================
 

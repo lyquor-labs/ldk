@@ -1,19 +1,17 @@
 [package]
 name = "basicswap"
+workspace = "../.."
 publish = false
-version = "0.4.3"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-lyquid = { path = "../../lyquid/", features = ["ldk"] }
+lyquid = { workspace = true, features = ["ldk"] }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[profile.release]
-strip = "debuginfo"
-debug = false
-
-[workspace]
+[lints]
+workspace = true

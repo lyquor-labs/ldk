@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en" class="light" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <title><%- title %></title>
+    <meta name="description" content="<%- description %>" />
+
+    <link rel="icon" href="/logo_dark.svg" media="(prefers-color-scheme: light)" />
+    <link rel="icon" href="/logo_light.svg" media="(prefers-color-scheme: dark)" />
+
+    <meta name="apple-mobile-web-app-title" content="<%- title %>" />
+    <link rel="apple-touch-icon" href="/logo.png" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="<%- twitter %>" />
+    <meta property="og:title" content="<%- title %>" />
+    <meta property="og:url" content="<%- url %>" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

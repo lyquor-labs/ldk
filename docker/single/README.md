@@ -55,6 +55,21 @@ curl --data '{}' \
   -s http://localhost:10087/lyquor.lyquid.v1.LyquidService/GetLyquidInfo
 ```
 
+## Opt In To Availability Admission
+
+The single-node kit stays at epoch 0 by default. To exercise the full admission path with a 1-of-1 committee, set the bootstrap flag when starting the stack:
+
+```bash
+LYQUOR_ACTIVATE_AVAILABILITY=true docker compose -f docker/single/docker-compose.yaml up -d
+```
+
+Then inspect the gate with:
+
+```bash
+docker compose -f docker/single/docker-compose.yaml run --rm setup-devnet \
+  /usr/local/bin/shaker availability status --endpoint ws://node:10087/ws
+```
+
 ## Stop / Reset
 
 Stop containers, keep volume:

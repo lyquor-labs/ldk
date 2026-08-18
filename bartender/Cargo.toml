@@ -1,21 +1,18 @@
 [package]
 name = "bartender"
-version = "0.4.3"
-edition = "2024"
+workspace = ".."
+version.workspace = true
+edition.workspace = true
 publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-lyquid = { path = "../lyquid", features = ["ldk"] }
-serde = { version = "1.0.228", features = ["derive"] }
+lyquid = { workspace = true, features = ["ldk"] }
+serde = { workspace = true, features = ["derive"] }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[profile.release]
-strip = "debuginfo"
-debug = false
-lto = true
-
-[workspace]
+[lints]
+workspace = true
