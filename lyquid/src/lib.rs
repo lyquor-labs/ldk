@@ -16,6 +16,9 @@
 
 /// Method metadata categories and WASM custom-section encoding helpers.
 pub mod consts;
+/// Synchronous single-use channels for coordination between concurrent guest calls.
+#[cfg(feature = "ldk")]
+pub mod oneshot;
 /// Guest runtime support for memory, calls, oracle, UPC, and synchronization.
 #[cfg(feature = "ldk")]
 pub mod runtime;

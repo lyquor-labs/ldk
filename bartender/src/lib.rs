@@ -11,12 +11,15 @@ use lyquid::prelude::*;
 use lyquor_primitives::{AvailabilityPendingEvent, B256, DeployStatus, RegisterEvent};
 use serde::Serialize;
 
+const DEFAULT_AVAILABILITY_DEADLINE_BLOCKS: u64 = 50;
+
 #[derive(Serialize, Clone, Debug)]
 struct DeployInfo {
     contract: Address,
     repo_hint: Option<String>,
     image_digest: B256,
     status: DeployStatus,
+    deadline: Option<ChainPos>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -43,9 +46,12 @@ state! {
     network admitted_images: HashSet<B256> = new_hashset();
     // Committee-certified image-availability rail for deployment admission.
     network oracle availability;
-    // Image digests this node has pulled and content-verified locally; written
-    // by the node's availability worker, read by the certification validator.
-    instance verified_images: HashMap<B256, bool> = new_hashmap();
+    // Maximum chain-block delay before an unavailable deployment can be
+    // certified Void. Operators may tune it before accepting deployments.
+    network availability_deadline_blocks: u64 = DEFAULT_AVAILABILITY_DEADLINE_BLOCKS;
+    // Latest local image probe result by digest; written by the node's
+    // availability worker and read by the certification validator.
+    instance image_probes: HashMap<B256, bool> = new_hashmap();
 }
 
 fn availability_target(lyquid_id: LyquidID) -> LyquidResult<OracleTarget> {
@@ -77,9 +83,21 @@ fn deployment_status_for_registration(
     })
 }
 
+fn deployment_deadline(ctx: &__lyquid::NetworkContext, status: DeployStatus) -> LyquidResult<Option<ChainPos>> {
+    if status != DeployStatus::Pending {
+        return Ok(None);
+    }
+    Ok(Some(ChainPos::new(
+        lyquor_api::chain_pos()?
+            .block()
+            .saturating_add(*ctx.network.availability_deadline_blocks),
+        0,
+    )))
+}
+
 fn next_lyquid_id(
     ctx: &mut __lyquid::NetworkContext, owner: Address, contract: Address, repo_hint: Option<String>,
-    image_digest: B256, deps: Vec<LyquidID>, status: DeployStatus,
+    image_digest: B256, deps: Vec<LyquidID>, status: DeployStatus, deadline: Option<ChainPos>,
 ) -> LyquidID {
     let id = {
         let nonce = ctx.network.owner_nonce.entry(owner).or_insert(0);
@@ -97,6 +115,7 @@ fn next_lyquid_id(
         repo_hint,
         image_digest,
         status,
+        deadline,
     });
     // Store the dependencies for this lyquid
     for dep in deps {
@@ -132,6 +151,7 @@ fn update_eth_addr(
         (DeployStatus::Void, _) | (DeployStatus::Live, DeployStatus::Pending) => DeployStatus::Void,
         (_, status) => status,
     };
+    let deadline = deployment_deadline(ctx, status)?;
     let Some(metadata) = ctx.network.lyquid_registry.get_mut(&id) else {
         return Ok(None);
     };
@@ -146,6 +166,7 @@ fn update_eth_addr(
         repo_hint,
         image_digest,
         status,
+        deadline,
     });
     // Dependencies belong to the Lyquid ID and remain the ones recorded by its first registration.
     Ok(Some((id, status)))
@@ -180,8 +201,18 @@ fn register(
         let next_nonce = ctx.network.owner_nonce.get(&owner).copied().unwrap_or(0);
         let status =
             deployment_status_for_registration(&ctx, LyquidID::from_owner_nonce(&owner, next_nonce), image_digest)?;
+        let deadline = deployment_deadline(&ctx, status)?;
         // create a new lyquid
-        let id = next_lyquid_id(&mut ctx, owner, contract, repo_hint.clone(), image_digest, deps, status);
+        let id = next_lyquid_id(
+            &mut ctx,
+            owner,
+            contract,
+            repo_hint.clone(),
+            image_digest,
+            deps,
+            status,
+            deadline,
+        );
         (Some(id), status)
     } else {
         // Upgrade path; an unadmitted image voids a live Lyquid instead of
@@ -269,9 +300,35 @@ fn attest_available(ctx: &mut _, image_digest: B256) -> LyquidResult<bool> {
     Ok(true)
 }
 
+// Committee-certified negative verdict for content `image_digest`. The
+// sequenced position is authoritative: signers only propose, while this body
+// independently limits the verdict to expired Pending tails.
+#[method::network(group = oracle::certified::availability)]
+fn attest_unavailable(ctx: &mut _, image_digest: B256) -> LyquidResult<bool> {
+    if ctx.network.admitted_images.contains(&image_digest) {
+        return Ok(true);
+    }
+    let pos = lyquor_api::chain_pos()?;
+    let mut voided = 0;
+    for metadata in ctx.network.lyquid_registry.values_mut() {
+        let Some(info) = metadata.deploy_history.last_mut() else {
+            continue;
+        };
+        if info.image_digest == image_digest &&
+            info.status == DeployStatus::Pending &&
+            info.deadline.is_some_and(|deadline| deadline <= pos)
+        {
+            info.status = DeployStatus::Void;
+            voided += 1;
+        }
+    }
+    lyquid::println!("attest_unavailable {image_digest} => Void ({voided} deployments)");
+    Ok(true)
+}
+
 // Committee validator for availability certificates: votes yea only when the
-// proposed digest is not already admitted and this node has pulled and
-// content-verified the corresponding image locally.
+// proposed digest is not already admitted and this node's latest local probe
+// supports the proposed positive or negative verdict.
 #[method::instance(group = oracle::single_phase::availability)]
 fn validate(ctx: &mut _, params: CallParams, _extra: Bytes, target: OracleTarget) -> LyquidResult<bool> {
     if target.seq_id != lyquor_api::sequence_backend_id()? {
@@ -280,24 +337,25 @@ fn validate(ctx: &mut _, params: CallParams, _extra: Bytes, target: OracleTarget
     if !matches!(target.target, OracleServiceTarget::LVM(dest) if dest == ctx.lyquid_id) {
         return Ok(false);
     }
-    if params.method != "attest_available" {
-        return Ok(false);
-    }
+    let expected_probe = match params.method.as_str() {
+        "attest_available" => true,
+        "attest_unavailable" => false,
+        _ => return Ok(false),
+    };
     let Some(claim) = decode_by_fields!(&params.input, image_digest: B256) else {
         return Ok(false);
     };
     if ctx.network.admitted_images.contains(&claim.image_digest) {
         return Ok(false);
     }
-    Ok(ctx.instance.verified_images.read().contains_key(&claim.image_digest))
+    Ok(ctx.instance.image_probes.read().get(&claim.image_digest) == Some(&expected_probe))
 }
 
-// Record that this node has pulled and content-verified an image digest.
-// Called by the node's availability worker after a successful pull; the
+// Record this node's latest pull-and-verify result for an image digest. The
 // flag is node-local (instance state) and feeds `validate`.
 #[method::instance]
-fn note_image_verified(ctx: &mut _, image_digest: B256) -> LyquidResult<bool> {
-    ctx.instance.verified_images.write().insert(image_digest, true);
+fn note_image_probe(ctx: &mut _, image_digest: B256, available: bool) -> LyquidResult<bool> {
+    ctx.instance.image_probes.write().insert(image_digest, available);
     Ok(true)
 }
 
@@ -309,7 +367,7 @@ fn certify_availability(ctx: &mut _, image_digest: B256) -> LyquidResult<bool> {
     if ctx.network.admitted_images.contains(&image_digest) {
         return Ok(true);
     }
-    if !ctx.instance.verified_images.read().contains_key(&image_digest) {
+    if ctx.instance.image_probes.read().get(&image_digest) != Some(&true) {
         return Ok(false);
     }
     let target = availability_target(ctx.lyquid_id)?;
@@ -319,6 +377,50 @@ fn certify_availability(ctx: &mut _, image_digest: B256) -> LyquidResult<bool> {
         CertifiedCallParams {
             origin: Address::ZERO,
             method: "attest_available".into(),
+            input: encode_by_fields!(image_digest: B256 = image_digest).into(),
+            target,
+        },
+        Bytes::new(),
+        None,
+        None,
+    )?;
+    match cert {
+        Some(cert) => {
+            let _ = submit_certified_call!(cert)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+// Propose an unavailability certificate only after a local failed probe and
+// at least one deployment-scoped deadline has expired at this node's last
+// committed position. The certified network call repeats the binding check at
+// its own sequenced position.
+#[method::instance]
+fn certify_unavailability(ctx: &mut _, image_digest: B256) -> LyquidResult<bool> {
+    if ctx.network.admitted_images.contains(&image_digest) ||
+        ctx.instance.image_probes.read().get(&image_digest) != Some(&false)
+    {
+        return Ok(false);
+    }
+    let pos = lyquor_api::chain_pos()?;
+    if !ctx.network.lyquid_registry.values().any(|metadata| {
+        metadata.deploy_history.last().is_some_and(|info| {
+            info.image_digest == image_digest &&
+                info.status == DeployStatus::Pending &&
+                info.deadline.is_some_and(|deadline| deadline <= pos)
+        })
+    }) {
+        return Ok(false);
+    }
+    let target = availability_target(ctx.lyquid_id)?;
+    let o = ctx.network.availability.clone();
+    let cert = o.certify(
+        &mut ctx,
+        CertifiedCallParams {
+            origin: Address::ZERO,
+            method: "attest_unavailable".into(),
             input: encode_by_fields!(image_digest: B256 = image_digest).into(),
             target,
         },
@@ -348,6 +450,19 @@ fn is_image_admitted(ctx: &_, image_digest: B256) -> LyquidResult<bool> {
 fn get_availability_epoch(ctx: &_) -> LyquidResult<u32> {
     let target = availability_target(ctx.lyquid_id)?;
     Ok(ctx.network.availability.get_epoch(&ctx, target))
+}
+
+/// Configure the deployment availability deadline for future registrations.
+#[method::network(export = eth, eth_guard = creator)]
+fn set_availability_deadline_blocks(ctx: &mut _, deadline_blocks: u64) -> LyquidResult<bool> {
+    *ctx.network.availability_deadline_blocks = deadline_blocks;
+    Ok(true)
+}
+
+/// Deployment availability deadline, in sequencer chain blocks.
+#[method::instance(export = eth)]
+fn get_availability_deadline_blocks(ctx: &_) -> LyquidResult<u64> {
+    Ok(*ctx.network.availability_deadline_blocks)
 }
 
 // Compact operator counts that are not derivable from node-local hosting data.
@@ -403,6 +518,42 @@ fn get_deployment_status(ctx: &_, contract: Address) -> LyquidResult<u8> {
             DeployStatus::Live => 1,
             DeployStatus::Void => 2,
         }))
+}
+
+// Let a deployment owner terminate their own inert Pending tail immediately.
+// This cannot manufacture availability and does not affect later redeploys of
+// the same digest.
+#[method::network(export = eth)]
+fn force_void(ctx: &mut _, contract: Address) -> LyquidResult<bool> {
+    let id = ctx
+        .network
+        .lyquid_ids
+        .get(&contract)
+        .copied()
+        .ok_or(LyquidError::LyquidRuntime("unknown deployment contract".into()))?;
+    let metadata = ctx
+        .network
+        .lyquid_registry
+        .get_mut(&id)
+        .ok_or(LyquidError::LyquidRuntime(
+            "registered Lyquid metadata is missing".into(),
+        ))?;
+    if ctx.origin != metadata.owner {
+        return Err(LyquidError::LyquidRuntime(
+            "only the deployment owner can force a Pending deployment Void".into(),
+        ));
+    }
+    let info = metadata
+        .deploy_history
+        .last_mut()
+        .ok_or(LyquidError::LyquidRuntime("deployment history is empty".into()))?;
+    if info.contract != contract || info.status != DeployStatus::Pending {
+        return Err(LyquidError::LyquidRuntime(
+            "force_void requires the current Pending deployment".into(),
+        ));
+    }
+    info.status = DeployStatus::Void;
+    Ok(true)
 }
 
 #[method::network(export = eth)]
