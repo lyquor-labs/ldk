@@ -34,9 +34,9 @@ pub struct CertifiedCallParams {
 /// - The `params` field carries the call to be sequenced, whose validation is done by
 ///   `validate()`.
 /// - The `extra` field carries the supplementary information given by the proposer to each
-/// validator for its local consideration during `validate()`. This data will NOT be signed or
-/// contained in [ValidateResponse]. Like `params`, its validity is not verified when passed to
-/// `validate()`.
+///   validator for its local consideration during `validate()`. This data will NOT be signed or
+///   contained in [ValidateResponse]. Like `params`, its validity is not verified when passed to
+///   `validate()`.
 ///
 /// The entire flow done by `validate()` looks like this:
 ///
@@ -100,6 +100,7 @@ pub struct ProposalInput {
 }
 
 impl ProposalInput {
+    #[allow(clippy::too_many_arguments)]
     fn verify(
         &self, lyquid_id: LyquidID, topic: &str, group: &str, proposer: NodeID, init: Bytes, nonce: HashBytes,
         config: &OracleConfig, seen: &mut HashSet<NodeID>,
@@ -107,9 +108,8 @@ impl ProposalInput {
         if !seen.insert(self.from) {
             return Ok(false);
         }
-        let signer = match config.committee.get(&self.from) {
-            Some(s) => s,
-            None => return Ok(false),
+        let Some(signer) = config.committee.get(&self.from) else {
+            return Ok(false);
         };
         let key = signer.get_verifying_key(Cipher::Ed25519);
         ProposePreimage {
@@ -172,11 +172,9 @@ fn two_phase_cert_nonce(proposal_nonce: HashBytes) -> HashBytes {
 
 fn group_from_chunks(prefix: &str, suffix: &[Option<&str>]) -> String {
     let mut group = prefix.to_string();
-    for s in suffix {
-        if let Some(s) = s {
-            group.push_str("::");
-            group.push_str(s);
-        }
+    for s in suffix.iter().flatten() {
+        group.push_str("::");
+        group.push_str(s);
     }
     group
 }
@@ -187,6 +185,7 @@ fn random_cert_nonce() -> Option<HashBytes> {
     Some(hash.into())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_phase(
     lyquid_id: LyquidID, proposer: NodeID, group_suffix: &str, target: OracleTarget, epoch: u32,
     config_hash: HashBytes, mut params: CallParams, extra: Bytes, config: OracleConfig,
@@ -338,13 +337,13 @@ fn propose_and_certify<S: crate::runtime::internal::StateAccessor, I: crate::run
     )
     .and_then(|r| lyquor_primitives::decode_object(&r).ok_or(LyquidError::LyquorOutput))?;
 
-    let Proposal {
+    let Some(Proposal {
         nonce: proposal_nonce,
         inputs,
         output,
-    } = match proposal {
-        Some(p) => p,
-        None => return Ok(None),
+    }) = proposal
+    else {
+        return Ok(None);
     };
     let cert_nonce = two_phase_cert_nonce(proposal_nonce);
     let group = group_from_chunks(topic, &[Some("two_phase"), group_suffix]);
@@ -389,9 +388,8 @@ fn advance_epoch<S: crate::runtime::internal::StateAccessor, I: crate::runtime::
     let Some(source) = crate::runtime::internal::builtin_network_state().oracle_src(topic) else {
         return Ok(None);
     };
-    let (epoch, config, delta, config_hash, change_count) = match source.propose_advance_epoch(target) {
-        Some(d) => d,
-        None => return Ok(None),
+    let Some((epoch, config, delta, config_hash, change_count)) = source.propose_advance_epoch(target) else {
+        return Ok(None);
     };
     let config = config.clone();
     let group = group_from_chunks(topic, &[Some(EPOCH_GROUP_SUFFIX)]);
@@ -556,7 +554,7 @@ impl<'a> StateVar<'a> {
             return None;
         }
 
-        let is_epoch_vote = group == &group_from_chunks(self.topic(), &[Some(EPOCH_GROUP_SUFFIX)]);
+        let is_epoch_vote = group == group_from_chunks(self.topic(), &[Some(EPOCH_GROUP_SUFFIX)]);
         let is_advance_epoch = is_epoch_vote && params.method == ADVANCE_EPOCH_METHOD;
         let is_finalize_epoch = is_epoch_vote && params.method == FINALIZE_EPOCH_METHOD;
         if is_advance_epoch {
@@ -568,15 +566,12 @@ impl<'a> StateVar<'a> {
             {
                 return None;
             }
-            let payload = match lyquor_primitives::decode_by_fields!(
+            let payload = lyquor_primitives::decode_by_fields!(
                 &params.input,
                 topic: String,
                 config_delta: OracleConfigDeltaWire,
                 change_count: u32
-            ) {
-                Some(payload) => payload,
-                None => return None,
-            };
+            )?;
             if !oracle.validate_advance_epoch(
                 header.target,
                 payload.topic.as_str(),
@@ -588,14 +583,11 @@ impl<'a> StateVar<'a> {
                 return None;
             }
         } else if is_finalize_epoch {
-            let payload = match lyquor_primitives::decode_by_fields!(
+            let payload = lyquor_primitives::decode_by_fields!(
                 &params.input,
                 target: OracleTarget,
                 target_info: OracleEpochInfo
-            ) {
-                Some(payload) => payload,
-                None => return None,
-            };
+            )?;
             if params.abi != lyquor_primitives::InputABI::Lyquor ||
                 params.group != group ||
                 params.method != FINALIZE_EPOCH_METHOD ||
@@ -655,19 +647,21 @@ impl<'a> StateVar<'a> {
         &self, oracle: &OracleSrc, header: &OracleHeader, extra: &Bytes, lyquid_id: LyquidID, group: &str,
         proposer: NodeID,
     ) -> LyquidResult<Option<(Bytes, HashBytes, Vec<ProposalInput>)>> {
-        let payload = match lyquor_primitives::decode_by_fields!(
+        let Some(payload) = lyquor_primitives::decode_by_fields!(
             extra,
             init: Bytes,
             nonce: HashBytes,
             inputs: Vec<ProposalInput>
-        ) {
-            Some(v) => v,
-            None => return Ok(None),
+        ) else {
+            return Ok(None);
         };
         if two_phase_cert_nonce(payload.nonce) != header.nonce {
             return Ok(None);
         }
-        let Some(config) = oracle.source_state(header.target).map(|state| state.current_config()) else {
+        let Some(config) = oracle
+            .source_state(header.target)
+            .map(super::source::SourceState::current_config)
+        else {
             return Ok(None);
         };
         let mut seen = new_hashset();
@@ -770,6 +764,7 @@ impl ProposalAggregation {
     }
 
     /// Adds one proposal response and returns a final proposal once aggregation succeeds or fails.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_response(
         &mut self, node: NodeID, resp: ProposeResponse,
         agg: fn(ProposalAggregationContext) -> LyquidResult<Option<CertifiedCallParams>>, lyquid_id: LyquidID,
@@ -778,9 +773,8 @@ impl ProposalAggregation {
         if self.output.is_some() {
             return self.output.clone();
         }
-        let signer = match self.committee.get(&node) {
-            Some(signer) => signer,
-            None => return self.output.clone(),
+        let Some(signer) = self.committee.get(&node) else {
+            return self.output.clone();
         };
         // A committee node can only respond once.
         if !self.collected.insert(node) {
@@ -859,9 +853,8 @@ impl ValidateAggregation {
         if self.result.is_some() {
             return self.result.clone();
         }
-        let signer = match self.committee.get(&node).copied() {
-            Some(signer) => signer,
-            None => return self.result.clone(),
+        let Some(signer) = self.committee.get(&node).copied() else {
+            return self.result.clone();
         };
         // A committee node can only vote once.
         if !self.collected.insert(node) {
@@ -886,8 +879,8 @@ impl ValidateAggregation {
         .unwrap_or(false);
 
         if ok && resp.approval {
-            self.approved_sigs.push((signer.id, resp.sig.clone()));
-            self.approved += 1
+            self.approved_sigs.push((signer.id, resp.sig));
+            self.approved += 1;
         }
 
         if self.approved >= self.threshold {
@@ -899,10 +892,10 @@ impl ValidateAggregation {
                 header: self.header,
                 signers,
                 signatures,
-            }))
+            }));
         } else if self.committee.len() + (self.approved as usize) < (self.threshold as usize) + self.collected.len() {
             // Early failure: impossible to reach threshold with remaining nodes.
-            self.result = Some(None)
+            self.result = Some(None);
         }
         self.result.clone()
     }

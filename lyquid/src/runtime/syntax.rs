@@ -4,13 +4,13 @@
 ///
 /// The `lyquid::state!` macro is used to define state variables for your Lyquid. You should:
 /// - **NEVER** mutably access any `static` variables in your Lyquid because only the variables defined
-/// with this macro preserve their state from call to call. (This also applies to the third-party
-/// libraries you include, so you should make sure they don't rely on the global state in any statics.)
+///   with this macro preserve their state from call to call. (This also applies to the third-party
+///   libraries you include, so you should make sure they don't rely on the global state in any statics.)
 /// - Invoke this macro **once** per Lyquid (your crate) in your **crate root** (i.e.,
-/// `src/lib.rs`) to be correctly accessed by your Lyquid functions defined through
-/// `#[lyquid::method::network]` and `#[lyquid::method::instance]`.
-/// Using it multiple times will result in a **compilation error**, as it would lead to conflicting
-/// `__lyquid` modules.
+///   `src/lib.rs`) to be correctly accessed by your Lyquid functions defined through
+///   `#[lyquid::method::network]` and `#[lyquid::method::instance]`.
+///   Using it multiple times will result in a **compilation error**, as it would lead to conflicting
+///   `__lyquid` modules.
 ///
 /// ### Macro Syntax
 ///
@@ -29,7 +29,7 @@
 ///   All nodes that host the same Lyquid observe the same `network` state version (tracked by [lyquor_primitives::LyquidNumber]).  
 ///   Network state is accessible via:
 ///   - **read/write** in `network` functions  
-///   *(Conceptually similar to Solidity's contract-level storage variables)*
+///     *(Conceptually similar to Solidity's contract-level storage variables)*
 ///   - **read-only** in `instance` functions  
 ///
 /// - `instance`: **local, per-node state variable**, mutated by off-chain or external events (e.g., UPCs, timers, network events).  
@@ -170,6 +170,7 @@ macro_rules! __lyquid_state_generate {
 /// functions.
 #[doc(hidden)]
 #[macro_export]
+#[allow(clippy::crate_in_macro_def)]
 macro_rules! __lyquid_categorize_methods {
     ({network(oracle::certified::$first:ident::__epoch) export($export:tt) fn __lyquor_oracle_on_epoch_finalize(&mut $handle:ident, $($name:ident: $type:ty),*) -> LyquidResult<$rt:ty> $body:block $($rest:tt)*},
      {$($network_funcs:tt)*},

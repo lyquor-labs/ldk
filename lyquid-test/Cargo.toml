@@ -1,0 +1,16 @@
+[package]
+name = "lyquid-test"
+workspace = ".."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "WASM guest-test support for Lyquid crates."
+
+[dependencies]
+lyquid.workspace = true
+lyquid-proc.workspace = true
+
+[lints]
+workspace = true

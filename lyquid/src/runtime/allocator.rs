@@ -40,11 +40,13 @@ impl Talck {
 
 unsafe impl GlobalAlloc for Talck {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.lock().allocate(layout).map_or(null_mut(), |nn| nn.as_ptr())
+        self.lock()
+            .allocate(layout)
+            .map_or(null_mut(), core::ptr::NonNull::as_ptr)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.lock().deallocate(ptr, layout)
+        self.lock().deallocate(ptr, layout);
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {

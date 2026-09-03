@@ -38,10 +38,9 @@ impl Signer {
     }
 
     /// Get the wire format for a platform, determined by `cipher`.
-    pub fn to_wire(&self, cipher: Cipher) -> OracleSigner {
+    pub fn to_wire(self, cipher: Cipher) -> OracleSigner {
         let key = match cipher {
-            Cipher::Ed25519 => Bytes::copy_from_slice(&self.key_lvm),
-            Cipher::Secp256k1 => Bytes::copy_from_slice(&self.key_lvm),
+            Cipher::Ed25519 | Cipher::Secp256k1 => Bytes::copy_from_slice(&self.key_lvm),
         };
         OracleSigner { id: self.id, key }
     }
@@ -212,7 +211,7 @@ impl SourceState {
             }
         }
         upsert.sort_by_key(|signer| signer.id);
-        remove.sort();
+        remove.sort_unstable();
 
         let next = OracleConfig {
             committee,
@@ -333,18 +332,17 @@ impl OracleSrc {
 
     /// Initializes the first staged committee for a target.
     pub fn initialize(&mut self, target: OracleTarget, committee: Vec<NodeID>, threshold: u16) -> bool {
-        if let Some(state) = self.states.get(&target) {
-            if state.current.epoch != 0 {
-                return false;
-            }
+        if let Some(state) = self.states.get(&target) &&
+            state.current.epoch != 0
+        {
+            return false;
         }
 
         let mut next_signer_id = self.next_signer_id;
         let mut state = SourceState::new(&target);
         for id in committee {
-            let signer = match Signer::new(id, next_signer_id, state.cipher) {
-                Some(signer) => signer,
-                None => return false,
+            let Some(signer) = Signer::new(id, next_signer_id, state.cipher) else {
+                return false;
             };
             if !state.push_op(OracleConfigOp::AddNode(id, signer)) {
                 return false;
@@ -477,13 +475,12 @@ impl OracleSrc {
     pub fn verify_finalize_cert(
         &self, lyquid_id: LyquidID, params: &lyquor_primitives::CallParams, oc: &OracleCert,
     ) -> bool {
-        let payload = match lyquor_primitives::decode_by_fields!(
+        let Some(payload) = lyquor_primitives::decode_by_fields!(
             &params.input,
             target: OracleTarget,
             target_info: OracleEpochInfo
-        ) {
-            Some(payload) => payload,
-            None => return false,
+        ) else {
+            return false;
         };
 
         let source_target = OracleTarget {

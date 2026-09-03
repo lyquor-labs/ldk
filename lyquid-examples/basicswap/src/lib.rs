@@ -42,7 +42,7 @@ fn _safe_transfer_from(token: LyquidID, from: Address, to: Address, amount: U256
 }
 
 fn _get_token_balance(token: LyquidID, account: Address) -> LyquidResult<U256> {
-    Ok(call!((token).balanceOf(account: Address = account) -> (balance: LyquidResult<U256>)).balance?)
+    call!((token).balanceOf(account: Address = account) -> (balance: LyquidResult<U256>)).balance
 }
 
 fn _get_amount_out(amount_in: U256, reserve_in: U256, reserve_out: U256) -> LyquidResult<U256> {
@@ -106,7 +106,7 @@ fn _mint(state: &mut __lyquid::NetworkState, to: Address, amount: U256) -> Lyqui
 }
 
 fn _burn(state: &mut __lyquid::NetworkState, from: Address, amount: U256) -> LyquidResult<()> {
-    let balance = state.balances.get(&from).unwrap_or(&U256::ZERO).clone();
+    let balance = *state.balances.get(&from).unwrap_or(&U256::ZERO);
     if balance < amount {
         return Err(LyquidError::LyquidRuntime("INSUFFICIENT_BALANCE".into()));
     }
@@ -253,9 +253,9 @@ fn swap(
     _swap_internal(&mut ctx, amount0_out, amount1_out, to, amount0_in, amount1_in)
 }
 
-/// Swap with exact input amount and slippage (bps). Returns actual output amount.
-/// `token0_to_token1`: set true to swap token0 for token1 (token0 is input, token1 is output);
-/// set false for otherwise.
+// Swap with exact input amount and slippage (bps). Returns actual output amount.
+// `token0_to_token1`: set true to swap token0 for token1 (token0 is input, token1 is output);
+// set false for otherwise.
 #[method::network(export = eth)]
 fn swapExactInWithSlippage(
     ctx: &mut _, token0_to_token1: bool, amount_in: U256, slippage_bps: u32, to: Address,
@@ -279,9 +279,9 @@ fn swapExactInWithSlippage(
     Ok(quote_out)
 }
 
-/// Swap with exact output amount and slippage (bps). Returns actual input amount.
-/// `token0_to_token1`: set true to swap token0 for token1 (token0 is input, token1 is output);
-/// set false for otherwise.
+// Swap with exact output amount and slippage (bps). Returns actual input amount.
+// `token0_to_token1`: set true to swap token0 for token1 (token0 is input, token1 is output);
+// set false for otherwise.
 #[method::network(export = eth)]
 fn swapExactOutWithSlippage(
     ctx: &mut _, token0_to_token1: bool, amount_out: U256, slippage_bps: u32, to: Address,

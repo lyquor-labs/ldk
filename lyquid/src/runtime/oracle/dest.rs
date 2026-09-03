@@ -71,10 +71,10 @@ impl OracleConfig {
             return None;
         }
         let mut next = self.clone();
-        for id in delta.remove.iter() {
+        for id in &delta.remove {
             next.committee.remove(id);
         }
-        for s in delta.upsert.iter() {
+        for s in &delta.upsert {
             next.committee.insert(s.id, s.key.to_vec());
         }
         if let Some(threshold) = delta.threshold {
@@ -149,9 +149,8 @@ impl OracleDest {
 
     fn verify_lvm_binding(me: LyquidID, params: &CallParams, oc: &OracleCert) -> bool {
         // Ensure this certificate targets the active sequence backend.
-        let backend = match lyquor_api::sequence_backend_id() {
-            Ok(id) => id,
-            Err(_) => return false,
+        let Ok(backend) = lyquor_api::sequence_backend_id() else {
+            return false;
         };
         if oc.header.target.seq_id != backend {
             return false;
@@ -176,10 +175,9 @@ impl OracleDest {
 
     fn update(&mut self, header: &OracleHeader, next_config: Option<OracleConfig>, change_count: u32) -> bool {
         let update_config = next_config.is_some();
-        let nonce: Hash = header.nonce.clone().into();
-        let epoch_delta = match header.epoch.checked_sub(self.epoch) {
-            Some(delta) => delta,
-            None => return false,
+        let nonce: Hash = header.nonce.into();
+        let Some(epoch_delta) = header.epoch.checked_sub(self.epoch) else {
+            return false;
         };
         match epoch_delta {
             0 => {
@@ -199,7 +197,7 @@ impl OracleDest {
                 self.change_count = change_count;
                 if let Some(config) = next_config {
                     self.config = config;
-                    self.config_hash = header.config_hash.clone();
+                    self.config_hash = header.config_hash;
                 }
             }
             _ => return false,
@@ -271,7 +269,7 @@ impl OracleDest {
             (true, Some(config)) => (config, config.to_wire().to_hash().into()),
             (true, None) => return false,
             (false, Some(config)) => (&self.config, config.to_wire().to_hash().into()),
-            (false, None) => (&self.config, self.config_hash.clone()),
+            (false, None) => (&self.config, self.config_hash),
         };
         if oc.header.config_hash != config_hash {
             return false;

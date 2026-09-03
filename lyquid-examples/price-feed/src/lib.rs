@@ -101,12 +101,12 @@ fn fetch_price(source: PriceSource, symbol: &str) -> LyquidResult<u64> {
     let (bid_raw, ask_raw) = match source {
         PriceSource::Binance => {
             let ticker: BinanceTicker = serde_json::from_slice(&resp.body)
-                .map_err(|e| LyquidError::LyquorRuntime(format!("JSON Parse Error: {}", e)))?;
+                .map_err(|e| LyquidError::LyquorRuntime(format!("JSON Parse Error: {e}")))?;
             (ticker.bid_price, ticker.ask_price)
         }
         PriceSource::Coinbase => {
             let ticker: CoinbaseTicker = serde_json::from_slice(&resp.body)
-                .map_err(|e| LyquidError::LyquorRuntime(format!("JSON Parse Error: {}", e)))?;
+                .map_err(|e| LyquidError::LyquorRuntime(format!("JSON Parse Error: {e}")))?;
             (ticker.bid, ticker.ask)
         }
     };
@@ -238,9 +238,8 @@ fn configure_committee(ctx: &mut _, node_ids: Vec<NodeID>) -> LyquidResult<bool>
 
 #[method::instance(export = eth)]
 fn set_price_source(ctx: &mut _, source: String) -> LyquidResult<bool> {
-    let source = PriceSource::from_str(&source).ok_or(LyquidError::LyquorRuntime(
-        "source must be \"binance\" or \"coinbase\"".into(),
-    ))?;
+    let source = PriceSource::from_str(&source)
+        .ok_or_else(|| LyquidError::LyquorRuntime("source must be \"binance\" or \"coinbase\"".into()))?;
     *ctx.instance.local_price_source.write() = source;
     lyquid::println!("price-feed: local fetch source set to {:?}", source);
     Ok(true)
@@ -300,7 +299,7 @@ fn propose(ctx: &mut _, _avg_num: u16, _target: OracleTarget) -> LyquidResult<Pr
 #[method::instance(group = oracle::two_phase::price_feed)]
 fn aggregate(ctx: &_) -> LyquidResult<Option<CertifiedCallParams>> {
     let init = decode_by_fields!(ctx.init, avg_num: u16, target: OracleTarget)
-        .ok_or(LyquidError::LyquorRuntime("Failed to decode init params".into()))?;
+        .ok_or_else(|| LyquidError::LyquorRuntime("Failed to decode init params".into()))?;
     if init.target.seq_id != lyquor_api::sequence_backend_id()? {
         return Ok(None)
     }
@@ -333,9 +332,8 @@ fn aggregate(ctx: &_) -> LyquidResult<Option<CertifiedCallParams>> {
 
     let mut update = new_hashmap();
     for &(asset, _, _) in &ASSETS {
-        let mut candidates = match all_prices.remove(asset) {
-            Some(c) => c,
-            None => return Ok(None),
+        let Some(mut candidates) = all_prices.remove(asset) else {
+            return Ok(None);
         };
         if candidates.len() < init.avg_num as usize {
             return Ok(None);
@@ -424,7 +422,7 @@ fn get_prices(ctx: &_, start: u64, end: u64, use_id: bool) -> LyquidResult<Strin
     let n = history.len();
 
     let (mut s, mut e) = if use_id {
-        let f = history.front().map(|(id, _, _, _)| *id).unwrap_or(0);
+        let f = history.front().map_or(0, |(id, _, _, _)| *id);
         (start.saturating_sub(f) as usize, end.saturating_sub(f) as usize)
     } else {
         (n.saturating_sub(end as usize), n.saturating_sub(start as usize))
@@ -445,7 +443,7 @@ fn get_prices(ctx: &_, start: u64, end: u64, use_id: bool) -> LyquidResult<Strin
         .collect();
 
     serde_json::to_string(&serde_json::json!({ "results": results }))
-        .map_err(|e| LyquidError::LyquorRuntime(format!("JSON Serialization Error: {}", e)))
+        .map_err(|e| LyquidError::LyquorRuntime(format!("JSON Serialization Error: {e}")))
 }
 
 // When invoked, this node will initiaite the reporting of prices to update the on-chain state.
@@ -520,8 +518,7 @@ fn get_node_ids(ctx: &_) -> LyquidResult<Vec<String>> {
         .config_current(&ctx, target)
         .committee
         .keys()
-        .into_iter()
-        .map(|node| node.to_string())
+        .map(std::string::ToString::to_string)
         .collect())
 }
 
@@ -535,7 +532,7 @@ fn http_prices(ctx: &_, req: http::Request) -> LyquidResult<http::Response> {
     let history = ctx.instance.price_history_cache.read();
     let n = history.len();
     let (mut s, mut e) = if use_id {
-        let f = history.front().map(|(id, _, _, _)| *id).unwrap_or(0);
+        let f = history.front().map_or(0, |(id, _, _, _)| *id);
         (start.saturating_sub(f) as usize, end.saturating_sub(f) as usize)
     } else {
         (n.saturating_sub(end as usize), n.saturating_sub(start as usize))
@@ -597,11 +594,8 @@ fn http_price_updates(ctx: &_, req: http::Request) -> LyquidResult<http::Respons
     let history = ctx.instance.price_history_cache.read();
     let oldest_id = history.front().map(|(id, _, _, _)| *id);
     let head_id = history.back().map(|(id, _, _, _)| *id);
-    let cursor_expired = after > 0 &&
-        oldest_id
-            .map(|oldest| after.saturating_add(1) < oldest)
-            .unwrap_or(false);
-    let cursor_reset = after > 0 && head_id.map(|head| after > head).unwrap_or(false);
+    let cursor_expired = after > 0 && oldest_id.is_some_and(|oldest| after.saturating_add(1) < oldest);
+    let cursor_reset = after > 0 && head_id.is_some_and(|head| after > head);
     let results: Vec<_> = history
         .iter()
         .filter(|(id, _, _, _)| *id > after)

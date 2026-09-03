@@ -459,12 +459,12 @@ impl<T: ?Sized> RwLock<T> {
             }
 
             // Try to increment reader count
-            match self
+            if self
                 .state
                 .compare_exchange_weak(s, s + 1, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
             {
-                Ok(_) => return RwLockReadGuard { lock: self },
-                Err(_) => continue,
+                return RwLockReadGuard { lock: self };
             }
         }
     }

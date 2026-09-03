@@ -277,7 +277,7 @@ setup_foundry() {
 
 needs_lyquor_update() {
     local bin_dir="$1" ldk_dir="$2" version_file="$3" latest_filename="$4"
-    local tools=(lyquor ladle shaker)
+    local tools=(lyquor ladle shaker lyquid-test-runner)
     
     # Check if tools and LDK exist
     if ! all_tools_exist "$bin_dir" "${tools[@]}" || ! [[ -d "$ldk_dir" && -n "$(ls -A "$ldk_dir" 2>/dev/null)" ]]; then

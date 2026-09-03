@@ -94,6 +94,12 @@ fn instance_segment_header() -> &'static mut InstanceSegmentHeader {
 }
 
 #[inline(always)]
+/// Selects the persistent-memory segment used by subsequent allocations.
+///
+/// # Safety
+///
+/// The caller must ensure no allocations race with the category change and that the selected
+/// segment has been initialized before it is used.
 pub unsafe fn set_allocator_category(category: u8) {
     volatile_segment_header().category = category;
 }
@@ -138,7 +144,7 @@ unsafe impl alloc::GlobalAlloc for MuxAlloc {
                 0x2 => &network_segment_header().allocator,
                 _ => &volatile_segment_header().allocator,
             }
-            .dealloc(ptr, layout)
+            .dealloc(ptr, layout);
         }
     }
 }
@@ -164,20 +170,28 @@ fn __lyquid_nuke_state() {
 #[unsafe(no_mangle)]
 fn __lyquid_volatile_alloc(size: GuestUsize, align: GuestUsize) -> GuestUsize {
     use alloc::GlobalAlloc;
+    let layout = alloc::Layout::from_size_align(size as usize, align as usize).unwrap();
+    if layout.size() == 0 {
+        // Match `std::alloc::Allocator` semantics for a future allocator migration: zero-sized
+        // allocations return a non-null, aligned dangling pointer without reaching Talc.
+        return layout.align() as GuestUsize;
+    }
     let allocator = &volatile_segment_header().allocator;
-    unsafe { allocator.alloc(alloc::Layout::from_size_align(size as usize, align as usize).unwrap()) as GuestUsize }
+    unsafe { allocator.alloc(layout) as GuestUsize }
 }
 
 /// Deallocate volatile memory.
 #[unsafe(no_mangle)]
 fn __lyquid_volatile_dealloc(base: GuestUsize, size: GuestUsize, align: GuestUsize) {
     use alloc::GlobalAlloc;
+    let layout = alloc::Layout::from_size_align(size as usize, align as usize).unwrap();
+    if layout.size() == 0 {
+        // The matching zero-sized allocation has no backing block to release.
+        return;
+    }
     let allocator = &volatile_segment_header().allocator;
     unsafe {
-        allocator.dealloc(
-            base as *mut u8,
-            alloc::Layout::from_size_align(size as usize, align as usize).unwrap(),
-        )
+        allocator.dealloc(base as *mut u8, layout);
     }
 }
 

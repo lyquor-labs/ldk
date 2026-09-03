@@ -106,25 +106,25 @@ fn _burn(state: &mut __lyquid::NetworkState, account: Address, amount: U256) -> 
     update(state, account, Address::ZERO, amount)
 }
 
-/// Defines the contract state variables:
-/// - total_supply: Tracks the total amount of tokens in circulation
-/// - balances: Maps addresses to their token balances
-/// - allowances: Maps (owner, spender) pairs to approved allowance amounts
+// Defines the contract state variables:
+// - total_supply: Tracks the total amount of tokens in circulation
+// - balances: Maps addresses to their token balances
+// - allowances: Maps (owner, spender) pairs to approved allowance amounts
 state! {
     network total_supply: U256 = U256::ZERO;
     network balances: HashMap<Address, U256> = new_hashmap();
     network allowances: HashMap<(Address, Address), U256> = new_hashmap();
 }
 
-/// Defines all the contract methods required by the ERC-20 standard:
-/// - constructor: Initializes the contract with initial token supply
-/// - name, symbol, decimals: Token metadata
-/// - totalSupply: Returns the total amount of tokens in circulation
-/// - balanceOf: Returns the balance of a specific account
-/// - transfer: Transfers tokens from the caller to another account
-/// - allowance: Returns the amount a spender is allowed to withdraw from an owner
-/// - approve: Sets spender allowance to withdraw from the caller's account
-/// - transferFrom: Transfers tokens on behalf of another account using allowances
+// Defines all the contract methods required by the ERC-20 standard:
+// - constructor: Initializes the contract with initial token supply
+// - name, symbol, decimals: Token metadata
+// - totalSupply: Returns the total amount of tokens in circulation
+// - balanceOf: Returns the balance of a specific account
+// - transfer: Transfers tokens from the caller to another account
+// - allowance: Returns the amount a spender is allowed to withdraw from an owner
+// - approve: Sets spender allowance to withdraw from the caller's account
+// - transferFrom: Transfers tokens on behalf of another account using allowances
 #[method::network(export = eth)]
 fn constructor(ctx: &mut _) {
     // sender will mint 1000 LYQ
@@ -148,17 +148,17 @@ fn decimals(_ctx: &mut _) -> LyquidResult<u8> {
 
 #[method::network(export = eth)]
 fn totalSupply(ctx: &_) -> LyquidResult<U256> {
-    Ok(ctx.network.total_supply.clone())
+    Ok(*ctx.network.total_supply)
 }
 
 #[method::network(export = eth)]
 fn balanceOf(ctx: &_, account: Address) -> LyquidResult<U256> {
-    Ok(get_balance(&ctx.network, &account).clone())
+    Ok(*get_balance(&ctx.network, &account))
 }
 
 #[method::network(export = eth)]
 fn transfer(ctx: &mut _, to: Address, amount: U256) -> LyquidResult<bool> {
-    let from = ctx.caller.clone();
+    let from = ctx.caller;
     lyquid::println!("transfer {} from {} to {}", amount, from, to);
     transfer(&mut ctx.network, from, to, amount)?;
     Ok(true)
@@ -166,7 +166,7 @@ fn transfer(ctx: &mut _, to: Address, amount: U256) -> LyquidResult<bool> {
 
 #[method::instance(export = eth)]
 fn allowance(ctx: &mut _, owner: Address, spender: Address) -> LyquidResult<U256> {
-    Ok(allowance(&mut ctx.network, owner, spender).clone())
+    Ok(*allowance(&ctx.network, owner, spender))
 }
 
 #[method::network(export = eth)]

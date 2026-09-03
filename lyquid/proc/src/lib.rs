@@ -1202,6 +1202,104 @@ fn is_option_certified_call_params(ty: &syn::Type) -> bool {
         .is_some_and(|seg| seg.ident == "CertifiedCallParams")
 }
 
+fn guest_test_export_name(func: &syn::ItemFn) -> String {
+    let span = func.sig.ident.span();
+    let start = span.start();
+    let identity = format!(
+        "{}:{}:{}:{}:{}",
+        span.file(),
+        start.line,
+        start.column,
+        func.sig.ident,
+        quote::quote!(#func)
+    );
+    let hash = identity.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("__lyquid_test_{hash:016x}")
+}
+
+fn expand_guest_test(attr: TokenStream, mut func: syn::ItemFn) -> syn::Result<TokenStream> {
+    if !attr.is_empty() {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "guest tests do not accept attribute arguments",
+        ));
+    }
+    if func.sig.constness.is_some() ||
+        func.sig.asyncness.is_some() ||
+        matches!(func.sig.safety, syn::Safety::Unsafe(_)) ||
+        func.sig.abi.is_some() ||
+        func.sig.variadic.is_some() ||
+        !func.sig.inputs.is_empty() ||
+        !func.sig.generics.params.is_empty() ||
+        func.sig.generics.where_clause.is_some()
+    {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "guest tests must be synchronous, safe, non-generic, zero-argument Rust functions",
+        ));
+    }
+
+    let cfg_attrs = func
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let ignored = func.attrs.iter().any(|attr| attr.path().is_ident("ignore"));
+    if let Some(attr) = func.attrs.iter().find(|attr| attr.path().is_ident("should_panic")) {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "#[should_panic] is not supported by WASM guest tests yet",
+        ));
+    }
+    func.attrs.retain(|attr| !attr.path().is_ident("ignore"));
+
+    let test_fn = &func.sig.ident;
+    let export = guest_test_export_name(&func);
+    let export_literal = syn::LitStr::new(&export, test_fn.span());
+    let wrapper = quote::format_ident!("{export}", span = test_fn.span());
+
+    Ok(quote::quote! {
+        #func
+
+        #(#cfg_attrs)*
+        const _: () = {
+            const NAME: &str = concat!(module_path!(), "::", stringify!(#test_fn));
+            const EXPORT: &str = #export_literal;
+            const FILE: &str = file!();
+            const LEN: usize = ::lyquid_test::__private::test_info_len(NAME, EXPORT, FILE);
+
+            #[unsafe(link_section = "lyquor.test.info")]
+            #[used]
+            static INFO: [u8; LEN] = ::lyquid_test::__private::test_info_encode::<LEN>(
+                NAME,
+                EXPORT,
+                #ignored,
+                FILE,
+                line!(),
+                column!(),
+            );
+        };
+
+        #(#cfg_attrs)*
+        #[doc(hidden)]
+        #[unsafe(export_name = #export_literal)]
+        pub fn #wrapper(
+            base: ::lyquid::runtime::GuestUsize,
+            len: ::lyquid::runtime::GuestUsize,
+            _abi: u32,
+        ) -> ::lyquid::runtime::GuestUsize {
+            unsafe { ::lyquid::runtime::set_allocator_category(0) };
+            drop(unsafe { ::lyquid::runtime::internal::HostInput::new(base, len) });
+            let result = ::lyquid_test::__private::GuestTestTermination::into_result(#test_fn());
+            ::lyquid::runtime::internal::output_to_host(&::lyquid::lyquor_primitives::encode_object(&result))
+        }
+    })
+}
+
 // Internal helper: prefixes a function or module name.
 /// Rewrites an item with a generated export prefix for Lyquid runtime entry points.
 #[proc_macro_attribute]
@@ -1238,6 +1336,16 @@ pub fn network_function(attr: proc_macro::TokenStream, item: proc_macro::TokenSt
 pub fn instance_function(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let func = syn::parse_macro_input!(item as syn::ItemFn);
     match expand_instance_function(attr.into(), func) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Marks a synchronous zero-argument function as a discoverable WASM guest test.
+#[proc_macro_attribute]
+pub fn guest_test(attr: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let func = syn::parse_macro_input!(item as syn::ItemFn);
+    match expand_guest_test(attr.into(), func) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
@@ -1486,6 +1594,86 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_test_expansion_uses_test_crate_support_and_releases_input() {
+        let tokens = expand_guest_test(
+            TokenStream::new(),
+            syn::parse_quote! {
+                fn builds_a_value() -> LyquidResult<()> {
+                    Ok(())
+                }
+            },
+        )
+        .expect("valid guest test should expand")
+        .to_string();
+
+        assert!(tokens.contains(":: lyquid_test :: __private :: test_info_len"));
+        assert!(tokens.contains(":: lyquid_test :: __private :: test_info_encode"));
+        assert!(tokens.contains("drop (unsafe { :: lyquid :: runtime :: internal :: HostInput :: new (base , len) })"));
+        assert!(tokens.contains("GuestTestTermination :: into_result"));
+    }
+
+    #[test]
+    fn guest_test_expansion_records_ignore_and_propagates_cfg() {
+        let tokens = expand_guest_test(
+            TokenStream::new(),
+            syn::parse_quote! {
+                #[cfg(target_arch = "wasm32")]
+                #[cfg_attr(feature = "slow", cfg(test))]
+                #[ignore]
+                fn conditional_test() {}
+            },
+        )
+        .expect("configured guest test should expand")
+        .to_string();
+
+        assert!(!tokens.contains("ignore"));
+        assert_eq!(tokens.matches("target_arch = \"wasm32\"").count(), 3);
+        assert_eq!(tokens.matches("feature = \"slow\"").count(), 3);
+        assert!(tokens.contains(", true ,"));
+    }
+
+    #[test]
+    fn guest_test_rejects_unsupported_signatures() {
+        for source in [
+            "async fn test() {}",
+            "unsafe fn test() {}",
+            "extern \"C\" fn test() {}",
+            "fn test(value: u32) {}",
+            "fn test<T>() {}",
+        ] {
+            let function = syn::parse_str(source).expect("test signature should parse");
+            let error = expand_guest_test(TokenStream::new(), function).expect_err("signature should be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("synchronous, safe, non-generic, zero-argument")
+            );
+        }
+    }
+
+    #[test]
+    fn guest_test_rejects_arguments_and_should_panic() {
+        let error = expand_guest_test(
+            quote::quote!(ignored),
+            syn::parse_quote!(
+                fn test() {}
+            ),
+        )
+        .expect_err("attribute arguments should be rejected");
+        assert!(error.to_string().contains("do not accept attribute arguments"));
+
+        let error = expand_guest_test(
+            TokenStream::new(),
+            syn::parse_quote! {
+                #[should_panic]
+                fn panics() {}
+            },
+        )
+        .expect_err("should_panic should be rejected");
+        assert!(error.to_string().contains("not supported"));
+    }
 
     #[test]
     fn http_export_attr_accepts_supported_method_and_canonical_prefix() {

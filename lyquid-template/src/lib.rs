@@ -53,3 +53,14 @@ fn greet_me(ctx: &mut _) -> LyquidResult<String> {
         ctx.network.greeting, ctx.network.greet_count, *user
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[lyquid_test::test]
+    fn allocates_a_guest_string() {
+        let greeting = String::from("hello");
+        assert_eq!(greeting.as_str(), "hello");
+    }
+}

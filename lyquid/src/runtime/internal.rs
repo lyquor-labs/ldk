@@ -79,7 +79,7 @@ impl HostOutput {
     }
 
     /// Views the host output payload as bytes for the lifetime of this owner.
-    pub unsafe fn as_slice<'a>(&'a self) -> &'a [u8] {
+    pub unsafe fn as_slice(&self) -> &[u8] {
         if self.slice.len == 0 as GuestUsize {
             &[]
         } else {
@@ -168,7 +168,7 @@ impl<P: AsRef<[u8]>> PrefixedAccess<P> {
 
 impl PrefixedAccess<Vec<u8>> {
     /// Extend the builtin prefix.
-    pub fn extend(&self, suffix: &[u8]) -> PrefixedAccess<Vec<u8>> {
+    pub fn extend(&self, suffix: &[u8]) -> Self {
         let mut prefix = self.0.clone();
         prefix.extend(suffix);
         Self(prefix)
@@ -184,24 +184,19 @@ pub struct BuiltinNetworkState {
 impl BuiltinNetworkState {
     /// Creates an empty runtime-owned network state container.
     pub fn new() -> Self {
-        Self {
-            oracle_dest: super::new_hashmap(),
-            oracle_src: super::new_hashmap(),
-        }
+        Self::default()
     }
 
     /// Get (and create if missing) the destination-chain oracle topic state for the given topic key.
     pub fn oracle_dest(&mut self, topic: &str) -> &mut OracleDest {
-        self.oracle_dest
-            .entry(topic.to_string())
-            .or_insert_with(OracleDest::default)
+        self.oracle_dest.entry(topic.to_string()).or_default()
     }
 
     /// Returns destination oracle epoch information for host queries.
     pub fn oracle_dest_epoch_info(&self, topic: &str, full_config: bool) -> lyquor_primitives::oracle::OracleEpochInfo {
         match self.oracle_dest.get(topic) {
             Some(dest) => {
-                let config_hash = dest.get_config_hash().clone();
+                let config_hash = *dest.get_config_hash();
                 lyquor_primitives::oracle::OracleEpochInfo {
                     epoch: dest.get_epoch(),
                     change_count: dest.get_change_count(),
@@ -235,7 +230,17 @@ impl BuiltinNetworkState {
     }
 }
 
+impl Default for BuiltinNetworkState {
+    fn default() -> Self {
+        Self {
+            oracle_dest: super::new_hashmap(),
+            oracle_src: super::new_hashmap(),
+        }
+    }
+}
+
 /// Runtime-owned instance state placeholder for generated state accessors.
+#[derive(Default)]
 pub struct BuiltinInstanceState;
 
 impl BuiltinInstanceState {

@@ -29,6 +29,11 @@ impl EthAbiTypeDesc {
         len
     }
 
+    /// Returns whether the canonical ABI type representation is empty.
+    pub const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
     /// Appends one array dimension to this descriptor.
     pub const fn with_dim(mut self, dim: Option<u32>) -> Self {
         if self.dims_len as usize >= MAX_DIMS {
@@ -299,7 +304,7 @@ impl EthAbiType for Bytes {
     }
 
     fn from_sol(value: <Self::SolType as SolType>::RustType) -> Option<Self> {
-        Some(Bytes::copy_from_slice(value.as_ref()))
+        Some(Self::copy_from_slice(value.as_ref()))
     }
 }
 
@@ -383,7 +388,7 @@ impl EthAbiType for NodeID {
     }
 
     fn from_sol(value: <Self::SolType as SolType>::RustType) -> Option<Self> {
-        Some(NodeID::from(<[u8; 32]>::from(value)))
+        Some(Self::from(<[u8; 32]>::from(value)))
     }
 }
 

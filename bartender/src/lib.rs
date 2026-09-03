@@ -95,6 +95,7 @@ fn deployment_deadline(ctx: &__lyquid::NetworkContext, status: DeployStatus) -> 
     )))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn next_lyquid_id(
     ctx: &mut __lyquid::NetworkContext, owner: Address, contract: Address, repo_hint: Option<String>,
     image_digest: B256, deps: Vec<LyquidID>, status: DeployStatus, deadline: Option<ChainPos>,
@@ -222,15 +223,13 @@ fn register(
             None => (None, DeployStatus::Live),
         }
     };
-    let id = id.ok_or(LyquidError::LyquidRuntime("invalid register call".into()))?;
+    let id = id.ok_or_else(|| LyquidError::LyquidRuntime("invalid register call".into()))?;
     let deps = ctx
         .network
         .lyquid_registry
         .get(&id)
         .map(|metadata| metadata.dependencies.to_vec())
-        .ok_or(LyquidError::LyquidRuntime(
-            "registered Lyquid metadata is missing".into(),
-        ))?;
+        .ok_or_else(|| LyquidError::LyquidRuntime("registered Lyquid metadata is missing".into()))?;
     ctx.network.lyquid_ids.insert(contract, id);
     if status == DeployStatus::Live {
         // Images admitted while the gate is disabled (and bartender's image)
@@ -262,7 +261,7 @@ fn register(
                     image_digest,
                     repo_hint,
                 }
-            )
+            );
         }
         // A void upgrade is terminal and produces no hosting work.
         DeployStatus::Void => {}
@@ -452,14 +451,14 @@ fn get_availability_epoch(ctx: &_) -> LyquidResult<u32> {
     Ok(ctx.network.availability.get_epoch(&ctx, target))
 }
 
-/// Configure the deployment availability deadline for future registrations.
+// Configure the deployment availability deadline for future registrations.
 #[method::network(export = eth, eth_guard = creator)]
 fn set_availability_deadline_blocks(ctx: &mut _, deadline_blocks: u64) -> LyquidResult<bool> {
     *ctx.network.availability_deadline_blocks = deadline_blocks;
     Ok(true)
 }
 
-/// Deployment availability deadline, in sequencer chain blocks.
+// Deployment availability deadline, in sequencer chain blocks.
 #[method::instance(export = eth)]
 fn get_availability_deadline_blocks(ctx: &_) -> LyquidResult<u64> {
     Ok(*ctx.network.availability_deadline_blocks)
@@ -530,14 +529,12 @@ fn force_void(ctx: &mut _, contract: Address) -> LyquidResult<bool> {
         .lyquid_ids
         .get(&contract)
         .copied()
-        .ok_or(LyquidError::LyquidRuntime("unknown deployment contract".into()))?;
+        .ok_or_else(|| LyquidError::LyquidRuntime("unknown deployment contract".into()))?;
     let metadata = ctx
         .network
         .lyquid_registry
         .get_mut(&id)
-        .ok_or(LyquidError::LyquidRuntime(
-            "registered Lyquid metadata is missing".into(),
-        ))?;
+        .ok_or_else(|| LyquidError::LyquidRuntime("registered Lyquid metadata is missing".into()))?;
     if ctx.origin != metadata.owner {
         return Err(LyquidError::LyquidRuntime(
             "only the deployment owner can force a Pending deployment Void".into(),
@@ -546,7 +543,7 @@ fn force_void(ctx: &mut _, contract: Address) -> LyquidResult<bool> {
     let info = metadata
         .deploy_history
         .last_mut()
-        .ok_or(LyquidError::LyquidRuntime("deployment history is empty".into()))?;
+        .ok_or_else(|| LyquidError::LyquidRuntime("deployment history is empty".into()))?;
     if info.contract != contract || info.status != DeployStatus::Pending {
         return Err(LyquidError::LyquidRuntime(
             "force_void requires the current Pending deployment".into(),

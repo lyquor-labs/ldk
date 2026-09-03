@@ -32,7 +32,7 @@ fn verify_oracle_cert_signatures(
     }
 
     let msg: Bytes = lyquor_primitives::oracle::ValidatePreimage {
-        header: oc.header.clone(),
+        header: oc.header,
         params: params.clone(),
         approval: true,
     }
@@ -46,7 +46,7 @@ fn verify_oracle_cert_signatures(
         .take(threshold)
         .zip(oc.signatures.iter().take(threshold))
     {
-        if prev_id.map(|p| *id <= p).unwrap_or(false) {
+        if prev_id.is_some_and(|p| *id <= p) {
             return false;
         }
         prev_id = Some(*id);
@@ -69,11 +69,8 @@ fn verify_oracle_cert_signatures(
 pub fn oracle_target_from_address(target_addr: Address, is_evm: bool) -> LyquidResult<OracleTarget> {
     let seq_id = lyquor_api::sequence_backend_id()?;
     let target = if is_evm {
-        let eth_contract = match lyquor_api::eth_contract()? {
-            Some(eth_contract) => eth_contract,
-            None => {
-                return Err(LyquidError::LyquorRuntime("Lyquid does not support EVM target.".into()));
-            }
+        let Some(eth_contract) = lyquor_api::eth_contract()? else {
+            return Err(LyquidError::LyquorRuntime("Lyquid does not support EVM target.".into()));
         };
         OracleServiceTarget::EVM {
             target: target_addr,
