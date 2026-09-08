@@ -5,7 +5,7 @@ exclude = ["lyquid-template"]
 
 [workspace.package]
 edition = "2024"
-version = "0.5.2"
+version = "0.7.0"
 homepage = "https://lyquor.xyz/"
 repository = "https://github.com/lyquor-labs/ldk"
 license = "Apache-2.0"
@@ -15,9 +15,9 @@ alloy-primitives = { version = "1.6", default-features = false }
 alloy-sol-types = { version = "1.6", default-features = false }
 bytes = "1.11"
 hashbrown = { version = "0.17", default-features = false }
-lyquid = { path = "lyquid", version = "0.5.2" }
-lyquid-proc = { path = "lyquid/proc", version = "=0.5.2" }
-lyquor-primitives = { path = "primitives", version = "0.5.2" }
+lyquid = { path = "lyquid", version = "0.7.0" }
+lyquid-proc = { path = "lyquid/proc", version = "=0.7.0" }
+lyquor-primitives = { path = "primitives", version = "0.7.0" }
 proc-macro2 = "1.0.106"
 quote = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive"] }

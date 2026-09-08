@@ -198,20 +198,52 @@ pub const ABI_LYQUOR: u32 = 0x0;
 /// Standard result type for Lyquid runtime and generated wrapper operations.
 pub type LyquidResult<T> = Result<T, LyquidError>;
 
-/// The starting address for stacks used by Lyquid.
-pub const LYTESTACK_BASE: usize = 0x30000000;
+/// Size of one WebAssembly 1.0 linear-memory page.
+pub const WASM_PAGE_SIZE: usize = 0x10000;
+/// Exclusive end of the linker-owned System allocator arena.
+///
+/// `__heap_base` remains linker-derived from the end of guest static data. Lyquid guest builds set
+/// `__heap_end` to this address, reserving the range between those two globals for
+/// `std::alloc::System`.
+pub const SYSTEM_HEAP_END: usize = 0x20000000;
+/// Minimum usable System allocator arena accepted during guest preprocessing.
+///
+/// dlmalloc needs at least one 64 KiB arena request. A second page leaves room for alignment and
+/// allocator metadata rather than accepting a layout that can only just satisfy that first request.
+pub const SYSTEM_HEAP_MIN_SIZE: usize = 2 * WASM_PAGE_SIZE;
+/// Starting address of the low-memory reservation for Bottle-affine TLS slots.
+pub const LYTETLS_BASE: usize = SYSTEM_HEAP_END;
+/// Exclusive end of the low-memory reservation for Bottle-affine TLS slots.
+pub const LYTETLS_END: usize = 0x30000000;
+/// Starting address for LyteStack slots used by Lyquid calls.
+pub const LYTESTACK_BASE: usize = LYTETLS_END;
+/// Exclusive end of the LyteStack slot reservation.
+pub const LYTESTACK_END: usize = 0x40000000;
 /// The base address for LyteMemory.
 /// Volatile's upper address is below next to this address. Everything from this base to
 /// [NETWORK_MEMSIZE_IN_MB] and [INSTANCE_MEMSIZE_IN_MB] are persistent.
 pub const LYTEMEM_BASE: usize = 0x80000000;
 /// Total size of the memory in megabytes.
 pub const LYTEMEM_SIZE_IN_MB: usize = 4096; // 4GB (WASM limit)
+/// Fixed wasm32 linear-memory size in WebAssembly pages.
+pub const LYTEMEM_SIZE_IN_PAGES: u64 = (LYTEMEM_SIZE_IN_MB as u64 * (1 << 20)) / WASM_PAGE_SIZE as u64;
 /// Size cap for the addressable LyteMemory that is globally viewed (and persisted) by all Lyquid instances.
 pub const NETWORK_MEMSIZE_IN_MB: usize = 1024; // 1GB
 /// Size cap for the addressable LyteMemory that is locally viewed (and persisted) for one Lyquid instance.
 pub const INSTANCE_MEMSIZE_IN_MB: usize = 1024; // 1GB
 /// Size cap for the volatile memory that can be used by each function call.
 pub const VOLATILE_MEMSIZE_IN_MB: usize = 1024; // 1GB
+
+const _: () = {
+    assert!(SYSTEM_HEAP_END.is_multiple_of(WASM_PAGE_SIZE));
+    assert!(SYSTEM_HEAP_MIN_SIZE > WASM_PAGE_SIZE);
+    assert!(SYSTEM_HEAP_END == LYTETLS_BASE);
+    assert!(LYTETLS_BASE < LYTETLS_END);
+    assert!(LYTETLS_END == LYTESTACK_BASE);
+    assert!(LYTESTACK_BASE < LYTESTACK_END);
+    assert!(LYTESTACK_END == LYTEMEM_BASE - (VOLATILE_MEMSIZE_IN_MB << 20));
+    assert!(LYTEMEM_SIZE_IN_PAGES * WASM_PAGE_SIZE as u64 == LYTEMEM_SIZE_IN_MB as u64 * (1 << 20));
+};
 
 /// Prefix bytes used for varaiable catalog in versioned state.
 pub const VAR_CATALOG_PREFIX: [u8; 1] = [0x2a];

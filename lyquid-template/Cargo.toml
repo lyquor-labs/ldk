@@ -9,10 +9,10 @@ description = "{{description}}"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-lyquid = { version = "0.5.2", features = ["ldk"], git = "ssh://git@github.com/lyquor-labs/ldk.git" }
+lyquid = { version = "0.7.0", features = ["ldk"], git = "ssh://git@github.com/lyquor-labs/ldk.git" }
 
 [dev-dependencies]
-lyquid-test = { version = "0.5.2", git = "ssh://git@github.com/lyquor-labs/ldk.git" }
+lyquid-test = { version = "0.7.0", git = "ssh://git@github.com/lyquor-labs/ldk.git" }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
