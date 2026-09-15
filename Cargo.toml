@@ -1,11 +1,11 @@
 [workspace]
-members = ["bartender", "primitives", "lyquid", "lyquid/proc", "lyquid-test", "lyquid-examples/hello", "lyquid-examples/erc20", "lyquid-examples/basicswap", "lyquid-examples/price-feed"]
+members = ["bartender", "primitives", "lyquid", "lyquid/proc", "lyquid-flow", "lyquid-llm", "lyquid-test", "lyquid-examples/hello", "lyquid-examples/erc20", "lyquid-examples/basicswap", "lyquid-examples/price-feed", "lyquid-examples/circle-nanopay-flow"]
 resolver = "3"
 exclude = ["lyquid-template"]
 
 [workspace.package]
 edition = "2024"
-version = "0.7.0"
+version = "0.7.1"
 homepage = "https://lyquor.xyz/"
 repository = "https://github.com/lyquor-labs/ldk"
 license = "Apache-2.0"
@@ -15,15 +15,18 @@ alloy-primitives = { version = "1.6", default-features = false }
 alloy-sol-types = { version = "1.6", default-features = false }
 bytes = "1.11"
 hashbrown = { version = "0.17", default-features = false }
-lyquid = { path = "lyquid", version = "0.7.0" }
-lyquid-proc = { path = "lyquid/proc", version = "=0.7.0" }
-lyquor-primitives = { path = "primitives", version = "0.7.0" }
+lyquid = { path = "lyquid", version = "0.7.1" }
+lyquid-flow = { path = "lyquid-flow" }
+lyquid-llm = { path = "lyquid-llm" }
+lyquid-proc = { path = "lyquid/proc", version = "=0.7.1" }
+lyquor-primitives = { path = "primitives", version = "0.7.1" }
 proc-macro2 = "1.0.106"
 quote = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = { version = "0.11", default-features = false }
 syn = "3.0"
+tera = { version = "2.1", default-features = false }
 thiserror = "2.0"
 typed-builder = "0.23"
 

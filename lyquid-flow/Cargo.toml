@@ -1,0 +1,20 @@
+[package]
+name = "lyquid-flow"
+workspace = ".."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+description = "Reusable workflow graphs and execution for Lyquid tasks."
+
+[dependencies]
+lyquid = { workspace = true, features = ["ldk"] }
+lyquid-llm = { workspace = true, features = ["ldk"] }
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true }
+tera.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "lyquid-llm"
+workspace = ".."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+description = "LLM request/response helpers for Lyquid instance functions."
+
+[dependencies]
+lyquid = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = []
+ldk = ["lyquid/ldk"]
+
+[lints]
+workspace = true

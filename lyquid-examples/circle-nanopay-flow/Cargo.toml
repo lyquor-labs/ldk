@@ -1,0 +1,26 @@
+[package]
+name = "circle-nanopay-flow"
+workspace = "../.."
+publish = false
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+alloy-primitives = { workspace = true, features = ["k256"] }
+alloy-sol-types.workspace = true
+lyquid = { workspace = true, features = ["ldk"] }
+lyquid-flow.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[[example]]
+name = "payment-example"
+path = "example/payment-example.rs"
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true
