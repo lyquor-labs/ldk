@@ -1,0 +1,16 @@
+[package]
+name = "text-input-step"
+workspace = "../.."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Reusable text-entry Step for Lyquid flows."
+
+[dependencies]
+lyquid-flow.workspace = true
+
+[lints]
+workspace = true

@@ -3,17 +3,17 @@ use std::fmt::{self, Write as _};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use lyquid::prelude::{HashMap, Mutex, new_hashmap};
+use lyquid::prelude::{HashMap, Mutex, new_hashmap, new_hashset};
 use lyquid_llm::{Backend, FinishReason, ModelRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
+use crate::TurnProposal;
 use crate::flow::Flow;
 use crate::prompt;
 use crate::state::{State, StateNamespace, StateUpdates};
-use crate::step::{Input, InputSpec, Step, StepId, TemplateSpec};
+use crate::step::{Input, InputSpec, ModelTemplate, Step, StepId, TemplateSpec};
 use crate::trace::{Trace, TraceEntry, TraceSummary};
-use crate::turn::TurnProposal;
 
 /// Opaque identity of one Scope execution or saved Scope checkpoint.
 #[derive(Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -424,22 +424,58 @@ impl Scope {
         self.commit_proposal(proposal, summary)
     }
 
+    /// Validates declared model destinations and State fields against this Scope.
+    fn validate_model_template(&self, template: &ModelTemplate) -> Result<(), String> {
+        if template.next_step_criteria.is_empty() {
+            return Err("a model template must declare at least one next-step criterion".to_owned());
+        }
+
+        let mut seen = new_hashset();
+        for (next, _) in &template.next_step_criteria {
+            if !seen.insert(next.clone()) {
+                let target = next
+                    .as_ref()
+                    .map_or_else(|| "Flow completion".to_owned(), |step| format!("Step {step}"));
+                return Err(format!("duplicate next-step criterion for {target}"));
+            }
+            let Some(next) = next else {
+                if self.requires_exit {
+                    return Err("a mounted Flow model template cannot declare root Flow completion".to_owned());
+                }
+                continue;
+            };
+            if self.flow.step(next).is_none() && !self.flow.exits().contains(next) {
+                return Err(format!("model template declares unknown next Step {next}"));
+            }
+        }
+
+        let mut seen_fields = new_hashset();
+        for (field, _) in &template.state_update_criteria {
+            if !seen_fields.insert(field) {
+                return Err(format!("duplicate State update criterion for field {field}"));
+            }
+            if !self.state().fields.contains_key(field) {
+                return Err(format!("model template declares unknown State field {field}"));
+            }
+        }
+        Ok(())
+    }
+
     /// Evaluates the current Step's model template with Step-scoped context.
     fn process_model_template(&mut self, step: Arc<dyn Step>) -> Result<(), FlowError> {
         let proposal = match step.model_template(self) {
             TemplateSpec::Template(template) => {
-                let next_options = self.flow.next_options(self.requires_exit);
+                self.validate_model_template(&template)?;
                 let request = prompt::build_request(
                     self.model()?,
-                    template,
+                    &template,
                     prompt::PromptContext {
                         flow_description: self.flow.description(),
                         scope: self,
-                        next_options,
                     },
                 )?;
                 let output = self.call_model(request)?;
-                prompt::parse_response(self.state(), &output)?
+                prompt::parse_response(self.state(), &template, &output)?
             }
             TemplateSpec::Skip(proposal) => proposal,
         };
@@ -752,4 +788,126 @@ enum RunPhase {
     RunningChild(Box<Scope>),
     /// This Scope has committed its final State and optional declared exit.
     Finished(Option<StepId>),
+}
+
+#[cfg(test)]
+mod tests {
+    use lyquid_test::test;
+
+    use super::*;
+
+    struct TestStep;
+
+    impl Step for TestStep {
+        fn description(&self, _concise: bool) -> String {
+            "Test Step".to_owned()
+        }
+
+        fn input(&self, _scope: &Scope) -> Option<InputSpec> {
+            None
+        }
+
+        fn model_template(&self, _scope: &Scope) -> TemplateSpec {
+            TemplateSpec::Skip(TurnProposal::Advance {
+                next: None,
+                updates: StateUpdates::default(),
+            })
+        }
+
+        fn finalize(&self, _scope: &Scope, _proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+            Ok(TraceSummary::Summary("tested".to_owned()))
+        }
+    }
+
+    #[test]
+    fn validates_model_template() {
+        let flow = Arc::new(
+            Flow::builder("test-flow")
+                .entry("start")
+                .exit("done")
+                .step("start", TestStep)
+                .step("review", TestStep)
+                .build()
+                .expect("test Flow should be valid"),
+        );
+        let state = State::builder()
+            .field("title", "Current release title", "Draft".to_owned())
+            .build()
+            .expect("test State should be valid");
+        let scope = Scope::new(Arc::clone(&flow), state, AutoCheckpointConfig::Disabled, None);
+
+        let mut valid = ModelTemplate::new(
+            "Review the work",
+            vec![
+                (Some("review".into()), "More review is required".to_owned()),
+                (Some("done".into()), "The mounted Flow should exit".to_owned()),
+                (None, "The root Flow is complete".to_owned()),
+            ],
+            Vec::new(),
+        );
+        assert!(scope.validate_model_template(&valid).is_ok());
+
+        let empty = ModelTemplate::new("Review the work", Vec::new(), Vec::new());
+        assert_eq!(
+            scope.validate_model_template(&empty).err().as_deref(),
+            Some("a model template must declare at least one next-step criterion")
+        );
+
+        let duplicate = ModelTemplate::new(
+            "Review the work",
+            vec![
+                (Some("review".into()), "More review is required".to_owned()),
+                (Some("review".into()), "A second description is not allowed".to_owned()),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(
+            scope.validate_model_template(&duplicate).err().as_deref(),
+            Some("duplicate next-step criterion for Step review")
+        );
+
+        let unknown = ModelTemplate::new(
+            "Review the work",
+            vec![(Some("missing".into()), "Use an unknown destination".to_owned())],
+            Vec::new(),
+        );
+        assert_eq!(
+            scope.validate_model_template(&unknown).err().as_deref(),
+            Some("model template declares unknown next Step missing")
+        );
+
+        let mounted = scope.fork_child(flow, StateUpdates::default());
+        let mounted_completion = ModelTemplate::new(
+            "Review the work",
+            vec![(None, "Complete the parent Flow".to_owned())],
+            Vec::new(),
+        );
+        assert_eq!(
+            mounted.validate_model_template(&mounted_completion).err().as_deref(),
+            Some("a mounted Flow model template cannot declare root Flow completion")
+        );
+        valid.next_step_criteria.pop();
+        assert!(mounted.validate_model_template(&valid).is_ok());
+
+        valid
+            .state_update_criteria
+            .push(("title".to_owned(), "Replace when the approved title changes".to_owned()));
+        assert!(scope.validate_model_template(&valid).is_ok());
+
+        let mut unknown_field = valid.clone();
+        unknown_field.state_update_criteria[0].0 = "missing".to_owned();
+        assert_eq!(
+            scope.validate_model_template(&unknown_field).err().as_deref(),
+            Some("model template declares unknown State field missing")
+        );
+
+        let mut duplicate_field = valid;
+        duplicate_field
+            .state_update_criteria
+            .push(("title".to_owned(), "Replace when the editor changes it".to_owned()));
+        assert_eq!(
+            scope.validate_model_template(&duplicate_field).err().as_deref(),
+            Some("duplicate State update criterion for field title")
+        );
+    }
 }

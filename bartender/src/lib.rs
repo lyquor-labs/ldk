@@ -49,6 +49,10 @@ state! {
     // Maximum chain-block delay before an unavailable deployment can be
     // certified Void. Operators may tune it before accepting deployments.
     network availability_deadline_blocks: u64 = DEFAULT_AVAILABILITY_DEADLINE_BLOCKS;
+    // LyquidID of the network's designated LNS (Lyquid Name Service) registry, if one has
+    // been recorded. Nodes read this to discover which hosted Lyquid resolves names, instead
+    // of predicting/hardcoding LNS's LyquidID (see platform/node/src/http/lyquid_site.rs).
+    network lns_id: Option<LyquidID> = None;
     // Latest local image probe result by digest; written by the node's
     // availability worker and read by the certification validator.
     instance image_probes: HashMap<B256, bool> = new_hashmap();
@@ -462,6 +466,20 @@ fn set_availability_deadline_blocks(ctx: &mut _, deadline_blocks: u64) -> Lyquid
 #[method::instance(export = eth)]
 fn get_availability_deadline_blocks(ctx: &_) -> LyquidResult<u64> {
     Ok(*ctx.network.availability_deadline_blocks)
+}
+
+// Record the LyquidID of the network's designated LNS (Lyquid Name Service) registry, so
+// nodes can discover it dynamically instead of predicting/hardcoding it.
+#[method::network(export = eth, eth_guard = creator)]
+fn set_lns_id(ctx: &mut _, id: LyquidID) -> LyquidResult<bool> {
+    *ctx.network.lns_id = Some(id);
+    Ok(true)
+}
+
+// The LyquidID of the network's designated LNS registry, if one has been recorded.
+#[method::instance]
+fn get_lns_id(ctx: &_) -> LyquidResult<Option<LyquidID>> {
+    Ok(*ctx.network.lns_id)
 }
 
 // Compact operator counts that are not derivable from node-local hosting data.

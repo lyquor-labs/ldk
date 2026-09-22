@@ -5,11 +5,11 @@ use std::sync::Arc;
 use lyquid::prelude::{HashMap, HashSet, hashbrown::hash_map::Entry, new_hashmap, new_hashset};
 use serde::{Deserialize, Serialize};
 
+use crate::TurnProposal;
 use crate::scope::{FlowError, Scope};
 use crate::state::StateUpdates;
 use crate::step::{InputSpec, Step, StepId, TemplateSpec};
 use crate::trace::TraceSummary;
-use crate::turn::TurnProposal;
 
 /// Stable developer-supplied identity of one Flow definition.
 #[derive(Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -227,32 +227,6 @@ impl Flow {
         let step = Arc::clone(self.steps.get(id)?);
         let step: Arc<dyn Any + Send + Sync> = step;
         step.downcast().ok()
-    }
-
-    /// Returns all valid `next` options and their descriptions in stable order.
-    /// Adds the `next: null` completion option only when this Flow runs as the root.
-    pub(super) fn next_options(&self, requires_exit: bool) -> Vec<(Option<StepId>, String)> {
-        let mut targets = self.steps.keys().chain(self.exits.iter()).cloned().collect::<Vec<_>>();
-        targets.sort();
-
-        let mut options = targets
-            .into_iter()
-            .map(|target| {
-                let description = if self.exits.contains(&target) {
-                    format!("Exit the current Flow through {target}")
-                } else {
-                    self.steps
-                        .get(&target)
-                        .expect("next targets come from validated Flow Steps")
-                        .description(true)
-                };
-                (Some(target), description)
-            })
-            .collect::<Vec<_>>();
-        if !requires_exit {
-            options.push((None, "Complete the current Flow".to_owned()));
-        }
-        options
     }
 
     pub(super) fn exits(&self) -> &HashSet<StepId> {

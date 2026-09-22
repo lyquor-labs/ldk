@@ -1,12 +1,14 @@
+use std::fmt::Write as _;
+
 use lyquid_llm::ModelRequest;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tera::{Context, Tera};
 
+use crate::TurnProposal;
 use crate::scope::Scope;
 use crate::state::{State, StateNamespace, StateUpdates};
-use crate::step::StepId;
+use crate::step::{ModelTemplate, StepId};
 use crate::trace::{Trace, TraceSummary};
-use crate::turn::TurnProposal;
 
 /// Rendering values used to complete one Step-owned template.
 pub(super) struct PromptContext<'a> {
@@ -14,21 +16,19 @@ pub(super) struct PromptContext<'a> {
     pub(super) flow_description: &'a str,
     /// Current execution State and Trace exposed to the prompt.
     pub(super) scope: &'a Scope,
-    /// Valid local transitions and their model-facing descriptions for this execution.
-    pub(super) next_options: Vec<(Option<StepId>, String)>,
 }
 
-/// Builds the complete model request for one template-backed Step.
-pub(super) fn build_request(model: &str, template: String, context: PromptContext<'_>) -> Result<ModelRequest, String> {
+/// Builds the complete model request from a template validated by Scope.
+pub(super) fn build_request(
+    model: &str, template: &ModelTemplate, context: PromptContext<'_>,
+) -> Result<ModelRequest, String> {
     let PromptContext {
         flow_description,
         scope,
-        next_options,
     } = context;
 
-    let prompt = render(scope, &template)
-        .map_err(|error| format!("failed to render prompt for Step {}: {error}", scope.current_step()))?;
-    let response_contract = response_contract(scope, &next_options)?;
+    let prompt = render_step_prompt(scope, template)?;
+    let response_contract = response_contract(scope, &template.next_step_criteria, &template.state_update_criteria)?;
     let flow_description = match flow_description {
         "" => "Execute the current Flow.",
         description => description,
@@ -40,7 +40,7 @@ pub(super) fn build_request(model: &str, template: String, context: PromptContex
 }
 
 /// Parses a model response into a proposed local Advance or Restore.
-pub(super) fn parse_response(state: &State, output: &str) -> Result<TurnProposal, String> {
+pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &str) -> Result<TurnProposal, String> {
     let output: JsonValue = serde_json::from_str(output).map_err(|error| format!("invalid model output: {error}"))?;
 
     let proposal_type = output
@@ -69,6 +69,16 @@ pub(super) fn parse_response(state: &State, output: &str) -> Result<TurnProposal
         Some(JsonValue::Null) => None,
         _ => return Err("model output `next` must be a Step ID or null".to_owned()),
     };
+    if !template
+        .next_step_criteria
+        .iter()
+        .any(|(declared, _)| declared == &next)
+    {
+        let target = next
+            .as_ref()
+            .map_or_else(|| "Flow completion".to_owned(), |step| format!("Step {step}"));
+        return Err(format!("model output selected undeclared next target {target}"));
+    }
 
     let proposed_updates = output
         .get("updates")
@@ -77,6 +87,9 @@ pub(super) fn parse_response(state: &State, output: &str) -> Result<TurnProposal
 
     let mut updates = StateUpdates::default();
     for (name, encoded) in proposed_updates {
+        if !template.state_update_criteria.iter().any(|(field, _)| field == name) {
+            return Err(format!("model output attempted undeclared State update {name}"));
+        }
         let field = state
             .fields
             .get(name)
@@ -87,39 +100,76 @@ pub(super) fn parse_response(state: &State, output: &str) -> Result<TurnProposal
     Ok(TurnProposal::Advance { next, updates })
 }
 
-/// Renders the current Step's Tera template.
+/// Renders and joins all three sections using one shared Tera context.
 ///
-/// ```text
-/// step_prompt = render(template, {
-///     state: current_state,
-///     input: current_input,
-///     trace: selected_trace,
-/// })
-/// ```
-///
-/// The Tera template receives committed State, current input, and the complete local `trace` in
-/// chronological order:
-///
-/// Ordinary committed fields are exposed as `state.<name>`, such as `state.summary`.
-/// Current input bindings are exposed as `input.<name>`, such as `input.answer`.
-///
-/// `trace = [{ first.step, first.state, first.summary }, ...]`
-///
-fn render(scope: &Scope, template: &str) -> Result<String, String> {
+/// The context exposes committed `state`, current `input`, and the complete local `trace` in chronological order.
+/// Trace entries contain their Step ID, State snapshot, and summary, including nested child Traces.
+fn render_step_prompt(scope: &Scope, template: &ModelTemplate) -> Result<String, String> {
     let mut context = Context::new();
     context.insert("state", &state_json(scope.state())?);
     context.insert("input", &input_json(scope.updates())?);
     context.insert("trace", &trace_json(scope.trace())?);
-    Tera::one_off(template, &context, false).map_err(|error| format!("{error:#}"))
+
+    let render = |section: &str, value: &str| {
+        Tera::one_off(value, &context, false)
+            .map(|rendered| rendered.trim().to_owned())
+            .map_err(|error| {
+                format!(
+                    "failed to render {section} for Step {}: {error:#}",
+                    scope.current_step()
+                )
+            })
+    };
+
+    let step_goal = render("step goal", &template.step_goal)?;
+    if step_goal.is_empty() {
+        return Err("a model template must render a non-empty step goal".to_owned());
+    }
+
+    let mut prompt = format!("# Step goal\n{step_goal}\n\n# Next step criteria\n");
+    for (next, criterion) in &template.next_step_criteria {
+        let condition = render("next-step criterion", criterion)?;
+        if condition.is_empty() {
+            return Err("a model template must render non-empty next-step criteria".to_owned());
+        }
+        let next = next.as_ref().map_or("null (complete the Flow)", |step| step.0.as_str());
+        writeln!(&mut prompt, "- `{next}`: {condition}").expect("writing a Step prompt to String cannot fail");
+    }
+
+    prompt.push_str("\n# State update criteria\n");
+    if template.state_update_criteria.is_empty() {
+        prompt.push_str("No State updates are permitted. Return `updates` as `{}`.");
+    } else {
+        prompt.push_str("Update a field only when its criterion applies; omit every unchanged field.\n");
+        for (field, criterion) in &template.state_update_criteria {
+            let condition = render("State update criterion", criterion)?;
+            if condition.is_empty() {
+                return Err(format!(
+                    "model template must render a non-empty update criterion for State field {field}"
+                ));
+            }
+            writeln!(&mut prompt, "- `{field}`: {condition}")
+                .expect("writing a State update criterion to String cannot fail");
+        }
+        while prompt.ends_with('\n') {
+            prompt.pop();
+        }
+    }
+    Ok(prompt)
 }
 
 /// Builds the model response contract from valid local transitions and State fields.
-fn response_contract(scope: &Scope, next_options: &[(Option<StepId>, String)]) -> Result<String, String> {
+fn response_contract(
+    scope: &Scope, next_steps: &[(Option<StepId>, String)], state_updates: &[(String, String)],
+) -> Result<String, String> {
     let state = scope.state();
-    let update_fields = state
-        .fields
+    let update_fields = state_updates
         .iter()
-        .map(|(name, field)| {
+        .map(|(name, _)| {
+            let field = state
+                .fields
+                .get(name)
+                .expect("model template State fields are validated before building the request");
             Ok((
                 name.clone(),
                 json!({
@@ -129,14 +179,9 @@ fn response_contract(scope: &Scope, next_options: &[(Option<StepId>, String)]) -
             ))
         })
         .collect::<Result<JsonMap<_, _>, String>>()?;
-    let next_options = next_options
+    let next_options = next_steps
         .iter()
-        .map(|(next, description)| {
-            json!({
-                "value": next.as_ref().map(|next| &next.0),
-                "description": description,
-            })
-        })
+        .map(|(next, _)| json!({ "value": next.as_ref().map(|next| &next.0) }))
         .collect::<Vec<_>>();
     let mut checkpoint_options = scope.checkpoint_ids().collect::<Vec<_>>();
     checkpoint_options.sort();
@@ -163,7 +208,8 @@ fn response_contract(scope: &Scope, next_options: &[(Option<StepId>, String)]) -
             "updates": {
                 "description": concat!(
                     "Return `updates` as a JSON object mapping field names to new replacement values. ",
-                    "Use only keys from `fields`; omit unchanged fields. Each value must have the same JSON type ",
+                    "Use only keys from `fields`; omit unchanged fields, and return `{}` if no update criterion applies. ",
+                    "Each value must have the same JSON type ",
                     "as `fields[key].value`. Return the raw value, not the `{description, value}` descriptor."
                 ),
                 "fields": update_fields,
@@ -238,10 +284,10 @@ mod tests {
     use lyquid_test::test;
     use serde_json::{Value as JsonValue, json};
 
-    use super::{PromptContext, build_request};
+    use super::{PromptContext, build_request, parse_response};
     use crate::{
-        AutoCheckpointConfig, Flow, FlowError, InputSpec, List, Mapping, Scope, State, StateNamespace, StateUpdates,
-        Step, StepId, TemplateSpec, Trace, TraceEntry, TraceSummary, TurnProposal,
+        AutoCheckpointConfig, Flow, FlowError, InputSpec, List, Mapping, ModelTemplate, Scope, State, StateNamespace,
+        StateUpdates, Step, StepId, TemplateSpec, Trace, TraceEntry, TraceSummary, TurnProposal,
     };
 
     const RESPONSE_CONTRACT_MARKER: &str =
@@ -341,9 +387,13 @@ mod tests {
 
     #[test]
     fn renders_prompt_context() {
-        let (flow, scope) = prompt_fixture();
-        let request = build_request(
-            "test-model",
+        let (flow, mut scope) = prompt_fixture();
+        scope.set(
+            StateNamespace::Input,
+            "literal".to_owned(),
+            Some(Box::new("{{ state.title }}".to_owned())),
+        );
+        let template = ModelTemplate::new(
             concat!(
                 "title={{ state.title }}\n",
                 "tasks={% for task in state.tasks %}{{ task }}{% if not loop.last %},{% endif %}{% endfor %}\n",
@@ -351,12 +401,27 @@ mod tests {
                 "trace={% for entry in trace %}",
                 "{{ entry.step }}:{{ entry.state.title }}:{{ entry.summary }}",
                 "{% endfor %}",
-            )
-            .to_owned(),
+            ),
+            vec![(
+                Some("review".into()),
+                concat!(
+                    "Continue when {{ state.title }} is ",
+                    "{% if input.approved %}approved{% else %}rejected{% endif %} ",
+                    "after {{ trace[0].summary }}",
+                )
+                .to_owned(),
+            )],
+            vec![(
+                "title".to_owned(),
+                "Replace with the literal text {{ input.literal }} when the input is approved".to_owned(),
+            )],
+        );
+        let request = build_request(
+            "test-model",
+            &template,
             PromptContext {
                 flow_description: flow.description(),
                 scope: &scope,
-                next_options: flow.next_options(false),
             },
         )
         .expect("the prompt fixture should render");
@@ -364,7 +429,15 @@ mod tests {
         assert_eq!(request.model, "test-model");
         assert_eq!(
             request.prompt,
-            "title=Ready\ntasks=write,review\ndecision=approved\ntrace=prepare:Ready:prepared"
+            concat!(
+                "# Step goal\n",
+                "title=Ready\ntasks=write,review\ndecision=approved\ntrace=prepare:Ready:prepared\n\n",
+                "# Next step criteria\n",
+                "- `review`: Continue when Ready is approved after prepared\n\n",
+                "# State update criteria\n",
+                "Update a field only when its criterion applies; omit every unchanged field.\n",
+                "- `title`: Replace with the literal text {{ state.title }} when the input is approved",
+            )
         );
         assert!(
             request
@@ -373,14 +446,28 @@ mod tests {
                 .expect("the request should contain Flow context")
                 .starts_with("# Flow\nPrepare a release.\n\n# Response contract\n")
         );
+        let contract = contract_json(&request);
+        assert_eq!(contract["advance"]["next"]["options"], json!([{ "value": "review" }]));
+        assert_eq!(
+            contract["advance"]["updates"]["fields"]
+                .as_object()
+                .expect("declared State update fields should be an object")
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["title"]
+        );
 
+        let default_template = ModelTemplate::new(
+            "static prompt",
+            vec![(None, "The work is complete".to_owned())],
+            Vec::new(),
+        );
         let default_description = build_request(
             "test-model",
-            "static prompt".to_owned(),
+            &default_template,
             PromptContext {
                 flow_description: "",
                 scope: &scope,
-                next_options: flow.next_options(false),
             },
         )
         .expect("the default Flow description should render");
@@ -390,6 +477,88 @@ mod tests {
                 .as_deref()
                 .expect("the request should contain default Flow context")
                 .starts_with("# Flow\nExecute the current Flow.\n\n# Response contract\n")
+        );
+    }
+
+    #[test]
+    fn renders_response_contract() {
+        let (flow, mut scope) = prompt_fixture();
+        let mut checkpoint_ids = vec![scope.checkpoint(), scope.checkpoint()];
+        checkpoint_ids.sort();
+
+        let template = ModelTemplate::new(
+            "Review the release",
+            vec![
+                (Some("done".into()), "The review passed".to_owned()),
+                (Some("review".into()), "Another review pass is required".to_owned()),
+                (None, "No further workflow work is required".to_owned()),
+            ],
+            vec![
+                ("title".to_owned(), "Replace when the approved title changes".to_owned()),
+                ("tasks".to_owned(), "Replace when the ordered work changes".to_owned()),
+                ("scores".to_owned(), "Replace when a quality score changes".to_owned()),
+            ],
+        );
+
+        let root_request = build_request(
+            "test-model",
+            &template,
+            PromptContext {
+                flow_description: flow.description(),
+                scope: &scope,
+            },
+        )
+        .expect("the root response contract should render");
+        let root_contract = contract_json(&root_request);
+
+        assert_eq!(
+            root_contract["advance"]["updates"]["fields"]["title"],
+            json!({
+                "description": "Current release title",
+                "value": "Ready",
+            })
+        );
+        assert_eq!(
+            root_contract["advance"]["updates"]["fields"]["tasks"],
+            json!({
+                "description": "Ordered release tasks",
+                "value": ["write", "review"],
+            })
+        );
+        assert_eq!(
+            root_contract["advance"]["updates"]["fields"]["scores"],
+            json!({
+                "description": "Release quality scores",
+                "value": {"quality": 9},
+            })
+        );
+
+        let root_options = root_contract["advance"]["next"]["options"]
+            .as_array()
+            .expect("root next options should be an array");
+        assert_eq!(
+            root_options,
+            &vec![
+                json!({"value": "done"}),
+                json!({"value": "review"}),
+                json!({"value": null}),
+            ]
+        );
+
+        let expected_checkpoints = checkpoint_ids
+            .iter()
+            .map(|id| {
+                json!({
+                    "description": format!("Restore Scope checkpoint {id}"),
+                    "value": id.0,
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            root_contract["restore"]["scope"]["options"]
+                .as_array()
+                .expect("checkpoint options should be an array"),
+            &expected_checkpoints
         );
     }
 
@@ -467,8 +636,7 @@ mod tests {
 
         // Render the outer Trace first, then iterate the SubFlow stored in the second entry's
         // summary. This is the shape authors can use in a real Tera prompt template.
-        let request = build_request(
-            "test-model",
+        let template = ModelTemplate::new(
             concat!(
                 "parent={% for entry in trace %}",
                 "{{ entry.step }}:{{ entry.state.status }}{% if not loop.last %}>{% endif %}",
@@ -479,10 +647,15 @@ mod tests {
                 "{% if not loop.last %}>{% endif %}{% endfor %}",
             )
             .to_owned(),
+            vec![(None, "The traced work is complete".to_owned())],
+            Vec::new(),
+        );
+        let request = build_request(
+            "test-model",
+            &template,
             PromptContext {
                 flow_description: flow.description(),
                 scope: &scope,
-                next_options: flow.next_options(false),
             },
         )
         .expect("the chronological nested Trace should render");
@@ -492,96 +665,61 @@ mod tests {
         assert_eq!(
             request.prompt,
             concat!(
+                "# Step goal\n",
                 "parent=first:first-complete>second:second-complete\n",
                 "first-summary=first committed\n",
-                "child=child-plan:planned:planned>child-finish:finished:finished",
+                "child=child-plan:planned:planned>child-finish:finished:finished\n\n",
+                "# Next step criteria\n",
+                "- `null (complete the Flow)`: The traced work is complete\n\n",
+                "# State update criteria\n",
+                "No State updates are permitted. Return `updates` as `{}`.",
             )
         );
     }
 
     #[test]
-    fn renders_response_contract() {
-        let (flow, mut scope) = prompt_fixture();
-        let mut checkpoint_ids = vec![scope.checkpoint(), scope.checkpoint()];
-        checkpoint_ids.sort();
+    fn rejects_invalid_model_proposal() {
+        let (_, scope) = prompt_fixture();
+        let template = ModelTemplate::new(
+            "Review the release",
+            vec![(Some("review".into()), "Another review pass is required".to_owned())],
+            vec![("title".to_owned(), "Replace when the approved title changes".to_owned())],
+        );
 
-        let root_request = build_request(
-            "test-model",
-            "root".to_owned(),
-            PromptContext {
-                flow_description: flow.description(),
-                scope: &scope,
-                next_options: flow.next_options(false),
-            },
+        let allowed = parse_response(
+            scope.state(),
+            &template,
+            r#"{"type":"advance","next":"review","updates":{"title":"Approved"}}"#,
         )
-        .expect("the root response contract should render");
-        let root_contract = contract_json(&root_request);
+        .expect("the declared destination and State field should be accepted");
+        let TurnProposal::Advance { next, updates } = allowed else {
+            unreachable!()
+        };
+        assert_eq!(next.map(|next| next.0).as_deref(), Some("review"));
+        assert_eq!(updates.get::<String>("title").map(String::as_str), Some("Approved"));
 
-        assert_eq!(
-            root_contract["advance"]["updates"]["fields"]["title"],
-            json!({
-                "description": "Current release title",
-                "value": "Ready",
-            })
-        );
-        assert_eq!(
-            root_contract["advance"]["updates"]["fields"]["tasks"],
-            json!({
-                "description": "Ordered release tasks",
-                "value": ["write", "review"],
-            })
-        );
-        assert_eq!(
-            root_contract["advance"]["updates"]["fields"]["scores"],
-            json!({
-                "description": "Release quality scores",
-                "value": {"quality": 9},
-            })
-        );
-
-        let root_options = root_contract["advance"]["next"]["options"]
-            .as_array()
-            .expect("root next options should be an array");
-        assert_eq!(
-            root_options,
-            &vec![
-                json!({"description": "Exit the current Flow through done", "value": "done"}),
-                json!({"description": "Prepare the release", "value": "prepare"}),
-                json!({"description": "Review the release", "value": "review"}),
-                json!({"description": "Complete the current Flow", "value": null}),
-            ]
-        );
-
-        let expected_checkpoints = checkpoint_ids
-            .iter()
-            .map(|id| {
-                json!({
-                    "description": format!("Restore Scope checkpoint {id}"),
-                    "value": id.0,
-                })
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            root_contract["restore"]["scope"]["options"]
-                .as_array()
-                .expect("checkpoint options should be an array"),
-            &expected_checkpoints
-        );
-
-        let child_request = build_request(
-            "test-model",
-            "child".to_owned(),
-            PromptContext {
-                flow_description: flow.description(),
-                scope: &scope,
-                next_options: flow.next_options(true),
-            },
+        let undeclared_next = parse_response(
+            scope.state(),
+            &template,
+            r#"{"type":"advance","next":"done","updates":{}}"#,
         )
-        .expect("the child response contract should render");
-        let child_contract = contract_json(&child_request);
-        let child_options = child_contract["advance"]["next"]["options"]
-            .as_array()
-            .expect("child next options should be an array");
-        assert_eq!(child_options.as_slice(), &root_options[..root_options.len() - 1]);
+        .err()
+        .expect("an undeclared destination should be rejected");
+        assert_eq!(
+            undeclared_next,
+            "model output selected undeclared next target Step done"
+        );
+
+        let undeclared_update = parse_response(
+            scope.state(),
+            &template,
+            r#"{"type":"advance","next":"review","updates":{"tasks":["ship"]}}"#,
+        )
+        .err()
+        .expect("an undeclared State field should be rejected");
+        assert_eq!(
+            undeclared_update,
+            "model output attempted undeclared State update tasks"
+        );
     }
 }
