@@ -73,7 +73,10 @@ fn rejects_empty_duplicate_and_invalid_menu_configuration() {
 fn rejects_missing_wrongly_typed_input_unknown_ids_labels_and_routes() {
     let step = MultipleChoiceStep::new("choice", "Pick", vec![Choice::new("a", "Option A", "done")]).unwrap();
     let mut scope = scope();
-    assert!(step.input(&scope).unwrap().prompt.contains("a: Option A"));
+    assert_eq!(
+        step.input(&scope).unwrap().field_schema("choice").unwrap()["enum"][0],
+        "a"
+    );
     for value in [
         None,
         Some(Box::new(12_u64) as Box<dyn lyquid_flow::Value>),
@@ -124,27 +127,7 @@ fn ignores_proposed_routes_and_unrelated_updates_and_rejects_restore() {
 }
 
 #[test]
-fn html_renders_configured_options_and_escapes_text() {
-    let spec = InputSpec {
-        name: "choice\"".to_owned(),
-        prompt: "<Pick> & go".to_owned(),
-        value: Box::new(String::new()),
-    };
-    let choices = vec![
-        Choice::new("a\"", "<One>", "first"),
-        Choice::new("b", "'Two'", "second"),
-    ];
-    let html = render_html(&spec, &choices);
-    assert!(html.contains("<fieldset><legend>&lt;Pick&gt; &amp; go</legend>"));
-    assert!(html.contains("name=\"choice&quot;\" value=\"a&quot;\""));
-    assert!(html.contains("&lt;One&gt;"));
-    assert!(html.contains("&#39;Two&#39;"));
-    assert!(!html.contains("<One>"));
-    assert_eq!(html.matches("<button ").count(), 2);
-}
-
-#[test]
-fn fixed_choices_render_after_the_step_is_mounted_without_access_to_scope() {
+fn publishes_dynamic_prompt() {
     let step = MultipleChoiceStep::new(
         "choice",
         "Pick",
@@ -155,23 +138,6 @@ fn fixed_choices_render_after_the_step_is_mounted_without_access_to_scope() {
     )
     .unwrap()
     .with_prompt(|scope| format!("Round {}", scope.state().get::<u64>("parent").unwrap()));
-    let choices = step.choices().to_vec();
-    let scope = scope();
-    let spec = step.input(&scope).unwrap();
-    assert_eq!(spec.prompt, "Round 7\n- a: Option A\n- b: Option B");
-    let _flow = Flow::builder("owned-step")
-        .entry("choose")
-        .step("choose", step)
-        .exit("left")
-        .exit("right")
-        .build()
-        .unwrap();
-    drop(scope);
-
-    let html = render_html(&spec, &choices);
-    assert!(html.contains("value=\"a\">Option A</button>"));
-    assert!(html.contains("value=\"b\">Option B</button>"));
-    assert!(!html.contains("left"));
-    assert!(!html.contains("right"));
-    assert_eq!(html.matches("<button ").count(), 2);
+    let spec = step.input(&scope()).unwrap();
+    assert_eq!(spec.field_schema("choice").unwrap()["title"], "Round 7");
 }

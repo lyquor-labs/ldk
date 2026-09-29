@@ -17,15 +17,9 @@ let flow = Flow::builder("collect-goal")
 ```
 
 Bind these to a `Scope` and run it from the application's execution task. The application reads the pending `InputSpec`
-from `scope.input_handle()` and submits a `String` using `offer_input(Box::new(message))`. The field must exist in State
-with type `String`. Text is preserved as submitted; application-specific validation belongs to the caller.
-
-## HTML text bar
-
-`text_input_step::render_html(&spec)` renders an unstyled form containing a label, `<input type="text">`, and submit
-button. Dynamic prompts and field names are HTML-escaped. Attach an application-owned submit handler, read the field's
-value, and send it to the waiting Scope; the library does not embed JavaScript or assume an HTTP endpoint. Applications
-with an existing design can render their own text field using the same specification.
+from `scope.input_handle()` and submits the JSON string `{"message-field-name": "the message"}` through
+`submit_input()`. The field must exist in State with type `String`. Text is preserved as submitted;
+application-specific validation belongs to the caller.
 
 ## Dynamic prompts
 

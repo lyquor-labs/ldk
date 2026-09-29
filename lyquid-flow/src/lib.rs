@@ -3,17 +3,21 @@
 //! Reusable Flow and Step for Lyquid workflows.
 
 mod flow;
+mod input;
 mod prompt;
 mod scope;
 mod state;
 mod step;
 mod trace;
+pub mod ui;
 
 pub use flow::{ExitTransitions, Flow, FlowBuilder, FlowId, TraceMode};
-pub use scope::{AutoCheckpointConfig, FlowError, InputHandle, ModelConfig, Scope, ScopeId, ScopeSnapshot};
+pub use input::{FieldBuilder, Input, InputSpec, InputSpecBuilder};
+pub use scope::{AutoCheckpointConfig, FlowError, InputHandle, Scope, ScopeId, ScopeSnapshot};
 pub use state::{List, Mapping, State, StateBuilder, StateNamespace, StateUpdates, Value};
-pub use step::{Input, InputSpec, ModelTemplate, Step, StepId, TemplateSpec};
+pub use step::{ModelTemplate, Step, StepId, TemplateSpec};
 pub use trace::{Trace, TraceEntry, TraceSummary};
+pub use ui::UiDocument;
 
 /// Proposed result of one Step turn, subject to Finalization and Flow validation.
 #[derive(Clone)]

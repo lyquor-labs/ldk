@@ -1,0 +1,23 @@
+[package]
+name = "refinement-loop-flow"
+workspace = "../.."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Reusable refinement loop over caller-provided candidates for Lyquid flows."
+
+[dependencies]
+lyquid-flow.workspace = true
+multiple-choice-step = { path = "../../steps/multiple-choice-step" }
+refinement-step.workspace = true
+serde_json.workspace = true
+text-input-step.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[lints]
+workspace = true

@@ -5,31 +5,19 @@ use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tera::{Context, Tera};
 
 use crate::TurnProposal;
+use crate::flow::Flow;
 use crate::scope::Scope;
 use crate::state::{State, StateNamespace, StateUpdates};
 use crate::step::{ModelTemplate, StepId};
 use crate::trace::{Trace, TraceSummary};
 
-/// Rendering values used to complete one Step-owned template.
-pub(super) struct PromptContext<'a> {
-    /// Flow-level purpose supplied to the model.
-    pub(super) flow_description: &'a str,
-    /// Current execution State and Trace exposed to the prompt.
-    pub(super) scope: &'a Scope,
-}
-
 /// Builds the complete model request from a template validated by Scope.
 pub(super) fn build_request(
-    model: &str, template: &ModelTemplate, context: PromptContext<'_>,
+    model: &str, template: &ModelTemplate, flow: &Flow, scope: &Scope,
 ) -> Result<ModelRequest, String> {
-    let PromptContext {
-        flow_description,
-        scope,
-    } = context;
-
-    let prompt = render_step_prompt(scope, template)?;
+    let prompt = render_step_prompt(flow, scope, template)?;
     let response_contract = response_contract(scope, &template.next_step_criteria, &template.state_update_criteria)?;
-    let flow_description = match flow_description {
+    let flow_description = match flow.description() {
         "" => "Execute the current Flow.",
         description => description,
     };
@@ -104,11 +92,18 @@ pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &s
 ///
 /// The context exposes committed `state`, current `input`, and the complete local `trace` in chronological order.
 /// Trace entries contain their Step ID, State snapshot, and summary, including nested child Traces.
-fn render_step_prompt(scope: &Scope, template: &ModelTemplate) -> Result<String, String> {
+/// `step` maps every local Step and exit ID to its raw string, without changing the permitted next destinations.
+fn render_step_prompt(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> Result<String, String> {
     let mut context = Context::new();
     context.insert("state", &state_json(scope.state())?);
     context.insert("input", &input_json(scope.updates())?);
     context.insert("trace", &trace_json(scope.trace())?);
+    let steps = flow
+        .step_ids()
+        .chain(flow.exits())
+        .map(|id| (id.0.clone(), JsonValue::String(id.0.clone())))
+        .collect::<JsonMap<_, _>>();
+    context.insert("step", &steps);
 
     let render = |section: &str, value: &str| {
         Tera::one_off(value, &context, false)
@@ -284,10 +279,11 @@ mod tests {
     use lyquid_test::test;
     use serde_json::{Value as JsonValue, json};
 
-    use super::{PromptContext, build_request, parse_response};
+    use super::{build_request, parse_response};
     use crate::{
-        AutoCheckpointConfig, Flow, FlowError, InputSpec, List, Mapping, ModelTemplate, Scope, State, StateNamespace,
-        StateUpdates, Step, StepId, TemplateSpec, Trace, TraceEntry, TraceSummary, TurnProposal,
+        AutoCheckpointConfig, ExitTransitions, Flow, FlowError, InputSpec, List, Mapping, ModelTemplate, Scope, State,
+        StateNamespace, StateUpdates, Step, StepId, TemplateSpec, Trace, TraceEntry, TraceMode, TraceSummary,
+        TurnProposal,
     };
 
     const RESPONSE_CONTRACT_MARKER: &str =
@@ -323,7 +319,7 @@ mod tests {
         }
     }
 
-    fn prompt_fixture() -> (Arc<Flow>, Scope) {
+    fn prompt_fixture(description: &str) -> (Arc<Flow>, Scope) {
         let mut scores = new_hashmap();
         scores.insert("quality".to_owned(), 9_u64);
         let state = State::builder()
@@ -341,7 +337,7 @@ mod tests {
         prepare_updates.set("title".to_owned(), Some(Box::new("Ready".to_owned())));
         let flow = Arc::new(
             Flow::builder("release")
-                .description("Prepare a release.")
+                .description(description)
                 .entry("prepare")
                 .exit("done")
                 .step(
@@ -387,7 +383,7 @@ mod tests {
 
     #[test]
     fn renders_prompt_context() {
-        let (flow, mut scope) = prompt_fixture();
+        let (flow, mut scope) = prompt_fixture("Prepare a release.");
         scope.set(
             StateNamespace::Input,
             "literal".to_owned(),
@@ -400,12 +396,13 @@ mod tests {
                 "decision={% if input.approved %}approved{% else %}rejected{% endif %}\n",
                 "trace={% for entry in trace %}",
                 "{{ entry.step }}:{{ entry.state.title }}:{{ entry.summary }}",
-                "{% endfor %}",
+                "{% endfor %}\n",
+                "steps={{ step.prepare }},{{ step.review }},{{ step.done }}",
             ),
             vec![(
                 Some("review".into()),
                 concat!(
-                    "Continue when {{ state.title }} is ",
+                    "Continue to {{ step.review }} when {{ state.title }} is ",
                     "{% if input.approved %}approved{% else %}rejected{% endif %} ",
                     "after {{ trace[0].summary }}",
                 )
@@ -413,30 +410,23 @@ mod tests {
             )],
             vec![(
                 "title".to_owned(),
-                "Replace with the literal text {{ input.literal }} when the input is approved".to_owned(),
+                "Replace with the literal text {{ input.literal }} when returning to {{ step.review }}".to_owned(),
             )],
         );
-        let request = build_request(
-            "test-model",
-            &template,
-            PromptContext {
-                flow_description: flow.description(),
-                scope: &scope,
-            },
-        )
-        .expect("the prompt fixture should render");
+        let request = build_request("test-model", &template, &flow, &scope).expect("the prompt fixture should render");
 
         assert_eq!(request.model, "test-model");
         assert_eq!(
             request.prompt,
             concat!(
                 "# Step goal\n",
-                "title=Ready\ntasks=write,review\ndecision=approved\ntrace=prepare:Ready:prepared\n\n",
+                "title=Ready\ntasks=write,review\ndecision=approved\ntrace=prepare:Ready:prepared\n",
+                "steps=prepare,review,done\n\n",
                 "# Next step criteria\n",
-                "- `review`: Continue when Ready is approved after prepared\n\n",
+                "- `review`: Continue to review when Ready is approved after prepared\n\n",
                 "# State update criteria\n",
                 "Update a field only when its criterion applies; omit every unchanged field.\n",
-                "- `title`: Replace with the literal text {{ state.title }} when the input is approved",
+                "- `title`: Replace with the literal text {{ state.title }} when returning to review",
             )
         );
         assert!(
@@ -462,15 +452,9 @@ mod tests {
             vec![(None, "The work is complete".to_owned())],
             Vec::new(),
         );
-        let default_description = build_request(
-            "test-model",
-            &default_template,
-            PromptContext {
-                flow_description: "",
-                scope: &scope,
-            },
-        )
-        .expect("the default Flow description should render");
+        let (default_flow, default_scope) = prompt_fixture("");
+        let default_description = build_request("test-model", &default_template, &default_flow, &default_scope)
+            .expect("the default Flow description should render");
         assert!(
             default_description
                 .system
@@ -481,8 +465,81 @@ mod tests {
     }
 
     #[test]
+    fn renders_step_references() {
+        let (child, child_scope) = prompt_fixture("");
+        let parent = Arc::new(
+            Flow::builder("parent")
+                .entry("release-flow")
+                .flow(
+                    "release-flow",
+                    Arc::clone(&child),
+                    ExitTransitions::new().transition("done", "release.done").unwrap(),
+                    TraceMode::Expanded,
+                )
+                .exit("release.done")
+                .build()
+                .unwrap(),
+        );
+        let parent_scope = Scope::new(
+            Arc::clone(&parent),
+            State::default(),
+            AutoCheckpointConfig::Disabled,
+            None,
+        );
+        let template = ModelTemplate::new(
+            r#"After {{ step["release-flow"] }}, the next step would be {{ step["release.done"] }}"#,
+            vec![(Some("release.done".into()), "The release is complete".to_owned())],
+            Vec::new(),
+        );
+        let request = build_request("test-model", &template, &parent, &parent_scope).unwrap();
+        assert!(
+            request
+                .prompt
+                .contains("After release-flow, the next step would be release.done")
+        );
+
+        // A mount is visible as one parent-local Step; neither Flow can reference the other's internals or exits.
+        for (flow, scope, missing) in [
+            (&parent, &parent_scope, "review"),
+            (&parent, &parent_scope, "done"),
+            (&child, &child_scope, "release-flow"),
+            (&child, &child_scope, "release.done"),
+        ] {
+            let mut template = template.clone();
+            template.step_goal = format!("{{{{ step[\"{missing}\"] }}}}");
+            let error = super::render_step_prompt(flow, scope, &template).unwrap_err();
+            assert!(error.contains("failed to render step goal"), "{error}");
+            assert!(error.contains(missing), "{error}");
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_step() {
+        let (flow, scope) = prompt_fixture("");
+        for section in ["step goal", "next-step criterion", "State update criterion"] {
+            let mut template = ModelTemplate::new(
+                "Review the release",
+                vec![(Some("review".into()), "Review again".to_owned())],
+                vec![("title".to_owned(), "Use the approved title".to_owned())],
+            );
+            let text = match section {
+                "step goal" => &mut template.step_goal,
+                "next-step criterion" => &mut template.next_step_criteria[0].1,
+                _ => &mut template.state_update_criteria[0].1,
+            };
+            *text = "Continue to {{ step.missing }}".to_owned();
+            let error = build_request("test-model", &template, &flow, &scope).unwrap_err();
+            assert!(
+                error.contains(&format!("failed to render {section} for Step review")),
+                "{error}"
+            );
+            assert!(error.contains("step.missing"), "{error}");
+        }
+    }
+
+    #[test]
     fn renders_response_contract() {
-        let (flow, mut scope) = prompt_fixture();
+        let (flow, mut scope) = prompt_fixture("Prepare a release.");
         let mut checkpoint_ids = vec![scope.checkpoint(), scope.checkpoint()];
         checkpoint_ids.sort();
 
@@ -500,15 +557,8 @@ mod tests {
             ],
         );
 
-        let root_request = build_request(
-            "test-model",
-            &template,
-            PromptContext {
-                flow_description: flow.description(),
-                scope: &scope,
-            },
-        )
-        .expect("the root response contract should render");
+        let root_request =
+            build_request("test-model", &template, &flow, &scope).expect("the root response contract should render");
         let root_contract = contract_json(&root_request);
 
         assert_eq!(
@@ -650,15 +700,8 @@ mod tests {
             vec![(None, "The traced work is complete".to_owned())],
             Vec::new(),
         );
-        let request = build_request(
-            "test-model",
-            &template,
-            PromptContext {
-                flow_description: flow.description(),
-                scope: &scope,
-            },
-        )
-        .expect("the chronological nested Trace should render");
+        let request = build_request("test-model", &template, &flow, &scope)
+            .expect("the chronological nested Trace should render");
 
         // The separators make ordering explicit: both parent and child entries must remain
         // chronological, with the State snapshot and summary attached to the correct Step.
@@ -679,7 +722,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_model_proposal() {
-        let (_, scope) = prompt_fixture();
+        let (_, scope) = prompt_fixture("");
         let template = ModelTemplate::new(
             "Review the release",
             vec![(Some("review".into()), "Another review pass is required".to_owned())],

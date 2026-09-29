@@ -15,6 +15,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -120,7 +129,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bartender"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid",
  "serde",
@@ -140,7 +149,7 @@ checksum = "022dfe9eb35f19ebbcb51e0b40a5ab759f46ad60cadf7297e0bd085afb50e076"
 
 [[package]]
 name = "basicswap"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid",
 ]
@@ -229,12 +238,13 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "circle-nanopay-flow"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "lyquid",
  "lyquid-flow",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -400,6 +410,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -450,7 +466,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "erc20"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid",
 ]
@@ -530,7 +546,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid",
 ]
@@ -616,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "ahash",
  "alloy-sol-types",
@@ -630,10 +646,13 @@ dependencies = [
 
 [[package]]
 name = "lyquid-flow"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid",
  "lyquid-llm",
+ "percent-encoding",
+ "regex",
+ "schemars",
  "serde",
  "serde_json",
  "tera",
@@ -642,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-llm"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid",
  "serde_json",
@@ -651,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-proc"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquor-primitives",
  "proc-macro2",
@@ -661,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-test"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid",
  "lyquid-proc",
@@ -669,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "lyquor-primitives"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -702,7 +721,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "multiple-choice-step"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid-flow",
 ]
@@ -730,6 +749,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "percent-encoding"
+version = "2.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
 name = "postcard"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -752,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "price-feed"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid",
  "serde",
@@ -874,13 +899,73 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "216e8f773d7923bcba9ceb86a86c93cabb3903a11872fc3f138c49630e50b96d"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c9283685feec7d69af75fb0e858d5e7378f33fe4fc699383b2916ab9273e03c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "refinement-loop-flow"
+version = "0.7.3"
+dependencies = [
+ "lyquid-flow",
+ "multiple-choice-step",
+ "refinement-step",
+ "serde_json",
+ "text-input-step",
+]
+
+[[package]]
 name = "refinement-step"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid-flow",
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "regex"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-syntax"
+version = "0.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rfc6979"
@@ -920,6 +1005,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
  "semver",
+]
+
+[[package]]
+name = "schemars"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98c67716b46af2f0b8cf752abc930f6f9aecfbf671ecfb531db8a31dbe4e2ba"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -978,6 +1088,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1027,6 +1148,19 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "shopping-assistant"
+version = "0.7.3"
+dependencies = [
+ "lyquid",
+ "lyquid-flow",
+ "lyquid-llm",
+ "refinement-loop-flow",
+ "serde",
+ "serde_json",
+ "text-input-step",
+]
 
 [[package]]
 name = "signature"
@@ -1099,7 +1233,7 @@ dependencies = [
 
 [[package]]
 name = "text-input-step"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "lyquid-flow",
 ]

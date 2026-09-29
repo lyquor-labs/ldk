@@ -15,7 +15,6 @@ let choose = MultipleChoiceStep::new("action", "What next?", vec![
     Choice::new("compare", "Compare options", "compare"),
     Choice::new("finish", "Finish", "done"),
 ])?;
-let choices = choose.choices().to_vec(); // Retain for rendering after the Flow owns the Step.
 let flow = Flow::builder("decision")
     .entry("choose")
     .step("choose", choose)
@@ -25,16 +24,11 @@ let flow = Flow::builder("decision")
     .build()?;
 ```
 
-Keep `scope.input_handle()` before running the Flow. Read its pending `input_spec()` and submit an option ID as a `String`
-using `offer_input(Box::new(choice_id))`. The named State field must have type `String`; unknown IDs reject the turn without
-committing changes. Provide at least one option with a unique ID. IDs, labels, and destinations must be nonempty; multiple
-options may share a destination.
-
-## HTML choice buttons
-
-`multiple_choice_step::render_html(&spec, &choices)` renders escaped HTML buttons using the pending input contract and
-the fixed choices retained above. It needs no access to the running Scope or Step. Applications own styling, handlers,
-and transport; each button's value is the selected ID. The input prompt also lists IDs and labels for terminal clients.
+Keep `scope.input_handle()` before running the Flow. Read its pending `input_spec()` and submit a complete object,
+for example `handle.submit_input(&serde_json::json!({"action": choice_id}).to_string())`.
+The named State field must have type `String`; unknown IDs fail input validation while the request remains pending.
+Provide at least one option with a unique ID. IDs, labels, and destinations must be nonempty; multiple options may
+share a destination.
 
 ## Dynamic prompts
 

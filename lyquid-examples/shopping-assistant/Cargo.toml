@@ -1,0 +1,21 @@
+[package]
+name = "shopping-assistant"
+workspace = "../.."
+publish = false
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lyquid = { workspace = true, features = ["ldk"] }
+lyquid-flow.workspace = true
+lyquid-llm = { workspace = true, features = ["ldk"] }
+refinement-loop-flow = { path = "../../flows/refinement-loop-flow" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+text-input-step.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true

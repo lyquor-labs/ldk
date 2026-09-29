@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::sync::Arc;
 
 use lyquid_flow::{AutoCheckpointConfig, Flow, State};
@@ -26,12 +27,13 @@ fn publishes_a_string_contract_and_dynamic_prompt_without_a_model() {
     let step = TextInputStep::new("message", "Initial question", "done")
         .with_prompt(|scope| format!("Round {}", scope.state().get::<u64>("unrelated").unwrap()));
     let spec = step.input(&scope).unwrap();
-    assert_eq!(spec.prompt, "Round 7");
-    assert_eq!(spec.name, "message");
-    assert_eq!(spec.value.encode(), "\"\"");
-    assert_eq!(spec.value.decode("\"hello\"").unwrap().encode(), "\"hello\"");
-    assert!(spec.value.decode("42").is_err());
-    assert!(spec.value.decode(r#"{"message":"hello"}"#).is_err());
+    assert_eq!(spec.field_schema("message").unwrap()["title"], "Round 7");
+    assert_eq!(spec.field_schema("message").unwrap()["type"], "string");
+    let decoded = spec.decode(r#"{"message":"hello"}"#).unwrap();
+    let message: &dyn Any = decoded["message"].as_ref();
+    assert_eq!(message.downcast_ref::<String>().unwrap(), "hello");
+    assert!(spec.decode("42").is_err());
+    assert!(spec.decode(r#"{"message":42}"#).is_err());
     assert!(matches!(step.model_template(&scope), TemplateSpec::Skip(_)));
 }
 
@@ -78,17 +80,4 @@ fn rejects_missing_wrongly_typed_input_and_restore() {
             .is_err()
     );
     assert!(scope.trace().entries.is_empty());
-}
-
-#[test]
-fn html_escapes_the_prompt_and_field_name() {
-    let html = render_html(&InputSpec {
-        prompt: "<script>alert('x')</script> & \"question\"".to_owned(),
-        name: "message\" autofocus onfocus=\"alert(1)".to_owned(),
-        value: Box::new(String::new()),
-    });
-    assert!(html.contains("<label>&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt; &amp; &quot;question&quot;"));
-    assert!(html.contains("name=\"message&quot; autofocus onfocus=&quot;alert(1)\""));
-    assert!(html.contains("<input type=\"text\""));
-    assert!(!html.contains("<script>"));
 }

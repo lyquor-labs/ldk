@@ -20,6 +20,7 @@ DEMO_NODE_WS=(
 )
 
 DEMO_LOCALNET_PID=""
+DEMO_FOREGROUND_PID=""
 DEMO_TOPOLOGY=""
 LYQUID_ID=""
 LYQUID_CONTRACT=""
@@ -43,15 +44,59 @@ demo_require_tools() {
     [[ -x "$DEMO_LOCALNET_SCRIPT" ]] || demo_die "Localnet script is not executable: $DEMO_LOCALNET_SCRIPT"
 }
 
+demo_stop_process() {
+    local label="$1"
+    local pid="$2"
+    local attempt
+    local target="$pid"
+    local target_description="process"
+
+    if kill -0 -- "-$pid" >/dev/null 2>&1; then
+        target="-$pid"
+        target_description="process group"
+    elif ! kill -0 "$pid" >/dev/null 2>&1; then
+        return
+    fi
+
+    kill -TERM -- "$target" >/dev/null 2>&1 || true
+    for ((attempt = 0; attempt < 30; attempt++)); do
+        kill -0 -- "$target" >/dev/null 2>&1 || break
+        sleep 0.1
+    done
+    if kill -0 -- "$target" >/dev/null 2>&1; then
+        echo "$label did not stop after SIGTERM; force-stopping its $target_description."
+        kill -KILL -- "$target" >/dev/null 2>&1 || true
+    fi
+    wait "$pid" >/dev/null 2>&1 || true
+}
+
 demo_cleanup() {
     local status=$?
-    trap - EXIT INT TERM
-    if [[ -n "$DEMO_LOCALNET_PID" ]] && kill -0 -- "-$DEMO_LOCALNET_PID" >/dev/null 2>&1; then
+    trap - EXIT HUP INT TERM
+    if [[ -n "$DEMO_FOREGROUND_PID" ]]; then
+        demo_stop_process "Foreground demo command" "$DEMO_FOREGROUND_PID"
+    fi
+    DEMO_FOREGROUND_PID=""
+    if [[ -n "$DEMO_LOCALNET_PID" ]]; then
         echo
         echo "Stopping localnet."
-        kill -TERM -- "-$DEMO_LOCALNET_PID" >/dev/null 2>&1 || true
-        wait "$DEMO_LOCALNET_PID" >/dev/null 2>&1 || true
+        demo_stop_process "Localnet" "$DEMO_LOCALNET_PID"
     fi
+    return "$status"
+}
+
+demo_run_foreground() {
+    local status=0
+    python3 - "$@" <<'PY' &
+import os
+import sys
+
+os.setpgrp()
+os.execvp(sys.argv[1], sys.argv[1:])
+PY
+    DEMO_FOREGROUND_PID=$!
+    wait "$DEMO_FOREGROUND_PID" || status=$?
+    DEMO_FOREGROUND_PID=""
     return "$status"
 }
 
@@ -93,7 +138,9 @@ os.execv(sys.argv[1], sys.argv[1:])
 PY
     DEMO_LOCALNET_PID=$!
     trap demo_cleanup EXIT
-    trap 'exit 130' INT TERM
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 
     deadline=$((SECONDS + 120))
     while :; do

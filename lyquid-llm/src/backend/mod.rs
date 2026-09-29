@@ -1,4 +1,4 @@
-use crate::{JsonApiResponse, LlmResult, ModelRequest, ModelResponse, PreparedJsonApiRequest};
+use crate::{JsonApiResponse, LlmError, LlmResult, ModelRequest, ModelResponse, PreparedJsonApiRequest};
 
 /// Gemini-compatible request preparation and response parsing.
 pub mod gemini;
@@ -11,4 +11,15 @@ pub trait Backend {
     fn prepare_request(&self, request: &ModelRequest) -> LlmResult<PreparedJsonApiRequest>;
     /// Convert a JSON HTTP response into a provider-neutral model response.
     fn parse_response(&self, response: JsonApiResponse) -> LlmResult<ModelResponse>;
+}
+
+fn required_api_key<'a>(provider: &str, api_key: &'a str) -> LlmResult<&'a str> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return Err(LlmError::Backend {
+            provider: provider.into(),
+            message: "the API key must not be empty".into(),
+        });
+    }
+    Ok(api_key)
 }

@@ -135,11 +135,17 @@ impl Step for AuthorizePaymentStep {
         let PaymentState::AwaitingAuthorization { requirements, .. } = state else {
             unreachable!("the authorization Step requires an accepted payment request")
         };
-        Some(InputSpec {
-            prompt: serde_json::to_string(requirements).expect("payment requirements serialization cannot fail"),
-            name: AUTHORIZATION_INPUT.to_owned(),
-            value: Box::new(Eip3009Authorization::default()),
-        })
+        let mut builder = InputSpec::builder();
+        let input = builder
+            .field(
+                AUTHORIZATION_INPUT,
+                serde_json::to_string(requirements).expect("payment requirements serialization cannot fail"),
+                Eip3009Authorization::default(),
+            )
+            .json_input();
+        let submit = builder.submit("Continue");
+        let layout = builder.ui().column(vec![input, submit]);
+        Some(builder.finish(layout).expect("valid input declaration"))
     }
 
     fn model_template(&self, _scope: &Scope) -> TemplateSpec {

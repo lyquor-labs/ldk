@@ -5,10 +5,11 @@ use std::sync::Arc;
 use lyquid::prelude::{HashMap, HashSet, hashbrown::hash_map::Entry, new_hashmap, new_hashset};
 use serde::{Deserialize, Serialize};
 
+use crate::InputSpec;
 use crate::TurnProposal;
 use crate::scope::{FlowError, Scope};
 use crate::state::StateUpdates;
-use crate::step::{InputSpec, Step, StepId, TemplateSpec};
+use crate::step::{Step, StepId, TemplateSpec};
 use crate::trace::TraceSummary;
 
 /// Stable developer-supplied identity of one Flow definition.
@@ -217,6 +218,10 @@ impl Flow {
 
     pub(super) fn step(&self, id: &StepId) -> Option<&dyn Step> {
         self.steps.get(id).map(AsRef::as_ref)
+    }
+
+    pub(super) fn step_ids(&self) -> impl Iterator<Item = &StepId> {
+        self.steps.keys()
     }
 
     pub(super) fn step_cloned(&self, id: &StepId) -> Option<Arc<dyn Step>> {

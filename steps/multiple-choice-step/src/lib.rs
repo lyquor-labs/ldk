@@ -1,6 +1,5 @@
 //! Deterministic, single-selection input with any number of configured destinations.
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use lyquid_flow::{
@@ -48,11 +47,6 @@ impl MultipleChoiceStep {
         self.prompt = Arc::new(prompt);
         self
     }
-
-    /// Returns the fixed options. Copy them for rendering before moving this Step into a Flow.
-    pub fn choices(&self) -> &[Choice] {
-        &self.choices
-    }
 }
 
 impl Step for MultipleChoiceStep {
@@ -61,15 +55,18 @@ impl Step for MultipleChoiceStep {
     }
 
     fn input(&self, scope: &Scope) -> Option<InputSpec> {
-        let mut prompt = (self.prompt)(scope);
-        for choice in &self.choices {
-            write!(&mut prompt, "\n- {}: {}", choice.id, choice.label).expect("writing to a String cannot fail");
-        }
-        Some(InputSpec {
-            name: self.field.clone(),
-            prompt,
-            value: Box::new(String::new()),
-        })
+        let mut builder = InputSpec::builder();
+        let choice = builder
+            .field(&self.field, (self.prompt)(scope), String::new())
+            .choices(
+                self.choices
+                    .iter()
+                    .map(|choice| (choice.id.clone(), choice.label.clone())),
+            )
+            .select_one();
+        let submit = builder.submit("Choose");
+        let layout = builder.ui().column(vec![choice, submit]);
+        Some(builder.finish(layout).expect("validated choice declaration"))
     }
 
     fn model_template(&self, _scope: &Scope) -> TemplateSpec {
@@ -117,35 +114,6 @@ fn validate_choices(choices: &[Choice]) -> Result<(), FlowError> {
         }
     }
     Ok(())
-}
-
-/// Accessible, unstyled single-choice buttons. The application submits the clicked button's value.
-/// Pass the pending input contract and the fixed options retained before mounting the Step.
-pub fn render_html(spec: &InputSpec, choices: &[Choice]) -> String {
-    let mut html = format!(
-        "<form data-step=\"multiple-choice\"><fieldset><legend>{}</legend>",
-        escape_html(&spec.prompt)
-    );
-    for choice in choices {
-        write!(
-            &mut html,
-            "<button type=\"submit\" name=\"{}\" value=\"{}\">{}</button>",
-            escape_html(&spec.name),
-            escape_html(&choice.id),
-            escape_html(&choice.label)
-        )
-        .expect("writing to a String cannot fail");
-    }
-    html.push_str("</fieldset></form>");
-    html
-}
-
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 #[cfg(test)] mod tests;

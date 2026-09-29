@@ -101,11 +101,19 @@ fn get_payment_authorization_request(ctx: &_, execution_id: u64) -> LyquidResult
                 "payment execution {execution_id} is not awaiting authorization"
             ))
         })?;
-    input.input_spec().map(|spec| spec.prompt).ok_or_else(|| {
-        err(format!(
-            "payment execution {execution_id} is preparing its authorization request"
-        ))
-    })
+    input
+        .input_spec()
+        .map(|spec| {
+            spec.field_schema("payment_authorization").unwrap()["title"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .ok_or_else(|| {
+            err(format!(
+                "payment execution {execution_id} is preparing its authorization request"
+            ))
+        })
 }
 
 #[method::instance(export = eth)]
@@ -123,11 +131,9 @@ fn submit_payment_authorization(ctx: &mut _, execution_id: u64, authorization_js
                 "payment execution {execution_id} is not awaiting authorization"
             ))
         })?;
-    if !input.offer_input(Box::new(authorization)) {
-        return Err(err(format!(
-            "payment execution {execution_id} is not ready for authorization"
-        )));
-    }
+    input
+        .submit_input(&serde_json::json!({"payment_authorization": authorization}).to_string())
+        .map_err(|error| err(format!("payment execution {execution_id}: {error}")))?;
     Ok(true)
 }
 

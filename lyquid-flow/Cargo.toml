@@ -11,6 +11,9 @@ description = "Reusable workflow graphs and execution for Lyquid tasks."
 [dependencies]
 lyquid = { workspace = true, features = ["ldk"] }
 lyquid-llm = { workspace = true, features = ["ldk"] }
+percent-encoding.workspace = true
+regex.workspace = true
+schemars.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true }
 tera.workspace = true

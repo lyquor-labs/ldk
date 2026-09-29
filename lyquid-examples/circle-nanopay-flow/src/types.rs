@@ -1,4 +1,5 @@
 use lyquid_flow::Value;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Settlement and network configuration captured by one Circle payment Flow.
@@ -62,7 +63,7 @@ pub struct PaymentRequirements {
 }
 
 /// User-signed EIP-3009 `TransferWithAuthorization`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Eip3009Authorization {
     pub from: String,
@@ -127,3 +128,32 @@ macro_rules! impl_value {
 
 impl_value!(Eip3009Authorization);
 impl_value!(PaymentState);
+
+#[cfg(test)]
+mod input_contract_tests {
+    use std::any::Any;
+
+    use super::*;
+    use lyquid_test::test;
+
+    #[test]
+    fn authorization_input() {
+        let mut builder = lyquid_flow::InputSpec::builder();
+        let field = builder
+            .field("authorization", "Authorization", Eip3009Authorization::default())
+            .json_input();
+        let spec = builder.finish(field).unwrap();
+        let value = Eip3009Authorization::default();
+        let decoded = spec
+            .decode_values(&serde_json::json!({"authorization": value}))
+            .unwrap();
+        let authorization: &dyn Any = decoded["authorization"].as_ref();
+        assert_eq!(authorization.downcast_ref::<Eip3009Authorization>(), Some(&value));
+        let mut invalid = serde_json::to_value(value).unwrap();
+        invalid.as_object_mut().unwrap().remove("signature");
+        assert!(
+            spec.decode_values(&serde_json::json!({"authorization": invalid}))
+                .is_err()
+        );
+    }
+}

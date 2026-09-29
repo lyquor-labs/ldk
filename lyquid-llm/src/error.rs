@@ -60,7 +60,7 @@ pub enum LlmError {
         #[source]
         source: serde_json::Error,
     },
-    /// Backend logic rejected the response (missing required field, etc.). Free-form because
+    /// Backend configuration or response validation failed. Free-form because
     /// the per-backend variants would otherwise leak into this enum.
     #[error("{provider}: {message}")]
     Backend { provider: String, message: String },
@@ -68,6 +68,12 @@ pub enum LlmError {
 
 /// Convenience alias used throughout the crate.
 pub type LlmResult<T> = Result<T, LlmError>;
+
+impl From<LlmError> for String {
+    fn from(error: LlmError) -> Self {
+        error.to_string()
+    }
+}
 
 impl From<LlmError> for lyquid::LyquidError {
     fn from(e: LlmError) -> Self {
@@ -77,6 +83,8 @@ impl From<LlmError> for lyquid::LyquidError {
 
 #[cfg(test)]
 mod tests {
+    use lyquid_test::test;
+
     use super::*;
 
     #[test]

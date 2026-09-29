@@ -155,7 +155,7 @@ impl_value!(u64);
 impl_value!(String);
 
 /// A list whose elements all have the same State value type.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, schemars::JsonSchema)]
 pub struct List<T>(pub Vec<T>);
 
 impl<T> Value for List<T>
@@ -179,7 +179,8 @@ where
 }
 
 /// A string-keyed map whose values all have the same State value type.
-#[derive(Clone)]
+#[derive(Clone, schemars::JsonSchema)]
+#[schemars(with = "std::collections::BTreeMap<String, T>")]
 pub struct Mapping<T>(pub HashMap<String, T>);
 
 // Deserialize through `new_hashmap()` so decoded mappings retain the runtime's deterministically seeded hasher.
@@ -254,7 +255,7 @@ pub struct StateUpdates {
     /// staging data is applied when the transition commits.
     pub(super) staging: HashMap<String, Box<dyn Value>>,
     /// Ephemeral values are Step-scoped context inserted by the framework. Submitted input is
-    /// stored at (`StateNamespace::Input`, [`crate::InputSpec::name`]) and is readable through
+    /// stored at (`StateNamespace::Input`, the declared field key) and is readable through
     /// [`StateUpdates::get_ephemeral`]. Ephemeral values are discarded at commit. To persist one,
     /// clone its typed value and pass it to [`StateUpdates::set`].
     pub(super) ephemeral: HashMap<StateNamespace, HashMap<String, Box<dyn Value>>>,
@@ -278,7 +279,7 @@ impl StateUpdates {
 
     /// Returns one Step-scoped value with its concrete type.
     ///
-    /// Input is keyed by (`StateNamespace::Input`, [`crate::InputSpec::name`]).
+    /// Input is keyed by (`StateNamespace::Input`, the declared field key).
     pub fn get_ephemeral<V: Value>(&self, namespace: StateNamespace, name: &str) -> Option<&V> {
         let value: &dyn Any = self.ephemeral.get(&namespace)?.get(name)?.as_ref();
         value.downcast_ref()

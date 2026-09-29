@@ -3,10 +3,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::TurnProposal;
 use crate::scope::{FlowError, Scope};
-use crate::state::Value;
 use crate::trace::TraceSummary;
+use crate::{InputSpec, TurnProposal};
 
 /// Stable identifier of a Step.
 #[derive(Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -24,25 +23,11 @@ impl fmt::Display for StepId {
     }
 }
 
-/// Client-facing input contract for a Step.
-#[derive(Clone)]
-pub struct InputSpec {
-    /// Prompt shown to the client.
-    pub prompt: String,
-    /// Stable name used to expose the submitted value to the Step.
-    pub name: String,
-    /// Prototype used to decode and type-check submitted input.
-    pub value: Box<dyn Value>,
-}
-
-/// Runtime value accepted through an [`InputSpec`].
-pub type Input = Box<dyn Value>;
-
 /// Structured contract from which the framework builds one model-backed Step prompt.
 ///
-/// The goal and every criterion are Tera templates with access to the current State, input, and Trace.
-/// Destinations and State fields omitted from this declaration are not exposed to the model and are rejected if the
-/// model nevertheless proposes them. [`Step::finalize`] may still revise an accepted proposal deterministically.
+/// The goal and every criterion are Tera templates with access to `state`, `input`, `trace`, and `step`.
+/// Destinations and State update fields omitted from this declaration are rejected if the model proposes them.
+/// [`Step::finalize`] may still revise an accepted proposal deterministically.
 #[derive(Clone)]
 pub struct ModelTemplate {
     /// Free-form instructions describing the work this Step should accomplish.
@@ -71,7 +56,7 @@ impl ModelTemplate {
 
 /// Step template, or a developer-selected transition that skips the model.
 pub enum TemplateSpec {
-    /// Structured model-call contract rendered with the current State, input, and Trace before invocation.
+    /// Structured model-call contract rendered with the current State, input, Trace, and local Steps.
     Template(ModelTemplate),
 
     /// Return a direct proposal without calling a model.

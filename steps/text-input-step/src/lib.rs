@@ -1,7 +1,7 @@
 //! Text entry as a deterministic Step, separate from model-backed processing.
 //!
-//! The input is a `String`. Rendering and transport remain separate: [`render_html`] produces a
-//! text-entry form, while the application submits the value through `InputHandle`.
+//! The Step describes its text field through `InputSpec`. The application presents that UI and
+//! submits a JSON field object through `InputHandle::submit_input()`.
 
 use std::sync::Arc;
 
@@ -43,11 +43,13 @@ impl Step for TextInputStep {
     }
 
     fn input(&self, scope: &Scope) -> Option<InputSpec> {
-        Some(InputSpec {
-            name: self.field.clone(),
-            prompt: (self.prompt)(scope),
-            value: Box::new(String::new()),
-        })
+        let mut builder = InputSpec::builder();
+        let text = builder
+            .field(&self.field, (self.prompt)(scope), String::new())
+            .text_input();
+        let submit = builder.submit("Send");
+        let layout = builder.ui().column(vec![text, submit]);
+        Some(builder.finish(layout).expect("valid text input declaration"))
     }
 
     fn model_template(&self, _scope: &Scope) -> TemplateSpec {
@@ -71,26 +73,6 @@ impl Step for TextInputStep {
         *next = Some(self.next.clone());
         Ok(TraceSummary::Summary("Received a text message".to_owned()))
     }
-}
-
-/// Renders a pending text-input specification as an accessible, unstyled HTML form.
-///
-/// All dynamic text is escaped. The application attaches its own submit handler and sends the
-/// field value through the Scope's input handle; no endpoint, JavaScript, or provider is assumed.
-pub fn render_html(spec: &InputSpec) -> String {
-    format!(
-        "<form data-step=\"text-input\"><label>{}<input type=\"text\" name=\"{}\"></label><button type=\"submit\">Send</button></form>",
-        escape_html(&spec.prompt),
-        escape_html(&spec.name),
-    )
-}
-
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 #[cfg(test)] mod tests;
