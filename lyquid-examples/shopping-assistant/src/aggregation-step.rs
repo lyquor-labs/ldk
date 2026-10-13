@@ -379,7 +379,7 @@ mod tests {
     fn search_configuration() {
         let context = SearchContext::initial("I want to get a TV for home gaming").unwrap();
         let prompt = context.prompt().unwrap();
-        let (_, search) = crate::model_setup("openai", "fixture-key", "").unwrap();
+        let (_, search) = crate::model_setup("openai", "fixture-key", |_| {}).unwrap();
         let mut request = search.request.clone();
         request.prompt = prompt.clone();
         assert!(request.prompt.contains("TV for home gaming"));
@@ -398,7 +398,7 @@ mod tests {
         assert_eq!(openai["include"], serde_json::json!(["web_search_call.action.sources"]));
         assert_eq!(openai["text"]["format"]["schema"], product_search_schema());
 
-        let (_, search) = crate::model_setup("gemini", "", "fixture-key").unwrap();
+        let (_, search) = crate::model_setup("gemini", "fixture-key", |_| {}).unwrap();
         let mut request = search.request.clone();
         request.prompt = prompt;
         let prepared = search.backend.prepare_request(&request).unwrap();
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn normalization_retains_up_to_twenty_results_without_padding_sparse_searches() {
+    fn catalog_result_limits() {
         for count in [0, 3, 15, 20, 25] {
             let catalog = ProductCatalog::decode(&products(count), 1).unwrap();
             assert_eq!(catalog.products.len(), count.min(20));
@@ -437,14 +437,14 @@ mod tests {
         let source = "https://maker.example/tvs";
         let cases = [
             (
-                crate::model_setup("openai", "fixture-key", "").unwrap().1,
+                crate::model_setup("openai", "fixture-key", |_| {}).unwrap().1,
                 serde_json::json!({
                     "output_text": products(20),
                     "output": [{"type": "web_search_call", "action": {"sources": [{"url": source}]}}]
                 }),
             ),
             (
-                crate::model_setup("gemini", "", "fixture-key").unwrap().1,
+                crate::model_setup("gemini", "fixture-key", |_| {}).unwrap().1,
                 serde_json::json!({
                     "candidates": [{
                         "content": {"parts": [{"text": products(20)}]},
@@ -498,7 +498,50 @@ mod tests {
     }
 
     #[test]
-    fn catalog_normalization_assigns_application_ids_and_rejects_bad_urls_and_duplicate_products() {
+    fn usage_on_search_failure() {
+        struct RejectSearch;
+        impl Backend for RejectSearch {
+            fn prepare_request(
+                &self, request: &ModelRequest,
+            ) -> lyquid_llm::LlmResult<lyquid_llm::PreparedJsonApiRequest> {
+                assert_eq!(request.model, "scripted-search");
+                assert_eq!(request.max_output_tokens, Some(MODEL_MAX_OUTPUT_TOKENS));
+                assert!(request.prompt.contains("Find a travel mug"));
+                Err(lyquid_llm::LlmError::Backend {
+                    provider: "scripted-search".into(),
+                    message: "request preparation failed".into(),
+                })
+            }
+
+            fn parse_response(&self, _: lyquid_llm::JsonApiResponse) -> lyquid_llm::LlmResult<ModelResponse> {
+                unreachable!("the rejected search must not reach the network")
+            }
+        }
+
+        let tracker = lyquid_llm::UsageTracker::<crate::SessionUsage>::default();
+        let search = ProductSearch::new(
+            "scripted-search",
+            lyquid_llm::with_usage_observer(
+                RejectSearch,
+                crate::usage_observer(tracker.clone(), crate::UsagePhase::Search),
+            ),
+        );
+        let context = SearchContext::initial("Find a travel mug").unwrap();
+        let error = search.search(&context, 1).unwrap_err();
+        assert!(error.contains("product aggregation failed: scripted-search: request preparation failed"));
+        let snapshot = tracker.snapshot().to_json();
+        assert_eq!(
+            snapshot["search"],
+            serde_json::json!({
+                "call_attempts": 1, "input_tokens": null, "output_tokens": null, "total_tokens": null
+            })
+        );
+        assert_eq!(snapshot["total"], snapshot["search"]);
+        assert_eq!(snapshot["refinement"]["call_attempts"], 0);
+    }
+
+    #[test]
+    fn catalog_normalization() {
         let raw = r#"{
             "search_summary":" travel grinders ",
             "products":[
@@ -540,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn distinct_products_can_share_a_supporting_comparison_page() {
+    fn shared_product_sources() {
         let mut output: serde_json::Value = serde_json::from_str(&products(20)).unwrap();
         for product in output["products"].as_array_mut().unwrap() {
             product["source_url"] = serde_json::json!("https://reviews.example/gaming-tvs");
@@ -551,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn refinement_search_carries_accumulated_feedback_goal_and_previous_products() {
+    fn refinement_search_context() {
         let initial = SearchContext::initial("A coffee grinder for travel").expect("request should be valid");
         let product = Product {
             id: "product-1-1".to_owned(),
@@ -590,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_shopping_request_is_rejected_before_calling_a_provider() {
+    fn reject_empty_request() {
         assert_eq!(
             SearchContext::initial("   ").expect_err("blank requests should be rejected"),
             "the shopping request must not be empty"

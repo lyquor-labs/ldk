@@ -1,0 +1,21 @@
+[package]
+name = "lyquid-json-formatter"
+workspace = "../../.."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Optional JSON parsing and schema validation actions for configured Steps."
+
+[dependencies]
+lyquid-configured-step.workspace = true
+lyquid-flow.workspace = true
+lyquid-llm.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,61 @@
+{
+  "ui": {
+    "root": "root",
+    "components": [
+      {
+        "id": "root",
+        "component": "Column",
+        "children": [
+          "message",
+          "submit"
+        ]
+      },
+      {
+        "id": "message",
+        "component": "TextField",
+        "label": "Your message",
+        "variant": "shortText",
+        "value": {
+          "path": "/fields/message"
+        }
+      },
+      {
+        "id": "submit-label",
+        "component": "Text",
+        "text": {
+          "path": "/content/submit-label"
+        }
+      },
+      {
+        "id": "submit",
+        "component": "Button",
+        "child": "submit-label",
+        "action": {
+          "event": {
+            "name": "submit",
+            "context": {}
+          }
+        }
+      }
+    ],
+    "data": {
+      "content": {
+        "submit-label": "Send"
+      }
+    }
+  },
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "title": "Your message"
+      }
+    },
+    "required": [
+      "message"
+    ],
+    "additionalProperties": false
+  }
+}

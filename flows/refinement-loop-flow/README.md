@@ -1,7 +1,13 @@
-# Refinement Loop Flow
+# Refinement Loop Flow example
+
+This Flow demonstrates composition and configuration for candidate refinement. Its
+[refinement Step](../../steps/examples/refinement-step/README.md) may use State fields and decision contracts
+specific to this loop. The LDK focuses on helping authors configure their own Steps and Flows from reusable
+actions; this example does not need to become a general-purpose workflow component.
 
 `RefinementLoopConfig` builds a loop over a fixed, caller-provided candidate list using the
-[refinement](../../steps/refinement-step/README.md) and [text-input](../../steps/text-input-step/README.md) steps.
+[refinement Step](../../steps/examples/refinement-step/README.md) and native
+[text InputSpec](../../steps/inputs/text/README.md) composed with `StepBuilder`.
 Each message updates the goal, ranking, and next hint. Users may answer the hint or state any requirement directly.
 
 The default loop has no menu or exits:
@@ -17,6 +23,8 @@ initial goal
 
 An empty ranking does not end the loop. Users can relax requirements to re-admit candidates from the original list.
 Retrieval, selection, model configuration, UI, and session lifetime belong to the application.
+The preceding action must supply a non-empty original candidate list before entering refinement; empty retrieval
+results must be handled by the application. An empty State placeholder is allowed before that action runs.
 
 ## Use
 
@@ -41,15 +49,15 @@ Flow, UI choices, and `model_turn_schema()`. Use `add_state_fields()` to extend 
 
 ## Exit choices and parent Flows
 
-Configuring exits adds a [multiple-choice step](../../steps/multiple-choice-step/README.md) with `refine` plus your
-options. There are no built-in finish, cancel, or restart actions. A mounted child Flow requires at least one exit;
+Configuring exits adds one combined input Step: a feedback field, a **Refine** button, and buttons for your
+exit options. There are no built-in finish, cancel, or restart actions. A mounted child Flow requires at least one exit;
 the exit-free default runs standalone.
 
 ```text
    refine <----------------------------------+
      |                                       |
      v                                       |
-   choose -- refine --> text feedback -------+
+   feedback + action -- Refine --------------+
      |
      +-- configured exit --> parent
 ```
@@ -83,16 +91,27 @@ initialize another refinement run. See [shopping-assistant](../../lyquid-example
 The application displays each `InputSpec` and submits a JSON object keyed by its field name. Use `field_schema()` to distinguish:
 
 - `REFINEMENT_INPUT_FIELD`: the initial goal or next refinement message.
-- `CHOICE_STATE_FIELD`: `refine` or a configured exit ID; render IDs and labels from `config.choice_options()`.
+- `CHOICE_STATE_FIELD`: `refine` or a configured exit ID, supplied by the clicked button.
+
+With exits, submit `CHOICE_STATE_FIELD` and `REFINEMENT_INPUT_FIELD` together to refine. Exit actions require only
+`CHOICE_STATE_FIELD`; they do not overwrite committed feedback. Button values are declared in the native A2UI
+submit event, validated by the same InputSpec, and do not create a second input round. The field prompt contains
+the current hint, while candidate presentation belongs in the application's ViewSpec.
 
 With no exits, `choice_options()` is empty and the choice State field is omitted. Otherwise, options are ordered as
-`refine`, then your exits. `DECISION_STATE_FIELD` holds the `DecisionState`: goal, ranking, and hint.
+`refine`, then your exits. The method returns `ExitChoice` values containing only IDs and labels; routing stays
+inside the loop. `DECISION_STATE_FIELD` holds the `DecisionState`: goal, ranking, and hint.
 
 Use blocking `Scope::advance()` or cooperative `Scope::run_until_input()`. Both publish requests through
 `InputHandle`; submit the complete field object through `submit_input()`. For cooperative
-execution, call `run_until_input()` again after acceptance. Step IDs and constructors are internal; compose the step
-crates directly for other graphs.
+execution, call `run_until_input()` again after acceptance. Step IDs and constructors are internal; compose
+`InputSpec` with `StepBuilder` and the refinement Step directly for other graphs.
 
 Input commits separately from refinement. A failed model turn preserves the last decision and leaves the submitted
 message available for retry. Invalid choices do not commit a route. Retry and abandoned-session cleanup policies
 belong to the application.
+
+Applications can opt into `RefinementLoopConfig::nonblank()` for required feedback and
+`with_available(predicate)` for state-dependent exit availability. The built-in **Refine** action always remains
+available, even when the predicate rejects every choice. These constraints are exported in InputSpec and enforced
+for HTTP as well as direct submissions; exit wiring remains fixed.

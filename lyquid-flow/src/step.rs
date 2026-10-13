@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::scope::{FlowError, Scope};
 use crate::trace::TraceSummary;
-use crate::{InputSpec, TurnProposal};
+use crate::{InputSpec, TurnProposal, ViewSpec};
 
 /// Stable identifier of a Step.
 #[derive(Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -25,7 +25,8 @@ impl fmt::Display for StepId {
 
 /// Structured contract from which the framework builds one model-backed Step prompt.
 ///
-/// The goal and every criterion are Tera templates with access to `state`, `input`, `trace`, and `step`.
+/// The goal and every criterion are Tera templates with access to `state`, `input`, `trace`, `step`,
+/// and the current Step's [`Step::model_context`] under `context`.
 /// Destinations and State update fields omitted from this declaration are rejected if the model proposes them.
 /// [`Step::finalize`] may still revise an accepted proposal deterministically.
 #[derive(Clone)]
@@ -38,6 +39,9 @@ pub struct ModelTemplate {
     /// State fields the model may update, paired as `(field_name, update_criterion)`; each criterion describes when
     /// to update the field and what its complete replacement should contain.
     pub state_update_criteria: Vec<(String, String)>,
+    /// Whether the model may restore a checkpoint instead of producing an advancing turn.
+    /// This does not restrict application calls to `Scope::restore`.
+    pub allow_restore: bool,
 }
 
 impl ModelTemplate {
@@ -50,13 +54,15 @@ impl ModelTemplate {
             step_goal: step_goal.into(),
             next_step_criteria,
             state_update_criteria,
+            allow_restore: true,
         }
     }
 }
 
 /// Step template, or a developer-selected transition that skips the model.
 pub enum TemplateSpec {
-    /// Structured model-call contract rendered with the current State, input, Trace, and local Steps.
+    /// Structured model-call contract rendered with the current State, input, Trace, local Steps,
+    /// and Step-provided context.
     Template(ModelTemplate),
 
     /// Return a direct proposal without calling a model.
@@ -74,8 +80,22 @@ pub trait Step: Any + Send + Sync {
     /// Describes the input required for this Step, or returns `None` for no input.
     fn input(&self, scope: &Scope) -> Option<InputSpec>;
 
+    /// Selects committed results to publish. The default exports no State or Trace values.
+    /// Return an error identifying a value that cannot be presented; publishing is all-or-nothing.
+    fn view(&self, _scope: &Scope) -> Result<ViewSpec, FlowError> {
+        Ok(ViewSpec::default())
+    }
+
     /// Selects a model template using the current Scope or provides the decision directly.
     fn model_template(&self, scope: &Scope) -> TemplateSpec;
+
+    /// Supplies Step-local data as `context` when rendering a model template. The default is empty.
+    /// Called after interactive input is validated, only for a model-backed turn. This must be pure;
+    /// preparation may also run through other Step hooks and is not cached between calls or turns.
+    /// An error prevents the model request and finalization. Values are data, never template source.
+    fn model_context(&self, _scope: &Scope) -> Result<serde_json::Value, FlowError> {
+        Ok(serde_json::json!({}))
+    }
 
     /// Finalizes the proposed turn against a read-only Scope before it is validated and committed.
     /// Returning an error rejects the complete turn without committing its cursor, State, or Trace changes.

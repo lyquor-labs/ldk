@@ -7,8 +7,9 @@ use lyquid_flow::{AutoCheckpointConfig, StateNamespace};
 use lyquid_test::test;
 use refinement_loop_flow::{CHOICE_STATE_FIELD, DECISION_STATE_FIELD, REFINEMENT_INPUT_FIELD};
 
+use super::tests::enter_request;
 use super::*;
-use crate::{ScopeView, publish_scope, reserve_input, restore_scope, run_scope, scope_view};
+use lyquid_flow::service::{ClientError, FlowClient, FlowClientId, FlowService, ReadResponse, Status};
 
 // Keep production aggregation, parent mounting, and text steps; script only the model and choice.
 struct Refine(Arc<AtomicUsize>);
@@ -52,9 +53,27 @@ impl Step for Choose {
     fn description(&self, _: bool) -> String {
         "Choose".into()
     }
-    fn input(&self, _: &Scope) -> Option<InputSpec> {
+    fn input(&self, scope: &Scope) -> Option<InputSpec> {
         let mut builder = InputSpec::builder();
-        let choice = builder.field(CHOICE_STATE_FIELD, "Choose", String::new()).text_input();
+        let choice = builder
+            .field(CHOICE_STATE_FIELD, "Choose", String::new())
+            .choices(
+                refinement_config()
+                    .choice_options()
+                    .into_iter()
+                    .filter(|choice| {
+                        choice.id != FINISH_CHOICE ||
+                            scope
+                                .state()
+                                .get::<DecisionState>(DECISION_STATE_FIELD)
+                                .unwrap()
+                                .ranking
+                                .candidate_ids
+                                .is_empty()
+                    })
+                    .map(|choice| (choice.id, choice.label)),
+            )
+            .select_one();
         Some(builder.finish(choice).unwrap())
     }
     fn model_template(&self, scope: &Scope) -> TemplateSpec {
@@ -81,7 +100,19 @@ fn fixture() -> (Scope, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         .step("choose", Choose)
         .step(
             "feedback",
-            TextInputStep::new(REFINEMENT_INPUT_FIELD, "Feedback", "refine"),
+            StepBuilder::new()
+                .description("Collect a text message")
+                .with_input(text_input(REFINEMENT_INPUT_FIELD, "Feedback"))
+                .update_from(
+                    REFINEMENT_INPUT_FIELD,
+                    ValueSource::Input {
+                        name: REFINEMENT_INPUT_FIELD.into(),
+                    },
+                )
+                .next("refine")
+                .summary("Received a text message")
+                .build()
+                .unwrap(),
         )
         .build()
         .unwrap();
@@ -106,215 +137,263 @@ fn fixture() -> (Scope, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         child,
         restart_feedback_step(),
     );
-    let scope = Scope::new(
+    let mut scope = Scope::new(
         Arc::new(flow),
-        initial_state(ShoppingRequest::new("Travel gear")).unwrap(),
+        initial_state().unwrap(),
         AutoCheckpointConfig::Disabled,
         None,
     );
+    enter_request(&mut scope, "Travel gear");
     (scope, searches, refinements)
 }
 
-fn start(scope: &mut Scope) -> ScopeView {
-    let mut view = scope_view(scope.execution_id(), scope.state());
-    run_scope(scope, &mut view, None);
-    view
+struct Search {
+    clients: FlowService,
+    id: FlowClientId,
+    client: FlowClient,
 }
 
-fn submit(scope: &mut Scope, view: &mut ScopeView, choice: &str, message: &str) {
-    assert!(reserve_input(view, "choice"));
-    run_scope(scope, view, Some(choice.into()));
-    assert!(reserve_input(
-        view,
-        if choice == RESTART_CHOICE { "restart" } else { "refine" }
-    ));
-    run_scope(scope, view, Some(message.into()));
+impl Search {
+    fn start(scope: Scope) -> Self {
+        let clients = FlowService::new();
+        let id = clients.register(scope).unwrap();
+        let client = clients.resolve(&id).unwrap();
+        let mut search = Self { clients, id, client };
+        search.run();
+        search
+    }
+    fn read(&self) -> ReadResponse {
+        self.client.read().unwrap()
+    }
+    fn result(&self) -> view::ShoppingResult {
+        serde_json::from_value(self.read().view.spec["ui"]["data"]["shopping"].clone()).unwrap()
+    }
+    fn run(&mut self) {
+        self.client.run().unwrap();
+    }
+    fn post(&self, request_id: &str, values: serde_json::Value) -> lyquid::http::Response {
+        self.clients.handle_http(
+            lyquid::http::Request {
+                method: lyquid::http::Method::Post,
+                url: format!("/api/flows/{}/input", self.id.0),
+                headers: vec![],
+                body: Some(
+                    serde_json::to_vec(&serde_json::json!({"request_id": request_id, "values": values})).unwrap(),
+                ),
+            },
+            |_| Ok(()),
+        )
+    }
+    fn send(&mut self, field: &str, value: &str) {
+        let token = self.read().input.unwrap().request_id;
+        assert_eq!(self.post(&token, serde_json::json!({field: value})).status, 202);
+        assert!(matches!(self.read().status, Status::Processing));
+        self.run();
+    }
+    fn feedback(&mut self, choice: &str, message: &str) {
+        self.send(CHOICE_STATE_FIELD, choice);
+        self.send(
+            if choice == RESTART_CHOICE {
+                RESTART_FEEDBACK_FIELD
+            } else {
+                REFINEMENT_INPUT_FIELD
+            },
+            message,
+        );
+    }
+    fn restore(&mut self, id: &lyquid_flow::ScopeId) {
+        let response = self.clients.handle_http(
+            lyquid::http::Request {
+                method: lyquid::http::Method::Post,
+                url: format!("/api/flows/{}/restore", self.id.0),
+                headers: vec![],
+                body: Some(serde_json::to_vec(&serde_json::json!({"revision_id": id})).unwrap()),
+            },
+            |_| Ok(()),
+        );
+        assert_eq!(response.status, 202);
+        assert!(self.read().input.is_none());
+        self.run();
+    }
+    fn checkpoint(&self) -> lyquid_flow::ScopeId {
+        self.read().history.active_revision_id.unwrap()
+    }
 }
 
 #[test]
-fn history_uses_root_checkpoints_to_branch_and_restore_the_mounted_child_without_replay() {
-    let (mut scope, searches, refinements) = fixture();
-    let execution_id = scope.execution_id().clone();
-    let mut view = start(&mut scope);
-    let root = view.history.active_revision_id.clone().unwrap();
-    let (_, original) = scope.run_until_input().unwrap().unwrap();
-    submit(&mut scope, &mut view, "refine", "lightweight");
-    let light = view.history.active_revision_id.clone().unwrap();
-    assert_eq!(view.history.revisions.len(), 2);
-    assert!(view.history.revisions[1].parent_id.as_ref() == Some(&root));
-    restore_scope(&mut scope, &mut view, &root).unwrap();
-    let (_, restored) = scope.run_until_input().unwrap().unwrap();
-    assert!(Arc::ptr_eq(&restored, &original));
-    assert_eq!(searches.load(Ordering::Relaxed), 1);
-    assert_eq!(refinements.load(Ordering::Relaxed), 2);
-    submit(&mut scope, &mut view, "refine", "inexpensive");
-    let cheap = view.history.active_revision_id.clone().unwrap();
-    assert_eq!(view.history.revisions.len(), 3);
-    assert!(view.history.revisions[2].parent_id.as_ref() == Some(&root));
+fn history_branches() {
+    let (scope, searches, refinements) = fixture();
+    let mut search = Search::start(scope);
+    let root = search.checkpoint();
+    let old_request = search.read().input.unwrap().request_id;
+    search.feedback("refine", "lightweight");
+    let light = search.checkpoint();
+    search.restore(&root);
+    assert_eq!(
+        search
+            .post(&old_request, serde_json::json!({CHOICE_STATE_FIELD: "refine"}))
+            .status,
+        409
+    );
+    search.feedback("refine", "inexpensive");
+    let cheap = search.checkpoint();
     assert_ne!(light.0, cheap.0);
-    assert!(!view.soft_preferences.contains(&"lightweight".into()));
-    restore_scope(&mut scope, &mut view, &light).unwrap();
-    assert!(view.soft_preferences.contains(&"lightweight".into()));
-    assert!(!view.soft_preferences.contains(&"inexpensive".into()));
-    restore_scope(&mut scope, &mut view, &cheap).unwrap();
-    assert!(view.soft_preferences.contains(&"inexpensive".into()));
+    assert_eq!(search.read().history.revisions.len(), 3);
+    assert!(
+        search.read().history.revisions[1..]
+            .iter()
+            .all(|revision| revision.parent_id.as_ref() == Some(&root))
+    );
+    assert!(!search.result().soft_preferences.contains(&"lightweight".into()));
+    search.restore(&light);
+    assert!(search.result().soft_preferences.contains(&"lightweight".into()));
+    assert!(!search.result().soft_preferences.contains(&"inexpensive".into()));
+    search.restore(&cheap);
+    assert!(search.result().soft_preferences.contains(&"inexpensive".into()));
+    assert_eq!(searches.load(Ordering::Relaxed), 1);
     assert_eq!(refinements.load(Ordering::Relaxed), 3);
-    restore_scope(&mut scope, &mut view, &root).unwrap();
-    assert!(view.history.active_revision_id.as_ref() == Some(&root));
-    assert!(view.history.revisions[0].parent_id.is_none());
-    assert!(scope.execution_id() == &execution_id);
-    assert!(view.scope_id == execution_id);
-    assert_eq!(scope.checkpoint_ids().count(), 3);
 }
 
 #[test]
-fn replacement_search_checkpoints_restore_catalog_feedback_and_trace_together() {
-    let (mut scope, searches, refinements) = fixture();
-    let mut view = start(&mut scope);
-    let root = view.history.active_revision_id.clone().unwrap();
-    submit(&mut scope, &mut view, RESTART_CHOICE, "More compact products");
-    let replacement = view.history.active_revision_id.clone().unwrap();
-    assert_eq!(view.candidates[0].id, "product-2");
-    restore_scope(&mut scope, &mut view, &root).unwrap();
-    assert_eq!(view.candidates[0].source_url, "https://maker.example/1");
-    assert!(view.restart_feedback.is_empty());
-    restore_scope(&mut scope, &mut view, &replacement).unwrap();
-    assert_eq!(view.restart_feedback, ["More compact products"]);
+fn search_restore() {
+    let (scope, searches, refinements) = fixture();
+    let mut search = Search::start(scope);
+    let root = search.checkpoint();
+    search.feedback(RESTART_CHOICE, "More compact products");
+    let replacement = search.checkpoint();
+    assert_eq!(search.result().candidates[0].id, "product-2");
+    assert_eq!(search.read().history.revisions[1].data["kind"], "search");
+    search.restore(&root);
+    assert_eq!(search.result().candidates[0].source_url, "https://maker.example/1");
+    assert!(search.result().restart_feedback.is_empty());
+    search.restore(&replacement);
+    assert_eq!(search.result().restart_feedback, ["More compact products"]);
     assert_eq!(searches.load(Ordering::Relaxed), 2);
     assert_eq!(refinements.load(Ordering::Relaxed), 2);
-    // Resume a restored child and finish it: the restored parent Trace must not duplicate the search.
-    submit(&mut scope, &mut view, "refine", "none");
-    assert!(reserve_input(&mut view, "choice"));
-    run_scope(&mut scope, &mut view, Some(FINISH_CHOICE.into()));
-    assert_eq!(
-        scope
-            .trace()
-            .entries
-            .iter()
-            .filter(|entry| entry.step.0 == AGGREGATE_CANDIDATES_STEP)
-            .count(),
-        2
-    );
-    assert!(scope.is_finished());
-    assert_eq!(view.status, "no_match");
-    restore_scope(&mut scope, &mut view, &root).unwrap();
-    assert!(!scope.is_finished());
-    assert_eq!(view.input_kind, Some("choice"));
+    search.feedback("refine", "none");
+    search.send(CHOICE_STATE_FIELD, FINISH_CHOICE);
+    assert!(matches!(search.read().status, Status::Completed));
+    assert!(search.read().input.is_none());
+    assert!(search.result().candidates.is_empty());
+    search.restore(&root);
+    assert!(matches!(search.read().status, Status::AwaitingInput));
+    assert_eq!(search.result().candidates.len(), 1);
 }
 
 #[test]
-fn failed_refinement_does_not_replace_a_checkpoint_and_can_restore_for_retry() {
-    let (mut scope, _, refinements) = fixture();
-    let mut view = start(&mut scope);
-    let root = view.history.active_revision_id.clone().unwrap();
-    submit(&mut scope, &mut view, "refine", "fail");
-    assert_eq!(view.status, "failed");
-    assert!(view.error.as_ref().unwrap().contains("scripted failure"));
-    assert_eq!(view.history.revisions.len(), 1);
-    assert_eq!(scope.checkpoint_ids().count(), 1);
-    assert!(!reserve_input(&mut view, "refine"));
-    restore_scope(&mut scope, &mut view, &root).unwrap();
-    assert!(view.error.is_none());
-    submit(&mut scope, &mut view, "refine", "retry");
-    assert_eq!(view.history.revisions.len(), 2);
-    assert!(!view.soft_preferences.contains(&"fail".into()));
-    assert!(view.soft_preferences.contains(&"retry".into()));
+fn failure_restore() {
+    let (scope, _, refinements) = fixture();
+    let mut search = Search::start(scope);
+    let root = search.checkpoint();
+    search.feedback("refine", "fail");
+    assert!(matches!(search.read().status, Status::Failed));
+    assert!(search.read().error.unwrap().contains("scripted failure"));
+    assert_eq!(search.read().history.revisions.len(), 1);
+    // The text Step committed before the model failed; retry starts from a saved choice checkpoint.
+    search.restore(&root);
+    assert!(search.read().error.is_none());
+    search.feedback("refine", "retry");
+    assert_eq!(search.read().history.revisions.len(), 2);
+    assert!(!search.result().soft_preferences.contains(&"fail".into()));
+    assert!(search.result().soft_preferences.contains(&"retry".into()));
     assert_eq!(refinements.load(Ordering::Relaxed), 3);
 }
 
 #[test]
-fn reserving_a_worker_rejects_duplicate_input_and_restore() {
-    let (mut scope, _, _) = fixture();
-    let mut view = start(&mut scope);
-    let root = view.history.active_revision_id.clone().unwrap();
-    assert!(!reserve_input(&mut view, "refine"));
-    assert!(reserve_input(&mut view, "choice"));
-    assert!(!reserve_input(&mut view, "choice"));
-    assert!(restore_scope(&mut scope, &mut view, &root).is_err());
-    run_scope(&mut scope, &mut view, Some("refine".into()));
-    assert_eq!(view.history.revisions.len(), 1); // Choosing is not a completed revision.
-    assert_eq!(scope.checkpoint_ids().count(), 1);
-    restore_scope(&mut scope, &mut view, &root).unwrap();
-}
-
-#[test]
-fn unknown_and_foreign_checkpoints_do_not_change_the_active_revision() {
-    let (mut scope, _, _) = fixture();
-    let (mut other, _, _) = fixture();
-    let mut view = start(&mut scope);
-    let mut other_view = start(&mut other);
-    // Guest tests stub random_bytes with zeros; distinguish checkpoints by their sequence.
-    submit(&mut other, &mut other_view, "refine", "other search");
-    let original = view.history.active_revision_id.clone();
-    assert!(restore_scope(&mut scope, &mut view, &"missing".into()).is_err());
-    assert!(
-        restore_scope(
-            &mut scope,
-            &mut view,
-            other_view.history.active_revision_id.as_ref().unwrap()
-        )
-        .is_err()
+fn input_contract() {
+    let (scope, _, _) = fixture();
+    let mut search = Search::start(scope);
+    let root = search.checkpoint();
+    let token = search.read().input.unwrap().request_id;
+    // Finish is rejected by the retained InputSpec, not an application HTTP special case.
+    assert_eq!(
+        search
+            .post(&token, serde_json::json!({CHOICE_STATE_FIELD: "finish"}))
+            .status,
+        422
     );
-    assert!(view.history.active_revision_id == original);
+    assert_eq!(
+        search.post(&token, serde_json::json!({CHOICE_STATE_FIELD: 42})).status,
+        422
+    );
+    assert_eq!(search.read().input.unwrap().request_id, token);
+    assert_eq!(
+        search
+            .post(&token, serde_json::json!({CHOICE_STATE_FIELD: "refine"}))
+            .status,
+        202
+    );
+    assert_eq!(
+        search
+            .post(&token, serde_json::json!({CHOICE_STATE_FIELD: "refine"}))
+            .status,
+        409
+    );
+    assert!(matches!(search.client.restore(&root), Err(ClientError::NoPending)));
+    search.run();
+    assert_eq!(
+        search
+            .post(&token, serde_json::json!({CHOICE_STATE_FIELD: "refine"}))
+            .status,
+        409
+    );
+    let feedback_token = search.read().input.unwrap().request_id;
+    assert_eq!(
+        search
+            .post(&feedback_token, serde_json::json!({REFINEMENT_INPUT_FIELD: " \n "}))
+            .status,
+        422
+    );
+    assert_eq!(search.read().history.revisions.len(), 1);
+    search.restore(&root);
 }
 
 #[test]
-fn removing_a_scope_drops_idle_checkpoints_and_does_not_republish_a_late_worker_result() {
-    use lyquid::prelude::new_hashmap;
-
-    let (mut scope, _, _) = fixture();
-    let view = start(&mut scope);
-    let id = scope.execution_id().clone();
-    let stop = scope.input_handle();
-    let mut scopes = new_hashmap();
-    let mut views = new_hashmap();
-    scopes.insert(id.clone(), scope);
-    views.insert(id.clone(), view);
-    stop.request_stop();
-    scopes.remove(&id);
-    views.remove(&id);
-    assert!(scopes.is_empty());
-    assert!(views.is_empty());
-
-    let (mut scope, searches, _) = fixture();
-    let mut view = scope_view(scope.execution_id(), scope.state());
-    scope.input_handle().request_stop();
-    run_scope(&mut scope, &mut view, None);
-    assert_eq!(view.status, "failed");
-    publish_scope(&mut scopes, &mut views, scope, view);
-    assert!(scopes.is_empty());
-    assert!(views.is_empty());
-    assert_eq!(searches.load(Ordering::Relaxed), 0);
-
-    // Also discard a successful model result that completed just before replacement.
-    let (mut scope, _, _) = fixture();
-    let view = start(&mut scope);
-    publish_scope(&mut scopes, &mut views, scope, view);
-    assert!(scopes.is_empty());
-    assert!(views.is_empty());
+fn unknown_checkpoint() {
+    let (scope, _, _) = fixture();
+    let search = Search::start(scope);
+    let root = search.checkpoint();
+    assert!(search.client.restore(&"missing".into()).is_err());
+    assert!(search.read().history.active_revision_id.as_ref() == Some(&root));
 }
 
 #[test]
-fn publishing_a_scope_returns_ownership_and_a_coherent_display_view() {
-    use lyquid::prelude::new_hashmap;
-
-    let (mut scope, _, _) = fixture();
-    let id = scope.execution_id().clone();
-    let mut views = new_hashmap();
-    views.insert(id.clone(), scope_view(&id, scope.state()));
-    let mut scopes = new_hashmap();
-    let view = start(&mut scope);
-    publish_scope(&mut scopes, &mut views, scope, view);
-    assert!(scopes.get(&id).unwrap().execution_id() == &id);
-    let view = views.get(&id).unwrap();
-    assert!(view.scope_id == id);
-    assert_eq!(view.status, "awaiting_input");
-    assert_eq!(view.input_kind, Some("choice"));
-    assert_eq!(view.history.revisions[0].candidate_count, view.candidates.len());
+fn replacement_retires_client() {
+    let (scope, _, _) = fixture();
+    let search = Search::start(scope);
+    let (scope, _, _) = fixture();
+    let replacement = search.clients.replace(scope).unwrap();
+    assert!(search.clients.resolve(&search.id).is_none());
+    assert_ne!(search.id.0, replacement.0);
+    assert_eq!(search.post("old", serde_json::json!({})).status, 404);
 }
 
 #[test]
-fn cooperative_scope_yields_child_state_and_validates_input_without_blocking() {
+fn selected_view() {
+    let (scope, _, _) = fixture();
+    let mut search = Search::start(scope);
+    let root = search.checkpoint();
+    let view = search.read().view;
+    assert!(view.spec.get("state").is_none());
+    assert!(view.spec["ui"]["data"].get("shopping").is_some());
+    assert_eq!(search.result().candidates[0].source_url, "https://maker.example/1");
+    assert!(
+        view.a2ui
+            .iter()
+            .any(|message| message.get("updateComponents").is_some())
+    );
+    search.feedback("refine", "none");
+    assert!(search.result().candidates.is_empty());
+    let mut publication = search.read();
+    publication.history.revisions[0].data["soft_preferences"] = serde_json::json!(["Not in Scope"]);
+    search.restore(&root);
+    assert_eq!(search.result().request, "Travel gear");
+    assert_eq!(search.result().candidates.len(), 1);
+    assert!(!search.result().soft_preferences.contains(&"Not in Scope".into()));
+}
+
+#[test]
+fn cooperative_child_input() {
     let (mut scope, _, _) = fixture();
     assert!(matches!(
         scope
@@ -322,7 +401,7 @@ fn cooperative_scope_yields_child_state_and_validates_input_without_blocking() {
             .submit_input(&serde_json::json!({CHOICE_STATE_FIELD: "unexpected"}).to_string()),
         Err(FlowError::NoPendingInput)
     ));
-    assert!(scope.trace().entries.is_empty());
+    assert_eq!(scope.trace().entries.len(), 1);
     let (spec, child_state) = scope.run_until_input().unwrap().unwrap();
     assert!(spec.field_schema(CHOICE_STATE_FIELD).is_some());
     assert!(
@@ -358,79 +437,27 @@ fn cooperative_scope_yields_child_state_and_validates_input_without_blocking() {
 }
 
 #[test]
-fn completed_round_waits_at_choose_without_entering_feedback_or_repeating_refinement() {
-    let (mut scope, searches, refinements) = fixture();
-    let mut view = start(&mut scope);
-    assert_eq!(view.input_kind, Some("choice"));
-    assert_eq!(view.history.revisions.len(), 1);
-    let checkpoint = view.history.active_revision_id.clone().unwrap();
-    let (_, original) = scope.run_until_input().unwrap().unwrap();
-
-    assert!(reserve_input(&mut view, "choice"));
-    run_scope(&mut scope, &mut view, Some("refine".into()));
-    assert_eq!(view.input_kind, Some("refine"));
-    assert_eq!(searches.load(Ordering::Relaxed), 1);
-    assert_eq!(refinements.load(Ordering::Relaxed), 1);
-    let (spec, snapshot) = scope.run_until_input().unwrap().unwrap();
-    let (again, same_state) = scope.run_until_input().unwrap().unwrap();
-    assert!(spec.field_schema(REFINEMENT_INPUT_FIELD).is_some());
-    assert!(again.field_schema(REFINEMENT_INPUT_FIELD).is_some());
-    assert!(Arc::ptr_eq(&snapshot, &same_state));
-    assert_eq!(view.history.revisions.len(), 1);
-    assert!(view.history.active_revision_id.as_ref() == Some(&checkpoint));
-
-    restore_scope(&mut scope, &mut view, &checkpoint).unwrap();
-    let (spec, restored) = scope.run_until_input().unwrap().unwrap();
-    assert!(spec.field_schema(CHOICE_STATE_FIELD).is_some());
-    assert_eq!(view.input_kind, Some("choice"));
-    assert!(Arc::ptr_eq(&restored, &original));
-    assert_eq!(refinements.load(Ordering::Relaxed), 1);
-}
-
-#[test]
-fn stepwise_and_run_until_input_execution_share_the_same_nested_cursor() {
-    let (mut scope, searches, refinements) = fixture();
-    scope.advance().unwrap();
-    assert_eq!(scope.current_step().0, REFINE_CANDIDATES_STEP);
-    assert_eq!(scope.trace().entries.len(), 1);
-    assert_eq!(searches.load(Ordering::Relaxed), 1);
-    assert_eq!(refinements.load(Ordering::Relaxed), 0);
-
-    let (spec, _) = scope.run_until_input().unwrap().unwrap();
-    assert!(spec.field_schema(CHOICE_STATE_FIELD).is_some());
-    assert_eq!(refinements.load(Ordering::Relaxed), 1);
-    scope
-        .input_handle()
-        .submit_input(&serde_json::json!({CHOICE_STATE_FIELD: FINISH_CHOICE}).to_string())
-        .unwrap();
-    assert!(scope.run_until_input().unwrap().is_none());
-    assert_eq!(scope.current_step().0, FINISHED_EXIT);
-    assert_eq!(scope.trace().entries.len(), 2);
-    scope.advance().unwrap();
-    assert!(scope.run_until_input().unwrap().is_none());
-    assert!(
-        scope
-            .input_handle()
-            .submit_input(&serde_json::json!({CHOICE_STATE_FIELD: FINISH_CHOICE}).to_string())
-            .is_err()
-    );
-    assert_eq!(scope.trace().entries.len(), 2);
-    assert_eq!(searches.load(Ordering::Relaxed), 1);
-    assert_eq!(refinements.load(Ordering::Relaxed), 1);
-}
-
-#[test]
-fn blocking_adapter_stops_when_a_nested_input_request_is_cancelled() {
+fn blocking_input_cancellation() {
     let child = Flow::builder("stopped-input")
         .entry("feedback")
         .exit("done")
         .step(
             "feedback",
-            TextInputStep::new(REFINEMENT_INPUT_FIELD, "Feedback", "done").with_prompt(|scope| {
-                // Stop after reaching input, so advance() exercises its waiting adapter.
-                scope.input_handle().request_stop();
-                "Feedback".into()
-            }),
+            StepBuilder::new()
+                .with_input_factory(|scope| {
+                    // Stop after reaching input, so advance() exercises its waiting adapter.
+                    scope.input_handle().request_stop();
+                    text_input(REFINEMENT_INPUT_FIELD, "Feedback")
+                })
+                .update_from(
+                    REFINEMENT_INPUT_FIELD,
+                    ValueSource::Input {
+                        name: REFINEMENT_INPUT_FIELD.into(),
+                    },
+                )
+                .next("done")
+                .build()
+                .unwrap(),
         )
         .build()
         .unwrap();
@@ -447,7 +474,7 @@ fn blocking_adapter_stops_when_a_nested_input_request_is_cancelled() {
         .unwrap();
     let mut scope = Scope::new(
         Arc::new(parent),
-        initial_state(ShoppingRequest::new("Travel gear")).unwrap(),
+        initial_state().unwrap(),
         AutoCheckpointConfig::Disabled,
         None,
     );
@@ -470,50 +497,82 @@ fn blocking_adapter_stops_when_a_nested_input_request_is_cancelled() {
 }
 
 #[test]
-fn history_api_uses_scope_execution_and_checkpoint_ids_without_a_session_id() {
-    let (mut scope, _, _) = fixture();
-    let view = start(&mut scope);
-    let root = view.history.active_revision_id.as_ref().unwrap();
-    let value = serde_json::to_value(&view).unwrap();
-    assert_eq!(value["scope_id"], scope.execution_id().0);
-    assert!(value.get("session_id").is_none());
-    let history = value["history"].as_object().unwrap();
-    assert_eq!(history.len(), 2);
-    assert_eq!(history["active_revision_id"], root.0);
-    assert_eq!(history["revisions"].as_array().unwrap().len(), 1);
-    assert_eq!(history["revisions"][0]["id"], root.0);
-    let body: crate::RestoreBody = serde_json::from_value(serde_json::json!({
-        "scope_id": scope.execution_id(),
-        "revision_id": root,
-    }))
-    .unwrap();
-    assert!(&body.scope_id == scope.execution_id());
-    assert!(&body.revision_id == root);
-    assert!(
-        crate::query_scope_id(&format!("/api/scope?id={}", scope.execution_id())).as_ref() ==
-            Some(scope.execution_id())
-    );
-    assert!(crate::query_scope_id("/api/scope?id=").is_none());
-    assert!(crate::query_scope_id("/api/scope").is_none());
+fn checkpoint_publication() {
+    let (scope, _, _) = fixture();
+    let mut search = Search::start(scope);
+    let root = search.checkpoint();
+    assert!(search.read().input.is_some());
+    search.run();
+    assert_eq!(search.read().history.revisions.len(), 1);
+    search.send(CHOICE_STATE_FIELD, "refine");
+    assert_eq!(search.read().history.revisions.len(), 1);
+    search.restore(&root);
+    search.run();
+    assert_eq!(search.read().history.revisions.len(), 1);
 }
 
 #[test]
-fn restoring_reads_display_data_from_scope_not_history_metadata() {
-    let (mut scope, _, _) = fixture();
-    let mut view = start(&mut scope);
-    let root = view.history.active_revision_id.clone().unwrap();
-    submit(&mut scope, &mut view, "refine", "none");
-    assert!(view.candidates.is_empty());
-    assert_eq!(view.history.revisions.len(), 2);
-    view.hard_constraints = vec!["Not in Scope".into()];
-    view.request = "Not the real request".into();
-    view.hint = "Not the real hint".into();
-    restore_scope(&mut scope, &mut view, &root).unwrap();
-    assert_eq!(view.request, "Travel gear");
-    assert_eq!(view.candidates[0].id, "product-1");
-    assert!(!view.hard_constraints.contains(&"Not in Scope".into()));
-    assert_ne!(view.hint, "Not the real hint");
-    assert_eq!(view.history.revisions.len(), 2);
-    assert!(view.history.revisions[0].active);
-    assert!(!view.history.revisions[1].active);
+fn retained_nested_wait() {
+    let (mut scope, searches, refinements) = fixture();
+    let (_, original) = scope.run_until_input().unwrap().unwrap();
+    let checkpoint = scope.checkpoint();
+    scope
+        .input_handle()
+        .submit_input(&serde_json::json!({CHOICE_STATE_FIELD: "refine"}).to_string())
+        .unwrap();
+    let (spec, snapshot) = scope.run_until_input().unwrap().unwrap();
+    let (again, same_state) = scope.run_until_input().unwrap().unwrap();
+    assert!(spec.field_schema(REFINEMENT_INPUT_FIELD).is_some());
+    assert!(again.field_schema(REFINEMENT_INPUT_FIELD).is_some());
+    assert!(Arc::ptr_eq(&snapshot, &same_state));
+    assert_eq!(searches.load(Ordering::Relaxed), 1);
+    assert_eq!(refinements.load(Ordering::Relaxed), 1);
+
+    scope.restore(&checkpoint).unwrap();
+    let (spec, restored) = scope.run_until_input().unwrap().unwrap();
+    assert!(spec.field_schema(CHOICE_STATE_FIELD).is_some());
+    assert!(Arc::ptr_eq(&restored, &original));
+    assert_eq!(refinements.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn shared_nested_cursor() {
+    let (mut scope, searches, refinements) = fixture();
+    scope.advance().unwrap();
+    assert_eq!(scope.current_step().0, REFINE_CANDIDATES_STEP);
+    assert_eq!(scope.trace().entries.len(), 2);
+    assert_eq!(searches.load(Ordering::Relaxed), 1);
+    assert_eq!(refinements.load(Ordering::Relaxed), 0);
+
+    let (spec, _) = scope.run_until_input().unwrap().unwrap();
+    assert!(spec.field_schema(CHOICE_STATE_FIELD).is_some());
+    assert_eq!(refinements.load(Ordering::Relaxed), 1);
+    scope
+        .input_handle()
+        .submit_input(&serde_json::json!({CHOICE_STATE_FIELD: "refine"}).to_string())
+        .unwrap();
+    scope.run_until_input().unwrap();
+    scope
+        .input_handle()
+        .submit_input(&serde_json::json!({REFINEMENT_INPUT_FIELD: "none"}).to_string())
+        .unwrap();
+    scope.run_until_input().unwrap();
+    scope
+        .input_handle()
+        .submit_input(&serde_json::json!({CHOICE_STATE_FIELD: FINISH_CHOICE}).to_string())
+        .unwrap();
+    assert!(scope.run_until_input().unwrap().is_none());
+    assert_eq!(scope.current_step().0, FINISHED_EXIT);
+    assert_eq!(scope.trace().entries.len(), 3);
+    scope.advance().unwrap();
+    assert!(scope.run_until_input().unwrap().is_none());
+    assert!(
+        scope
+            .input_handle()
+            .submit_input(&serde_json::json!({CHOICE_STATE_FIELD: FINISH_CHOICE}).to_string())
+            .is_err()
+    );
+    assert_eq!(scope.trace().entries.len(), 3);
+    assert_eq!(searches.load(Ordering::Relaxed), 1);
+    assert_eq!(refinements.load(Ordering::Relaxed), 2);
 }

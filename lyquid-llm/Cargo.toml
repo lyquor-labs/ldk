@@ -10,6 +10,7 @@ description = "LLM request/response helpers for Lyquid instance functions."
 
 [dependencies]
 lyquid = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 

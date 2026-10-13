@@ -7,14 +7,13 @@ edition.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Reusable refinement loop over caller-provided candidates for Lyquid flows."
+description = "Example refinement loop over caller-provided candidates for Lyquid flows."
 
 [dependencies]
+lyquid-configured-step.workspace = true
 lyquid-flow.workspace = true
-multiple-choice-step = { path = "../../steps/multiple-choice-step" }
 refinement-step.workspace = true
 serde_json.workspace = true
-text-input-step.workspace = true
 
 [lib]
 crate-type = ["rlib"]

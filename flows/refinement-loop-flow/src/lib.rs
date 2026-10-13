@@ -1,10 +1,10 @@
 #![doc(html_no_source)]
 
-//! Reusable narrowing and ranking over a fixed, caller-provided candidate list.
+//! Example Flow for narrowing and ranking over a fixed, caller-provided candidate list.
 //!
 //! Applications own candidate retrieval, selection, model configuration, and session interaction.
-//! By default, refinement goes directly to text input. Configuring exits adds a multiple-choice
-//! Step with a continue action and those exits. Restart feedback and handling belong to the parent.
+//! By default, refinement goes directly to text input. Configuring exits adds a combined feedback
+//! form with a Refine button and those exits. Restart feedback and handling belong to the parent.
 
 mod flow;
 

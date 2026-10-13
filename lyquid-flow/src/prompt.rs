@@ -16,7 +16,7 @@ pub(super) fn build_request(
     model: &str, template: &ModelTemplate, flow: &Flow, scope: &Scope,
 ) -> Result<ModelRequest, String> {
     let prompt = render_step_prompt(flow, scope, template)?;
-    let response_contract = response_contract(scope, &template.next_step_criteria, &template.state_update_criteria)?;
+    let response_contract = response_contract(scope, template)?;
     let flow_description = match flow.description() {
         "" => "Execute the current Flow.",
         description => description,
@@ -36,6 +36,9 @@ pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &s
         .and_then(JsonValue::as_str)
         .ok_or_else(|| "model output `type` must be `advance` or `restore`".to_owned())?;
     if proposal_type == "restore" {
+        if !template.allow_restore {
+            return Err("model restore is not permitted by this Step".to_owned());
+        }
         if output.get("next").is_some() || output.get("updates").is_some() {
             return Err("Restore model output must not include `next` or `updates`".to_owned());
         }
@@ -93,9 +96,17 @@ pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &s
 /// The context exposes committed `state`, current `input`, and the complete local `trace` in chronological order.
 /// Trace entries contain their Step ID, State snapshot, and summary, including nested child Traces.
 /// `step` maps every local Step and exit ID to its raw string, without changing the permitted next destinations.
+/// `context` contains the current Step's prepared model data. All sections render once against these values.
 fn render_step_prompt(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> Result<String, String> {
     let mut context = Context::new();
-    context.insert("state", &state_json(scope.state())?);
+    let current = flow
+        .step(scope.current_step())
+        .ok_or_else(|| format!("unknown Step {} for model context", scope.current_step()))?;
+    let prepared = current
+        .model_context(scope)
+        .map_err(|error| format!("prepare model context for Step {}: {error}", scope.current_step()))?;
+    context.insert("context", &prepared);
+    context.insert("state", &scope.state().to_json()?);
     context.insert("input", &input_json(scope.updates())?);
     context.insert("trace", &trace_json(scope.trace())?);
     let steps = flow
@@ -154,11 +165,10 @@ fn render_step_prompt(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> R
 }
 
 /// Builds the model response contract from valid local transitions and State fields.
-fn response_contract(
-    scope: &Scope, next_steps: &[(Option<StepId>, String)], state_updates: &[(String, String)],
-) -> Result<String, String> {
+fn response_contract(scope: &Scope, template: &ModelTemplate) -> Result<String, String> {
     let state = scope.state();
-    let update_fields = state_updates
+    let update_fields = template
+        .state_update_criteria
         .iter()
         .map(|(name, _)| {
             let field = state
@@ -174,23 +184,13 @@ fn response_contract(
             ))
         })
         .collect::<Result<JsonMap<_, _>, String>>()?;
-    let next_options = next_steps
+    let next_options = template
+        .next_step_criteria
         .iter()
         .map(|(next, _)| json!({ "value": next.as_ref().map(|next| &next.0) }))
         .collect::<Vec<_>>();
-    let mut checkpoint_options = scope.checkpoint_ids().collect::<Vec<_>>();
-    checkpoint_options.sort();
-    let checkpoint_options = checkpoint_options
-        .into_iter()
-        .map(|id| {
-            json!({
-                "value": id.0,
-                "description": format!("Restore Scope checkpoint {id}"),
-            })
-        })
-        .collect::<Vec<_>>();
     // TODO: Use provider-native structured output / JSON Schema to enforce the model response format.
-    let response_contract = json!({
+    let mut response_contract = json!({
         "advance": {
             "description": "Return `{\"type\":\"advance\",\"next\":...,\"updates\":{...}}` to advance.",
             "next": {
@@ -210,25 +210,28 @@ fn response_contract(
                 "fields": update_fields,
             },
         },
-        "restore": {
+    });
+    if template.allow_restore {
+        let mut checkpoints = scope.checkpoint_ids().collect::<Vec<_>>();
+        checkpoints.sort();
+        let checkpoint_options = checkpoints
+            .into_iter()
+            .map(|id| {
+                json!({
+                    "value": id.0,
+                    "description": format!("Restore Scope checkpoint {id}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        response_contract["restore"] = json!({
             "description": "Return `{\"type\":\"restore\",\"scope\":...}` to restore one available Scope.",
             "scope": {
                 "description": "Return `scope` as exactly one raw value from `options[].value`.",
                 "options": checkpoint_options,
             },
-        },
-    });
+        });
+    }
     Ok(serde_json::to_string_pretty(&response_contract).expect("JSON response contract cannot fail"))
-}
-
-/// Projects current State values into the map exposed to Tera.
-fn state_json(state: &State) -> Result<JsonValue, String> {
-    let fields = state
-        .fields
-        .iter()
-        .map(|(name, field)| Ok((name.clone(), parse_encoded(&field.value.encode(), name)?)))
-        .collect::<Result<JsonMap<_, _>, String>>()?;
-    Ok(JsonValue::Object(fields))
 }
 
 /// Projects the current Step input into the map exposed to Tera.
@@ -251,7 +254,7 @@ fn trace_json(trace: &Trace) -> Result<JsonValue, String> {
         .map(|entry| {
             Ok(json!({
                 "step": entry.step.0,
-                "state": state_json(entry.state.as_ref())?,
+                "state": entry.state.to_json()?,
                 "summary": trace_summary_json(&entry.summary)?,
             }))
         })
@@ -397,7 +400,7 @@ mod tests {
                 "trace={% for entry in trace %}",
                 "{{ entry.step }}:{{ entry.state.title }}:{{ entry.summary }}",
                 "{% endfor %}\n",
-                "steps={{ step.prepare }},{{ step.review }},{{ step.done }}",
+                "steps={{ step.prepare }},{{ step.review }},{{ step.done }};context={{ context | length }}",
             ),
             vec![(
                 Some("review".into()),
@@ -421,7 +424,7 @@ mod tests {
             concat!(
                 "# Step goal\n",
                 "title=Ready\ntasks=write,review\ndecision=approved\ntrace=prepare:Ready:prepared\n",
-                "steps=prepare,review,done\n\n",
+                "steps=prepare,review,done;context=0\n\n",
                 "# Next step criteria\n",
                 "- `review`: Continue to review when Ready is approved after prepared\n\n",
                 "# State update criteria\n",
@@ -462,6 +465,47 @@ mod tests {
                 .expect("the request should contain default Flow context")
                 .starts_with("# Flow\nExecute the current Flow.\n\n# Response contract\n")
         );
+    }
+
+    #[test]
+    fn rejects_failed_step_model_context_before_rendering() {
+        struct FailedContext;
+
+        impl Step for FailedContext {
+            fn description(&self, _: bool) -> String {
+                "Failed context".into()
+            }
+
+            fn input(&self, _: &Scope) -> Option<InputSpec> {
+                None
+            }
+
+            fn model_template(&self, _: &Scope) -> TemplateSpec {
+                unreachable!("this test exercises the renderer directly")
+            }
+
+            fn model_context(&self, _: &Scope) -> Result<JsonValue, FlowError> {
+                Err(FlowError::Execution("request data is unavailable".into()))
+            }
+
+            fn finalize(&self, _: &Scope, _: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+                unreachable!("a failed model context cannot reach finalization")
+            }
+        }
+
+        let flow = Arc::new(
+            Flow::builder("context")
+                .entry("start")
+                .step("start", FailedContext)
+                .build()
+                .unwrap(),
+        );
+        let scope = Scope::new(flow.clone(), State::default(), AutoCheckpointConfig::Disabled, None);
+        let template = ModelTemplate::new("{{ context.request }}", vec![(None, "Done".into())], vec![]);
+        let error = build_request("test-model", &template, &flow, &scope).unwrap_err();
+        assert!(error.contains("prepare model context for Step start"), "{error}");
+        assert!(error.contains("request data is unavailable"), "{error}");
+        assert!(scope.trace().entries.is_empty());
     }
 
     #[test]
@@ -718,6 +762,31 @@ mod tests {
                 "No State updates are permitted. Return `updates` as `{}`.",
             )
         );
+    }
+
+    #[test]
+    fn restore_permission_controls_the_response_contract_and_parser() {
+        let (flow, mut scope) = prompt_fixture("");
+        let checkpoint = scope.checkpoint();
+        let output = json!({"type": "restore", "scope": checkpoint.0}).to_string();
+        let mut template = ModelTemplate::new(
+            "Review the release",
+            vec![(Some("review".into()), "Continue".into())],
+            vec![],
+        );
+        for allowed in [true, false] {
+            template.allow_restore = allowed;
+            let request = build_request("test-model", &template, &flow, &scope).unwrap();
+            assert_eq!(contract_json(&request).get("restore").is_some(), allowed);
+            let proposal = parse_response(scope.state(), &template, &output);
+            if allowed {
+                assert!(matches!(proposal, Ok(TurnProposal::Restore { scope }) if scope == checkpoint));
+            } else {
+                assert_eq!(proposal.err().unwrap(), "model restore is not permitted by this Step");
+            }
+        }
+        // The model restriction does not disable explicit application recovery.
+        scope.restore(&checkpoint).unwrap();
     }
 
     #[test]

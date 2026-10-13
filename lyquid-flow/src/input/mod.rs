@@ -40,13 +40,13 @@ use std::fmt;
 use lyquid::prelude::{HashMap, new_hashmap};
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::de::{MapAccess, Visitor};
-use serde::{Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value as JsonValue, json};
 
 use crate::Value;
 use crate::ui::{self, Choice, Node, UiDocument};
 
-mod schema;
+pub(crate) mod schema;
 
 /// A submitted JSON object mapping field names to values.
 /// Each value must already have the JSON type required by its field's schema.
@@ -54,12 +54,63 @@ mod schema;
 pub type Input = JsonValue;
 
 /// A retained input page and its complete validation and decoding contract.
+///
+/// JSON deserialization validates the UI and schema, then retains `serde_json::Value` decoders for
+/// the declared fields. These fields are read as JSON values; configured-step bindings can decode
+/// them into typed arguments or State replacements. Rust-built specs retain their original codecs.
 #[derive(Clone, Serialize)]
 pub struct InputSpec {
     ui: UiDocument,
     schema: JsonValue,
     #[serde(skip)]
     fields: HashMap<String, Box<dyn Value>>,
+}
+
+impl<'de> Deserialize<'de> for InputSpec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Specification {
+            ui: UiDocument,
+            schema: JsonValue,
+        }
+
+        let Specification { ui, schema } = Specification::deserialize(deserializer)?;
+        schema::check(&schema).map_err(serde::de::Error::custom)?;
+        if schema["type"] != "object" || schema["additionalProperties"] != false {
+            return Err(serde::de::Error::custom(
+                "input schema requires type object and additionalProperties false",
+            ));
+        }
+        let properties = schema["properties"]
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("input schema requires properties"))?;
+        let mut fields = new_hashmap();
+        for name in properties.keys() {
+            if name.is_empty() {
+                return Err(serde::de::Error::custom("input field name must not be empty"));
+            }
+            fields.insert(name.clone(), Box::new(JsonValue::Null) as Box<dyn Value>);
+        }
+        Ok(Self { ui, schema, fields })
+    }
+}
+
+/// A validation or decoding failure at a JSON Pointer in the submitted field object.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, thiserror::Error)]
+#[error("{path}: {message}")]
+pub struct InputError {
+    pub path: String,
+    pub message: String,
+}
+
+impl InputError {
+    pub(crate) fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            message: message.into(),
+        }
+    }
 }
 
 /// Decoded fields delivered to the runner only after the complete submission succeeds.
@@ -90,7 +141,7 @@ impl InputSpec {
     }
 
     /// Parses a submitted object, rejecting duplicate top-level field names before validation.
-    pub fn decode(&self, encoded: &str) -> Result<HashMap<String, Box<dyn Value>>, String> {
+    pub fn decode(&self, encoded: &str) -> Result<HashMap<String, Box<dyn Value>>, InputError> {
         struct ObjectVisitor;
         impl<'de> Visitor<'de> for ObjectVisitor {
             type Value = Map<String, JsonValue>;
@@ -113,26 +164,34 @@ impl InputSpec {
         let mut deserializer = serde_json::Deserializer::from_str(encoded);
         let values = deserializer
             .deserialize_map(ObjectVisitor)
-            .map_err(|error| error.to_string())?;
-        deserializer.end().map_err(|error| error.to_string())?;
+            .map_err(|error| InputError::new("", error.to_string()))?;
+        deserializer
+            .end()
+            .map_err(|error| InputError::new("", error.to_string()))?;
         self.decode_values(&JsonValue::Object(values))
     }
 
     /// Validates the entire object before invoking any retained decoder. The local map is returned only
     /// after every decoder succeeds with its declared concrete Rust type. Omission is not a default.
-    pub fn decode_values(&self, values: &JsonValue) -> Result<HashMap<String, Box<dyn Value>>, String> {
-        schema::validate(&self.schema, values, "input")?;
+    pub fn decode_values(&self, values: &JsonValue) -> Result<HashMap<String, Box<dyn Value>>, InputError> {
+        schema::validate(&self.schema, values, "")?;
         let mut fields = new_hashmap();
-        for (key, encoded) in values.as_object().ok_or("input must be an object")? {
+        for (key, encoded) in values
+            .as_object()
+            .ok_or_else(|| InputError::new("", "input must be an object"))?
+        {
             let prototype = self
                 .fields
                 .get(key)
-                .ok_or_else(|| format!("unknown input field {key}"))?;
+                .ok_or_else(|| InputError::new(format!("/{}", escape_pointer(key)), "unknown input field"))?;
             let decoded = prototype
                 .decode(&encoded.to_string())
-                .map_err(|error| format!("{key}: {error}"))?;
+                .map_err(|error| InputError::new(format!("/{}", escape_pointer(key)), error))?;
             if prototype.as_ref().type_id() != decoded.as_ref().type_id() {
-                return Err(format!("{key}: decoder returned a different concrete value type"));
+                return Err(InputError::new(
+                    format!("/{}", escape_pointer(key)),
+                    "decoder returned a different concrete value type",
+                ));
             }
             fields.insert(key.clone(), decoded);
         }
@@ -197,7 +256,32 @@ impl InputSpecBuilder {
 
     /// Adds a submit control for the complete field object.
     pub fn submit(&self, label: impl AsRef<str>) -> Node {
-        self.ui.submit(label.as_ref())
+        self.ui.submit(label.as_ref(), Map::new())
+    }
+
+    /// Submits the form with these explicit field values, for example an action selected by a button.
+    /// Declare the fields first. Button values override drafts and are validated with the complete input.
+    pub fn submit_with<K: Into<String>, V: Into<JsonValue>>(
+        &mut self, label: impl AsRef<str>, values: impl IntoIterator<Item = (K, V)>,
+    ) -> Node {
+        let values = values
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect::<Map<_, _>>();
+        for (key, value) in &values {
+            if !self.properties.get(key).is_some_and(|property| {
+                schema::validate(
+                    &schema::with_definitions(property.clone(), self.generator.definitions()),
+                    value,
+                    key,
+                )
+                .is_ok()
+            }) {
+                self.errors
+                    .push(format!("submit button has an invalid value for {key}"));
+            }
+        }
+        self.ui.submit(label.as_ref(), values)
     }
 
     pub fn finish(mut self, root: Node) -> Result<InputSpec, String> {
@@ -338,7 +422,7 @@ impl FieldBuilder<'_> {
 
     fn pattern(mut self, pattern: impl Into<String>) -> Self {
         let pattern = pattern.into();
-        if self.base_schema["type"] != "string" || regex::Regex::new(&pattern).is_err() {
+        if self.base_schema["type"] != "string" || schema::compile_pattern(&pattern).is_err() {
             self.owner
                 .errors
                 .push(format!("{} has an invalid string pattern", self.key));
@@ -634,6 +718,78 @@ mod tests {
     json_value!(Digits);
 
     #[test]
+    fn pattern_semantics() {
+        #[derive(Deserialize)]
+        struct Case {
+            pattern: String,
+            value: String,
+            valid: bool,
+        }
+        // Expected results match JavaScript's new RegExp(pattern, "u").test(value).
+        let cases: Vec<Case> = serde_json::from_str(
+            r#"[
+                {"pattern": "^\\d+$", "value": "123", "valid": true},
+                {"pattern": "^\\d+$", "value": "\u0661\u0662", "valid": false},
+                {"pattern": "^\\d+$", "value": "\uff11\uff12", "valid": false},
+                {"pattern": "^\\D+$", "value": "\u0661\u0662", "valid": true},
+                {"pattern": "^\\w+$", "value": "Az_9", "valid": true},
+                {"pattern": "^\\w+$", "value": "\u00e9", "valid": false},
+                {"pattern": "^\\W+$", "value": "\u00e9", "valid": true},
+                {"pattern": "^\\s$", "value": "\ufeff", "valid": true},
+                {"pattern": "^\\s$", "value": "\u0085", "valid": false},
+                {"pattern": "^\\s$", "value": "\u2003", "valid": true},
+                {"pattern": "^\\S$", "value": "\ufeff", "valid": false},
+                {"pattern": "^\\S$", "value": "\u0085", "valid": true},
+                {"pattern": "^.$", "value": "\n", "valid": false},
+                {"pattern": "^.$", "value": "\r", "valid": false},
+                {"pattern": "^.$", "value": "\u2028", "valid": false},
+                {"pattern": "^.$", "value": "\u2029", "valid": false},
+                {"pattern": "^.$", "value": "\ud83d\ude00", "valid": true},
+                {"pattern": "^.$", "value": "ab", "valid": false},
+                {"pattern": "a$", "value": "a\n", "valid": false},
+                {"pattern": "a$", "value": "a", "valid": true},
+                {"pattern": "42", "value": "x42y", "valid": true},
+                {"pattern": "(?=a)a", "value": "a", "valid": true},
+                {"pattern": "(?<=a)b", "value": "ab", "valid": true},
+                {"pattern": "^(a)\\1$", "value": "aa", "valid": true},
+                {"pattern": "^(a)\\1$", "value": "ab", "valid": false},
+                {"pattern": "^\\p{L}+$", "value": "\u4e2d\u6587", "valid": true},
+                {"pattern": "^\\p{L}+$", "value": "12", "valid": false},
+                {"pattern": "^\\uD83D\\uDE00$", "value": "\ud83d\ude00", "valid": true}
+            ]"#,
+        )
+        .unwrap();
+        for case in cases {
+            let mut builder = InputSpec::builder();
+            let field = builder
+                .field("text", "Text", String::new())
+                .pattern(&case.pattern)
+                .text_input();
+            let spec = builder.finish(field).unwrap();
+            assert_eq!(spec.field_schema("text").unwrap()["pattern"], case.pattern);
+            assert_eq!(
+                spec.decode_values(&json!({"text": case.value})).is_ok(),
+                case.valid,
+                "pattern {:?}, value {:?}",
+                case.pattern,
+                case.value,
+            );
+        }
+    }
+
+    #[derive(Clone, Serialize, Deserialize, JsonSchema)]
+    struct RustPattern(#[schemars(regex(pattern = r"\Atext\z"))] String);
+    json_value!(RustPattern);
+
+    #[test]
+    fn rejects_rust_pattern() {
+        let mut builder = InputSpec::builder();
+        let field = builder.field("text", "Text", RustPattern(String::new())).text_input();
+        let error = builder.finish(field).err().unwrap();
+        assert!(error.contains("invalid ECMAScript pattern"));
+    }
+
+    #[test]
     fn preserves_derived_constraints() {
         let mut builder = InputSpec::builder();
         let digits = builder
@@ -755,6 +911,395 @@ mod tests {
         let ui = builder.ui();
         let layout = ui.card(ui.column(vec![heading, ui.row(vec![recipient, preferences]), submit]));
         builder.finish(layout).unwrap()
+    }
+
+    #[test]
+    fn json_input_rebuilds_schema_checked_json_decoders() {
+        let encoded = serde_json::to_string(&form()).unwrap();
+        let spec: InputSpec = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            serde_json::to_value(&spec).unwrap(),
+            serde_json::from_str::<JsonValue>(&encoded).unwrap()
+        );
+        let values = json!({"recipient": "Alex", "preferences": ["portable"]});
+        let decoded = spec.decode_values(&values).unwrap();
+        for (name, value) in values.as_object().unwrap() {
+            let decoded: &dyn Any = decoded[name].as_ref();
+            assert_eq!(decoded.downcast_ref::<JsonValue>(), Some(value));
+        }
+        for values in [
+            json!({"recipient": "Alex", "preferences": ["portable", "portable"]}),
+            json!({"recipient": "Alex", "preferences": [12]}),
+            json!({"recipient": "", "preferences": ["quiet"]}),
+            json!({"preferences": ["quiet"]}),
+            json!({"recipient": "Alex", "preferences": ["quiet"], "unknown": true}),
+        ] {
+            assert!(spec.decode_values(&values).is_err(), "accepted {values}");
+        }
+        assert!(
+            spec.decode(r#"{"recipient":"A","recipient":"B","preferences":["quiet"]}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn json_input_rejects_invalid_contracts() {
+        let original = serde_json::to_value(form()).unwrap();
+        for (pointer, value) in [
+            ("/ui/root", json!("missing")),
+            ("/ui/components/0/component", json!("UnknownWidget")),
+            ("/schema/type", json!("array")),
+            ("/schema/additionalProperties", json!(true)),
+            ("/schema/properties", json!([])),
+            ("/schema/properties", json!({"": {"type": "string"}})),
+            (
+                "/schema/properties/recipient",
+                json!({"type": "string", "pattern": "["}),
+            ),
+            (
+                "/schema/properties/recipient",
+                json!({"$ref": "https://example.com/schema"}),
+            ),
+            ("/schema/properties/recipient", json!({"unsupported": true})),
+        ] {
+            let mut invalid = original.clone();
+            *invalid.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                serde_json::from_value::<InputSpec>(invalid).is_err(),
+                "accepted {pointer}"
+            );
+        }
+        let mut invalid = original.clone();
+        invalid["fields"] = json!({"recipient": "pretend decoder"});
+        assert!(serde_json::from_value::<InputSpec>(invalid).is_err());
+        for event in [json!("submit"), json!({"name": "submit", "context": "invalid"})] {
+            let mut invalid = original.clone();
+            let button = invalid["ui"]["components"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|component| component["component"] == "Button")
+                .unwrap();
+            button["action"]["event"] = event;
+            assert!(serde_json::from_value::<InputSpec>(invalid).is_err());
+        }
+        let mut invalid = original;
+        invalid["ui"]["components"][1]["id"] = invalid["ui"]["components"][0]["id"].clone();
+        assert!(serde_json::from_value::<InputSpec>(invalid).is_err());
+    }
+
+    #[test]
+    fn json_input_rejects_malformed_layout_children() {
+        let original = serde_json::to_value(form()).unwrap();
+        for (kind, key) in [
+            ("Column", "children"),
+            ("Row", "children"),
+            ("Card", "child"),
+            ("Button", "child"),
+        ] {
+            for value in [
+                None,
+                Some(JsonValue::Null),
+                Some(json!(false)),
+                Some(json!(1)),
+                Some(json!({})),
+                Some(json!([null])),
+                Some(json!(["missing"])),
+                Some(json!("missing")),
+            ] {
+                let mut encoded = original.clone();
+                let component = encoded["ui"]["components"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|component| component["component"] == kind)
+                    .unwrap();
+                component.as_object_mut().unwrap().remove(key);
+                if let Some(value) = &value {
+                    component[key] = value.clone();
+                }
+                assert!(
+                    serde_json::from_value::<InputSpec>(encoded).is_err(),
+                    "accepted {kind}.{key} = {value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn json_input_preserves_empty_layouts() {
+        for kind in ["Column", "Row"] {
+            let mut encoded = serde_json::to_value(form()).unwrap();
+            encoded["ui"]["components"] = json!([{"id": "root", "component": kind, "children": []}]);
+            let spec: InputSpec = serde_json::from_value(encoded.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&spec).unwrap(), encoded);
+            let surface = spec.ui().surface("input", Some("request")).unwrap();
+            assert_eq!(
+                surface[1]["updateComponents"]["components"],
+                encoded["ui"]["components"]
+            );
+        }
+    }
+
+    #[test]
+    fn json_input_rejects_malformed_button_actions() {
+        for action in [
+            JsonValue::Null,
+            json!("submit"),
+            json!([]),
+            json!({}),
+            json!({"event": "submit"}),
+            json!({"event": {"context": {}}}),
+            json!({"event": {"name": 1, "context": {}}}),
+            json!({"event": {"name": "unknown", "context": {}}}),
+            json!({"event": {"name": "submit"}}),
+            json!({"event": {"name": "submit", "context": []}}),
+            json!({"functionCall": "openUrl"}),
+            json!({"functionCall": {"args": {"url": "https://example.com"}}}),
+            json!({"functionCall": {"call": "unknown", "args": {"url": "https://example.com"}}}),
+            json!({"functionCall": {"call": "openUrl"}}),
+            json!({"functionCall": {"call": "openUrl", "args": "https://example.com"}}),
+            json!({"functionCall": {"call": "openUrl", "args": {"url": false}}}),
+            json!({"functionCall": {"call": "openUrl", "args": {"url": {"path": 1}}}}),
+            json!({
+                "event": {"name": "submit", "context": {}},
+                "functionCall": {"call": "openUrl", "args": {"url": "https://example.com"}}
+            }),
+        ] {
+            let mut encoded = serde_json::to_value(form()).unwrap();
+            let button = encoded["ui"]["components"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|component| component["component"] == "Button")
+                .unwrap();
+            button["action"] = action.clone();
+            assert!(
+                serde_json::from_value::<InputSpec>(encoded).is_err(),
+                "accepted {action}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_input_preserves_supported_button_actions() {
+        for action in [
+            json!({"event": {"name": "submit", "context": {}}}),
+            json!({"functionCall": {"call": "openUrl", "args": {"url": "https://example.com"}}}),
+            json!({"functionCall": {"call": "openUrl", "args": {"url": {"path": "/url"}}, "returnType": "void"}}),
+        ] {
+            let mut encoded = serde_json::to_value(form()).unwrap();
+            encoded["ui"]["data"]["url"] = json!("https://example.com");
+            let button = encoded["ui"]["components"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|component| component["component"] == "Button")
+                .unwrap();
+            button["action"] = action.clone();
+            let spec: InputSpec = serde_json::from_value(encoded.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&spec).unwrap(), encoded);
+            let surface = spec.ui().surface("input", Some("request")).unwrap();
+            let button = surface[1]["updateComponents"]["components"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|component| component["component"] == "Button")
+                .unwrap();
+            if action.get("event").is_some() {
+                assert_eq!(button["action"]["event"]["name"], "submit");
+                assert_eq!(button["action"]["event"]["context"]["request_id"], "request");
+            } else {
+                assert_eq!(button["action"], action);
+            }
+        }
+    }
+
+    #[test]
+    fn json_input_rejects_custom_ui_roots() {
+        for components in [
+            json!([{"id": "page", "component": "Column", "children": []}]),
+            json!([
+                {"id": "page", "component": "Column", "children": []},
+                {"id": "root", "component": "Column", "children": []}
+            ]),
+        ] {
+            let mut encoded = serde_json::to_value(form()).unwrap();
+            encoded["ui"] = json!({"root": "page", "components": components, "data": {}});
+            let error = serde_json::from_value::<InputSpec>(encoded).err().unwrap();
+            assert!(error.to_string().contains("the UI root ID must be \"root\""), "{error}");
+        }
+    }
+
+    #[test]
+    fn json_input_rejects_cyclic_ui_components() {
+        for components in [
+            json!([{"id": "root", "component": "Column", "children": ["root"]}]),
+            json!([{"id": "root", "component": "Card", "child": "root"}]),
+            json!([
+                {"id": "root", "component": "Column", "children": ["a"]},
+                {"id": "a", "component": "Row", "children": ["root"]}
+            ]),
+            json!([
+                {"id": "a", "component": "Card", "child": "b"},
+                {"id": "root", "component": "Column", "children": ["a"]},
+                {"id": "b", "component": "Row", "children": ["a"]}
+            ]),
+            json!([
+                {"id": "root", "component": "Column", "children": []},
+                {"id": "a", "component": "Card", "child": "b"},
+                {"id": "b", "component": "Card", "child": "a"}
+            ]),
+        ] {
+            let mut encoded = serde_json::to_value(form()).unwrap();
+            encoded["ui"]["root"] = json!("root");
+            encoded["ui"]["components"] = components;
+            let error = serde_json::from_value::<InputSpec>(encoded).err().unwrap();
+            assert!(error.to_string().contains("cyclic UI component references"), "{error}");
+        }
+    }
+
+    #[test]
+    fn json_input_preserves_shared_ui_children() {
+        let mut encoded = serde_json::to_value(form()).unwrap();
+        encoded["ui"] = json!({
+            "root": "root",
+            "components": [
+                {"id": "text", "component": "Text", "text": "Shared"},
+                {"id": "root", "component": "Column", "children": ["left", "right"]},
+                {"id": "left", "component": "Card", "child": "text"},
+                {"id": "right", "component": "Row", "children": ["text", "text"]}
+            ],
+            "data": {}
+        });
+        let spec: InputSpec = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&spec).unwrap(), encoded);
+        let surface = spec.ui().surface("input", Some("request")).unwrap();
+        assert_eq!(
+            surface[1]["updateComponents"]["components"],
+            encoded["ui"]["components"]
+        );
+    }
+
+    #[test]
+    fn json_input_preserves_nested_values_and_number_types() {
+        let mut encoded = serde_json::to_value(form()).unwrap();
+        encoded["schema"] = json!({
+            "type": "object", "additionalProperties": false,
+            "properties": {
+                "count": {"type": "integer", "minimum": 0, "maximum": u64::MAX},
+                "payload": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {"enabled": {"type": "boolean"}, "note": {"type": ["string", "null"]}},
+                    "required": ["enabled", "note"]
+                }
+            },
+            "required": ["count", "payload"]
+        });
+        let spec: InputSpec = serde_json::from_value(encoded).unwrap();
+        let values = json!({"count": u64::MAX, "payload": {"enabled": true, "note": null}});
+        let decoded = spec.decode_values(&values).unwrap();
+        assert_eq!(decoded["count"].encode(), u64::MAX.to_string());
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(&decoded["payload"].encode()).unwrap(),
+            values["payload"]
+        );
+        for invalid in [json!("42"), json!(-1), json!(1.5)] {
+            let mut values = values.clone();
+            values["count"] = invalid;
+            assert!(spec.decode_values(&values).is_err());
+        }
+    }
+
+    #[test]
+    fn json_input_rejects_non_descending_reference_cycles() {
+        let base = json!({"type": "object", "additionalProperties": false, "properties": {}});
+        let mut schemas = vec![];
+        let mut direct = base.clone();
+        direct["$ref"] = json!("#");
+        schemas.push(direct);
+        let mut mutual = base.clone();
+        mutual["$ref"] = json!("#/$defs/a");
+        mutual["$defs"] = json!({
+            "a": {"$ref": "#/$defs/b"},
+            "b": {"$ref": "#%2F$defs%2Fa"}
+        });
+        schemas.push(mutual);
+        for keyword in ["allOf", "anyOf", "oneOf", "not", "if", "then", "else"] {
+            let mut schema = base.clone();
+            schema[keyword] = if matches!(keyword, "allOf" | "anyOf" | "oneOf") {
+                json!([{"$ref": "#"}])
+            } else {
+                json!({"$ref": "#"})
+            };
+            schemas.push(schema);
+        }
+        // A cycle in a field's schema must also be rejected, even though reaching the field
+        // itself descends into a child input value.
+        let mut nested = base;
+        nested["properties"]["loop"] = json!({"$ref": "#/properties/loop"});
+        schemas.push(nested);
+        for schema in schemas {
+            let mut encoded = serde_json::to_value(form()).unwrap();
+            encoded["schema"] = schema;
+            let error = serde_json::from_value::<InputSpec>(encoded).err().unwrap();
+            assert!(error.to_string().contains("cyclic schema reference"), "{error}");
+        }
+    }
+
+    #[test]
+    fn json_input_preserves_shared_references_and_recursive_data() {
+        let mut encoded = serde_json::to_value(form()).unwrap();
+        encoded["schema"] = json!({
+            "type": "object", "additionalProperties": false,
+            "properties": {
+                "left": {"$ref": "#/$defs/node"},
+                "right": {"allOf": [{"$ref": "#/$defs/node"}, {"$ref": "#%2F$defs%2Fnode"}]}
+            },
+            "required": ["left", "right"],
+            "$defs": {
+                "node": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {
+                        "value": {"type": "integer", "minimum": 0},
+                        "children": {"type": "array", "items": {"$ref": "#/$defs/node"}},
+                        "next": {"$ref": "#/$defs/node"}
+                    },
+                    "required": ["value", "children"]
+                }
+            }
+        });
+        let spec: InputSpec = serde_json::from_value(encoded).unwrap();
+        let leaf = json!({"value": 2, "children": []});
+        let mut input = json!({
+            "left": {"value": 1, "children": [leaf], "next": leaf},
+            "right": leaf
+        });
+        let decoded = spec.decode_values(&input).unwrap();
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(&decoded["left"].encode()).unwrap(),
+            input["left"]
+        );
+        input["left"]["children"][0]["value"] = json!(-1);
+        assert_eq!(spec.decode_values(&input).err().unwrap().path, "/left/children/0/value");
+
+        // Each next property and $ref adds an evaluation, exceeding the formatter's limit
+        // while remaining within the JSON decoder's nesting limit.
+        let mut deep = leaf;
+        for _ in 0..80 {
+            deep = json!({"value": 1, "children": [], "next": deep});
+        }
+        input["left"] = deep;
+        let decoded = spec.decode_values(&input).unwrap();
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(&decoded["left"].encode()).unwrap(),
+            input["left"]
+        );
+        let leaf_path = format!("/left{}/value", "/next".repeat(80));
+        *input.pointer_mut(&leaf_path).unwrap() = json!(-1);
+        let error = spec.decode_values(&input).err().unwrap();
+        assert_eq!(error.path, leaf_path);
+        assert_eq!(error.message, "value violates minimum");
     }
 
     #[test]
@@ -1256,5 +1801,35 @@ mod tests {
             assert_eq!(serde_json::from_str::<JsonValue>(encoded).unwrap(), choice.value);
         }
         assert_ne!(component["options"][0]["value"], component["options"][1]["value"]);
+    }
+    #[test]
+    fn button_values() {
+        let mut builder = InputSpec::builder();
+        builder
+            .field("action", "Action", String::new())
+            .choices([("refine", "Refine")]);
+        let button = builder.submit_with("Refine", [("action", "refine")]);
+        let spec = builder.finish(button).unwrap();
+        let messages = spec.ui().surface("input", Some("round")).unwrap();
+        let button = messages[1]["updateComponents"]["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["component"] == "Button")
+            .unwrap();
+        assert_eq!(button["action"]["event"]["context"]["request_id"], "round");
+        let path = button["action"]["event"]["context"]["values"]["path"].as_str().unwrap();
+        assert_eq!(
+            messages[2]["updateDataModel"]["value"].pointer(path).unwrap(),
+            &json!({"action": "refine"})
+        );
+        for (field, value) in [("action", "unknown"), ("missing", "refine")] {
+            let mut builder = InputSpec::builder();
+            builder
+                .field("action", "Action", String::new())
+                .choices([("refine", "Refine")]);
+            let button = builder.submit_with("Refine", [(field, value)]);
+            assert!(builder.finish(button).is_err());
+        }
     }
 }

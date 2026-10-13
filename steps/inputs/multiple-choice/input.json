@@ -1,0 +1,75 @@
+{
+  "ui": {
+    "root": "root",
+    "components": [
+      {
+        "id": "root",
+        "component": "Column",
+        "children": [
+          "choice",
+          "submit"
+        ]
+      },
+      {
+        "id": "choice",
+        "component": "ChoicePicker",
+        "label": "What next?",
+        "variant": "mutuallyExclusive",
+        "value": {
+          "path": "/fields/choice"
+        },
+        "options": [
+          {
+            "label": "Edit the details",
+            "value": "\"edit\""
+          },
+          {
+            "label": "Finish",
+            "value": "\"finish\""
+          }
+        ]
+      },
+      {
+        "id": "submit-label",
+        "component": "Text",
+        "text": {
+          "path": "/content/submit-label"
+        }
+      },
+      {
+        "id": "submit",
+        "component": "Button",
+        "child": "submit-label",
+        "action": {
+          "event": {
+            "name": "submit",
+            "context": {}
+          }
+        }
+      }
+    ],
+    "data": {
+      "content": {
+        "submit-label": "Choose"
+      }
+    }
+  },
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "choice": {
+        "type": "string",
+        "title": "What next?",
+        "enum": [
+          "edit",
+          "finish"
+        ]
+      }
+    },
+    "required": [
+      "choice"
+    ],
+    "additionalProperties": false
+  }
+}

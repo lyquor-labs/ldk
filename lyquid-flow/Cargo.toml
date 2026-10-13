@@ -12,10 +12,10 @@ description = "Reusable workflow graphs and execution for Lyquid tasks."
 lyquid = { workspace = true, features = ["ldk"] }
 lyquid-llm = { workspace = true, features = ["ldk"] }
 percent-encoding.workspace = true
-regex.workspace = true
+regress.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["std"] }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 tera.workspace = true
 thiserror.workspace = true
 

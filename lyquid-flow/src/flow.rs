@@ -12,6 +12,9 @@ use crate::state::StateUpdates;
 use crate::step::{Step, StepId, TemplateSpec};
 use crate::trace::TraceSummary;
 
+type ViewFn = fn(&Scope) -> Result<crate::ViewSpec, FlowError>;
+type HistoryFn = fn(&Scope, Option<&serde_json::Value>) -> Result<Option<serde_json::Value>, FlowError>;
+
 /// Stable developer-supplied identity of one Flow definition.
 #[derive(Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FlowId(pub String);
@@ -81,6 +84,11 @@ pub enum TraceMode {
 
 /// Collects the Steps, sole entry, and exits for one reusable Flow.
 pub struct FlowBuilder {
+    /// Optional result projection from committed State; None uses the child/Step result view.
+    view: Option<ViewFn>,
+    /// Optional selector for service history checkpoints and metadata at successful input boundaries.
+    /// None omits public history checkpoints; execution Trace is unaffected.
+    history: Option<HistoryFn>,
     /// Stable identity of this reusable Flow definition.
     id: FlowId,
     /// Flow-level purpose supplied to the model and parent Flow descriptions.
@@ -94,6 +102,21 @@ pub struct FlowBuilder {
 }
 
 impl FlowBuilder {
+    /// Selects checkpoint timing and display metadata for a service-hosted root Flow.
+    /// Called at successful input boundaries with committed active-child State and the selected
+    /// revision's metadata. Return None to omit this boundary from public history.
+    pub fn history(mut self, history: HistoryFn) -> Self {
+        self.history = Some(history);
+        self
+    }
+
+    /// Selects application results from the active Scope's committed State, including child Flows.
+    /// This overrides leaf Step views for this composition; it never receives pending input.
+    pub fn view(mut self, view: fn(&Scope) -> Result<crate::ViewSpec, FlowError>) -> Self {
+        self.view = Some(view);
+        self
+    }
+
     /// Describes this Flow for model context and when viewed as a composite Step by its parent.
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = description.into();
@@ -154,6 +177,8 @@ impl FlowBuilder {
         validate_child_exit_transitions(&steps)?;
 
         let flow = Flow {
+            view: self.view,
+            history: self.history,
             id: self.id,
             description: self.description,
             entry: entry.clone(),
@@ -176,6 +201,11 @@ impl FlowBuilder {
 /// applies the child's accumulated State updates and follows the configured exit transition.
 #[derive(Clone)]
 pub struct Flow {
+    /// Optional result projection from committed State; None uses the child/Step result view.
+    pub(super) view: Option<ViewFn>,
+    /// Optional selector for service history checkpoints and metadata at successful input boundaries.
+    /// None omits public history checkpoints; execution Trace is unaffected.
+    pub(super) history: Option<HistoryFn>,
     /// Stable identity used to qualify checkpoints created by bound Scopes.
     id: FlowId,
     /// Flow-level purpose supplied to model context and parent Flow descriptions.
@@ -196,6 +226,8 @@ impl Flow {
     /// Starts declaring a reusable Flow with its stable identity.
     pub fn builder(id: impl Into<FlowId>) -> FlowBuilder {
         FlowBuilder {
+            view: None,
+            history: None,
             id: id.into(),
             description: String::new(),
             entries: Vec::new(),

@@ -48,6 +48,26 @@ impl State {
         value.downcast_ref()
     }
 
+    /// Reads a committed value and its codec without requiring its concrete type.
+    /// Decoding a replacement does not modify State; replacements still require a validated turn.
+    pub fn get_value(&self, name: &str) -> Option<&dyn Value> {
+        self.fields.get(name).map(|field| field.value.as_ref())
+    }
+
+    /// Projects committed field values into a JSON object, without descriptions or staged updates.
+    /// This read-only view is suitable for templates and does not modify State.
+    pub fn to_json(&self) -> Result<serde_json::Value, String> {
+        self.fields
+            .iter()
+            .map(|(name, field)| {
+                serde_json::from_str(&field.value.encode())
+                    .map(|value| (name.clone(), value))
+                    .map_err(|error| format!("invalid JSON for State field {name}: {error}"))
+            })
+            .collect::<Result<serde_json::Map<_, _>, _>>()
+            .map(serde_json::Value::Object)
+    }
+
     /// Verifies staged whole-field replacements.
     pub(super) fn validate_updates(&self, updates: &StateUpdates) -> Result<(), String> {
         for (name, value) in &updates.staging {
@@ -153,6 +173,7 @@ impl_value!(bool);
 impl_value!(i64);
 impl_value!(u64);
 impl_value!(String);
+impl_value!(serde_json::Value);
 
 /// A list whose elements all have the same State value type.
 #[derive(Clone, Deserialize, schemars::JsonSchema)]

@@ -5,6 +5,7 @@ use lyquid_llm::ModelConfig;
 use lyquid_test::test;
 use refinement_loop_flow::{DECISION_REQUEST_STATE_FIELD, DECISION_STATE_FIELD, REFINEMENT_INPUT_FIELD};
 
+use super::tests::enter_request;
 use crate::flow::*;
 use crate::*;
 
@@ -83,7 +84,7 @@ impl lyquid_flow::Step for Feedback {
 }
 
 #[test]
-fn restart_collects_feedback_in_the_parent_and_reseeds_the_next_child() {
+fn restart_feedback() {
     let child = lyquid_flow::Flow::builder("scripted-model")
         .entry("round")
         .step("round", ChildRound)
@@ -97,10 +98,11 @@ fn restart_collects_feedback_in_the_parent_and_reseeds_the_next_child() {
             child,
             Feedback,
         )),
-        initial_state(ShoppingRequest::new("Find a travel mug")).unwrap(),
+        initial_state().unwrap(),
         AutoCheckpointConfig::Disabled,
         None,
     );
+    enter_request(&mut scope, "Find a travel mug");
     scope.advance().unwrap(); // Aggregate canonical catalog.
     let catalog_before = catalog(&scope).clone();
     scope.advance().unwrap(); // Child exits to parent feedback, not directly to aggregation.
@@ -173,26 +175,50 @@ impl lyquid_llm::Backend for RejectModel {
 }
 
 #[test]
-fn production_mount_preserves_aggregation_and_goal_when_model_requests_fail() {
+fn usage_after_retry_and_restore() {
     let model = ModelConfig::new("scripted", RejectModel)
         .max_output_tokens(8192)
         .request_body_field(
             "text",
             serde_json::json!({"format": {"schema": refinement_config().model_turn_schema()}}),
         );
+    let tracker = lyquid_llm::UsageTracker::<crate::SessionUsage>::default();
+    let observe_refinement = crate::usage_observer(tracker.clone(), crate::UsagePhase::Refinement);
     let mut scope = lyquid_flow::Scope::new(
         Arc::new(flow(search_fixture)),
-        initial_state(ShoppingRequest::new("Find a travel mug")).unwrap(),
+        initial_state().unwrap(),
         AutoCheckpointConfig::Disabled,
         Some(model),
-    );
+    )
+    .on_usage(move |_, usage| observe_refinement(usage));
+    enter_request(&mut scope, "Find a travel mug");
     scope.advance().unwrap();
+    // The catalog fixture makes no model call and should not add usage.
+    let search_usage = serde_json::json!({
+        "call_attempts": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+    });
+    let after_search = tracker.snapshot().to_json();
+    assert_eq!(after_search["search"], search_usage);
+    assert_eq!(after_search["total"], search_usage);
+    assert_eq!(
+        after_search["refinement"],
+        serde_json::json!({
+            "call_attempts": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        })
+    );
+    let checkpoint = scope.checkpoint();
     let request = scope
         .state()
         .get::<refinement_loop_flow::DecisionRequest>(DECISION_REQUEST_STATE_FIELD)
         .unwrap()
         .clone();
-    for _ in 0..2 {
+    for attempt in 1..=3 {
         assert!(
             scope
                 .advance()
@@ -201,7 +227,7 @@ fn production_mount_preserves_aggregation_and_goal_when_model_requests_fail() {
                 .contains("rejected for retry test")
         );
         assert_eq!(scope.current_step().0, REFINE_CANDIDATES_STEP);
-        assert_eq!(scope.trace().entries.len(), 1);
+        assert_eq!(scope.trace().entries.len(), 2);
         assert_eq!(
             scope
                 .state()
@@ -209,11 +235,41 @@ fn production_mount_preserves_aggregation_and_goal_when_model_requests_fail() {
             Some(&request)
         );
         assert!(scope.input_handle().input_spec().is_none());
+
+        // RejectModel reaches the production observer without making an HTTP request.
+        let observed = tracker.snapshot().to_json();
+        assert_eq!(observed["search"], search_usage);
+        assert_eq!(
+            observed["refinement"],
+            serde_json::json!({
+                "call_attempts": attempt,
+                "input_tokens": null,
+                "output_tokens": null,
+                "total_tokens": null,
+            })
+        );
+        assert_eq!(
+            observed["total"],
+            serde_json::json!({
+                "call_attempts": attempt,
+                "input_tokens": null,
+                "output_tokens": null,
+                "total_tokens": null,
+            })
+        );
+        for _ in 0..2 {
+            scope.view().unwrap();
+            assert_eq!(tracker.snapshot().to_json(), observed);
+        }
+        if attempt == 2 {
+            scope.restore(&checkpoint).unwrap();
+            assert_eq!(tracker.snapshot().to_json(), observed);
+        }
     }
 }
 
 #[test]
-fn initial_tv_search_supplies_twenty_related_candidates_to_the_ldk_loop() {
+fn initial_search_candidates() {
     let mut scope = Scope::new(
         Arc::new(flow(|context, round| {
             let catalog = search_fixture(context, round)?;
@@ -225,10 +281,11 @@ fn initial_tv_search_supplies_twenty_related_candidates_to_the_ldk_loop() {
             );
             Ok(catalog)
         })),
-        initial_state(ShoppingRequest::new("I want to get a TV for home gaming")).unwrap(),
+        initial_state().unwrap(),
         AutoCheckpointConfig::Disabled,
         None,
     );
+    enter_request(&mut scope, "I want to get a TV for home gaming");
     scope.advance().unwrap();
     let request = scope
         .state()
@@ -246,13 +303,14 @@ fn initial_tv_search_supplies_twenty_related_candidates_to_the_ldk_loop() {
 }
 
 #[test]
-fn failed_search_does_not_commit_an_empty_catalog_or_advance_to_refinement() {
+fn failed_search_preserves_state() {
     let mut scope = Scope::new(
         Arc::new(flow(|_, _| Err("search provider unavailable".into()))),
-        initial_state(ShoppingRequest::new("I want a TV")).unwrap(),
+        initial_state().unwrap(),
         AutoCheckpointConfig::Disabled,
         None,
     );
+    enter_request(&mut scope, "I want a TV");
     for _ in 0..2 {
         assert!(
             scope
@@ -262,7 +320,7 @@ fn failed_search_does_not_commit_an_empty_catalog_or_advance_to_refinement() {
                 .contains("search provider unavailable")
         );
         assert_eq!(scope.current_step().0, AGGREGATE_CANDIDATES_STEP);
-        assert!(scope.trace().entries.is_empty());
+        assert_eq!(scope.trace().entries.len(), 1);
         assert_eq!(
             scope
                 .state()
@@ -275,7 +333,49 @@ fn failed_search_does_not_commit_an_empty_catalog_or_advance_to_refinement() {
 }
 
 #[test]
-fn stop_request_prevents_a_mounted_loop_from_waiting_for_abandoned_input() {
+fn empty_search_collects_new_search_feedback_before_entering_refinement() {
+    let mut scope = Scope::new(
+        Arc::new(flow(|context, round| {
+            if round == 1 {
+                Ok(ProductCatalog::default())
+            } else {
+                assert_eq!(context.accumulated_feedback.as_deref(), Some("Include more brands"));
+                search_fixture(context, round)
+            }
+        })),
+        initial_state().unwrap(),
+        AutoCheckpointConfig::Disabled,
+        None,
+    );
+    enter_request(&mut scope, "Find a TV");
+    scope.advance().unwrap();
+    assert_eq!(scope.current_step().0, RESTART_FEEDBACK_STEP);
+    assert!(catalog(&scope).products.is_empty());
+    let (input, _) = scope.run_until_input().unwrap().unwrap();
+    assert!(input.field_schema(RESTART_FEEDBACK_FIELD).is_some());
+    assert!(input.field_schema(REFINEMENT_INPUT_FIELD).is_none());
+    scope
+        .input_handle()
+        .submit_input(&serde_json::json!({RESTART_FEEDBACK_FIELD: "Include more brands"}).to_string())
+        .unwrap();
+    scope.advance().unwrap();
+    assert_eq!(scope.current_step().0, AGGREGATE_CANDIDATES_STEP);
+    scope.advance().unwrap();
+    assert_eq!(scope.current_step().0, REFINE_CANDIDATES_STEP);
+    assert_eq!(catalog(&scope).products.len(), 20);
+    assert_eq!(
+        scope
+            .state()
+            .get::<DecisionRequest>(DECISION_REQUEST_STATE_FIELD)
+            .unwrap()
+            .candidates
+            .len(),
+        20
+    );
+}
+
+#[test]
+fn stop_cancels_nested_input() {
     let config = refinement_config();
     let parent = lyquid_flow::Flow::builder("stopped-shopping")
         .entry("loop")
@@ -314,4 +414,28 @@ fn stop_request_prevents_a_mounted_loop_from_waiting_for_abandoned_input() {
         Err(lyquid_flow::FlowError::NoPendingInput)
     ));
     assert!(scope.trace().entries.is_empty());
+}
+
+#[test]
+fn aggregation_message() {
+    let mut scope = Scope::new(
+        Arc::new(flow(search_fixture)),
+        initial_state().unwrap(),
+        AutoCheckpointConfig::Disabled,
+        None,
+    );
+    enter_request(&mut scope, "Find a travel mug");
+    scope.advance().unwrap();
+    let request = scope
+        .state()
+        .get::<DecisionRequest>(refinement_loop_flow::DECISION_REQUEST_STATE_FIELD)
+        .unwrap();
+    assert!(request.user_request.contains("Required shopping relevance:"));
+    assert_eq!(
+        scope
+            .state()
+            .get::<String>(refinement_loop_flow::REFINEMENT_INPUT_FIELD),
+        Some(&request.user_request)
+    );
+    assert_eq!(scope.current_step().0, REFINE_CANDIDATES_STEP);
 }

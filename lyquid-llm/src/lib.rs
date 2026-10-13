@@ -9,8 +9,15 @@
 //! [`ModelRequest`] carries each call's input and request options.
 //! [`ModelConfig`] combines a model and backend with shared request defaults. Configure a built-in
 //! model with [`ModelConfig::openai`] or [`ModelConfig::gemini`], then call [`ModelBuilder::build`].
+//! Accumulate reported [`Usage`] across attempted calls with [`UsageTotals`].
+//! With `ldk`, `UsageTracker` shares application-defined accounting state across call sites.
+//! Attach [`with_usage_observer`] to a backend to observe its model-call attempts automatically.
+
+#[cfg(feature = "ldk")] use std::sync::Arc;
 
 use lyquid::http;
+#[cfg(feature = "ldk")] use lyquid::prelude::Mutex;
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::error::capture_status_body;
@@ -91,11 +98,152 @@ pub struct ModelRequest {
 }
 
 /// Token usage reported by a model provider.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Usage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+}
+
+impl Usage {
+    /// Accumulates another call's reported tokens. Missing fields or overflowing sums remain unknown.
+    /// Provider totals are accumulated independently of input and output counts.
+    pub fn accumulate(&mut self, usage: Option<&Self>) {
+        self.input_tokens = add_token_counts(self.input_tokens, usage.and_then(|usage| usage.input_tokens));
+        self.output_tokens = add_token_counts(self.output_tokens, usage.and_then(|usage| usage.output_tokens));
+        self.total_tokens = add_token_counts(self.total_tokens, usage.and_then(|usage| usage.total_tokens));
+    }
+}
+
+/// Cumulative provider-reported token usage across attempted model calls.
+///
+/// Starts with zero attempts and known zero token counts. A missing token field or an overflowing
+/// sum makes that cumulative field `None`, including after subsequent calls. Total tokens are
+/// accumulated directly from the provider; they are never inferred from input and output tokens.
+/// The caller owns these counters and explicitly records each attempt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UsageTotals {
+    /// Attempted calls, including failures without usage; not a count of confirmed billable requests.
+    pub call_attempts: u64,
+    /// Accumulated token counts, serialized alongside `call_attempts`.
+    #[serde(flatten)]
+    pub usage: Usage,
+}
+
+impl Default for UsageTotals {
+    fn default() -> Self {
+        Self {
+            call_attempts: 0,
+            usage: Usage {
+                input_tokens: Some(0),
+                output_tokens: Some(0),
+                total_tokens: Some(0),
+            },
+        }
+    }
+}
+
+impl UsageTotals {
+    /// Records one attempted call. Pass `None` when the call fails without usage or usage is omitted.
+    pub fn record(&mut self, usage: Option<&Usage>) {
+        self.call_attempts += 1;
+        self.usage.accumulate(usage);
+    }
+
+    /// Combines two disjoint groups of attempts without changing either source.
+    /// A token field remains unknown if it is unknown in either group.
+    pub fn combined(&self, other: &Self) -> Self {
+        let mut combined = self.clone();
+        combined.call_attempts += other.call_attempts;
+        combined.usage.accumulate(Some(&other.usage));
+        combined
+    }
+}
+
+/// Shared accounting state for model calls, available with the `ldk` feature.
+///
+/// The application defines its state, categories, and recording operation. Clones share one
+/// ledger; snapshots clone its value. Keep the tracker outside restorable Flow State so restoring
+/// application history does not refund usage, and capture clones in model-call observers instead.
+#[cfg(feature = "ldk")]
+pub struct UsageTracker<S>(Arc<Mutex<S>>);
+
+#[cfg(feature = "ldk")]
+impl<S> Clone for UsageTracker<S> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+#[cfg(feature = "ldk")]
+impl<S: Default> Default for UsageTracker<S> {
+    fn default() -> Self {
+        Self::new(S::default())
+    }
+}
+
+#[cfg(feature = "ldk")]
+impl<S> UsageTracker<S> {
+    /// Creates a new, independent ledger with application-defined initial state.
+    pub fn new(state: S) -> Self {
+        Self(Arc::new(Mutex::new(state)))
+    }
+}
+
+#[cfg(feature = "ldk")]
+impl<S: Clone> UsageTracker<S> {
+    /// Applies a recording operation and clones the resulting state under the same lock.
+    ///
+    /// Only the supplied operation changes counters: initializing session metadata does not
+    /// itself count as a model-call attempt. The operation must be short and synchronous; do not
+    /// call the same tracker, a model, or logging code from it. Use the returned snapshot after
+    /// the lock is released to render or log usage.
+    pub fn record(&self, record: impl FnOnce(&mut S)) -> S {
+        let mut state = self.0.lock();
+        record(&mut state);
+        state.clone()
+    }
+
+    /// Clones the current state without changing counters.
+    pub fn snapshot(&self) -> S {
+        self.0.lock().clone()
+    }
+}
+
+/// Attaches an observer to a backend without changing its requests or responses.
+///
+/// With the `ldk` feature, `call_model` invokes the observer once per attempt before returning,
+/// including failures before a response is available. `None` means failure or omitted usage.
+/// Preparing requests or parsing responses directly does not notify the observer.
+///
+/// The wrapped backend receives the notification first, so nested observers each run once.
+/// Register each accounting operation at one layer to avoid counting the same attempt twice.
+pub fn with_usage_observer<B: Backend>(backend: B, observer: impl Fn(Option<&Usage>)) -> impl Backend {
+    ObservedBackend { backend, observer }
+}
+
+struct ObservedBackend<B, F> {
+    backend: B,
+    observer: F,
+}
+
+impl<B: Backend, F: Fn(Option<&Usage>)> Backend for ObservedBackend<B, F> {
+    fn prepare_request(&self, request: &ModelRequest) -> LlmResult<PreparedJsonApiRequest> {
+        self.backend.prepare_request(request)
+    }
+
+    fn parse_response(&self, response: JsonApiResponse) -> LlmResult<ModelResponse> {
+        self.backend.parse_response(response)
+    }
+
+    fn on_usage(&self, usage: Option<&Usage>) {
+        self.backend.on_usage(usage);
+        (self.observer)(usage);
+    }
+}
+
+fn add_token_counts(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    left.zip(right).and_then(|(left, right)| left.checked_add(right))
 }
 
 /// Provider-neutral model finish reason.
@@ -306,17 +454,23 @@ impl ModelRequest {
 }
 
 /// Call a model from a Lyquid WASM guest using the backend's prepared HTTP request.
+/// Reports usage once through [`Backend::on_usage`] before returning the response or error.
 #[cfg(feature = "ldk")]
 pub fn call_model<B: Backend + ?Sized>(backend: &B, request: &ModelRequest) -> LlmResult<ModelResponse> {
-    let prepared = backend.prepare_request(request)?;
-    let response = lyquid::runtime::lyquor_api::http_request(prepared.request, prepared.options).map_err(|source| {
-        LlmError::Transport {
-            provider: prepared.provider.clone(),
-            source,
-        }
-    })?;
-    let response = JsonApiResponse::from_http(prepared.provider, prepared.expected_status, response)?;
-    backend.parse_response(response)
+    let result = (|| {
+        let prepared = backend.prepare_request(request)?;
+        let response =
+            lyquid::runtime::lyquor_api::http_request(prepared.request, prepared.options).map_err(|source| {
+                LlmError::Transport {
+                    provider: prepared.provider.clone(),
+                    source,
+                }
+            })?;
+        let response = JsonApiResponse::from_http(prepared.provider, prepared.expected_status, response)?;
+        backend.parse_response(response)
+    })();
+    backend.on_usage(result.as_ref().ok().and_then(|response| response.usage.as_ref()));
+    result
 }
 
 #[cfg(test)]
@@ -324,6 +478,197 @@ mod tests {
     use lyquid_test::test;
 
     use super::*;
+
+    #[test]
+    fn usage_totals() {
+        let mut totals = UsageTotals::default();
+        assert_eq!(
+            totals,
+            UsageTotals {
+                call_attempts: 0,
+                usage: Usage {
+                    input_tokens: Some(0),
+                    output_tokens: Some(0),
+                    total_tokens: Some(0),
+                },
+            }
+        );
+        let usage = Usage {
+            input_tokens: Some(20),
+            output_tokens: Some(10),
+            total_tokens: Some(35),
+        };
+        totals.record(Some(&usage));
+        totals.record(Some(&usage));
+        let mut other = UsageTotals::default();
+        other.record(Some(&Usage {
+            input_tokens: Some(5),
+            output_tokens: Some(3),
+            total_tokens: Some(9),
+        }));
+        assert_eq!(
+            totals.combined(&other),
+            UsageTotals {
+                call_attempts: 3,
+                usage: Usage {
+                    input_tokens: Some(45),
+                    output_tokens: Some(23),
+                    total_tokens: Some(79),
+                },
+            }
+        );
+        assert_eq!(totals.call_attempts, 2);
+        assert_eq!(totals.usage.total_tokens, Some(70));
+        assert_eq!(other.call_attempts, 1);
+        assert_eq!(other.usage.total_tokens, Some(9));
+    }
+
+    #[test]
+    fn usage_unknown_counts() {
+        let mut totals = UsageTotals::default();
+        totals.record(Some(&Usage {
+            input_tokens: Some(20),
+            output_tokens: None,
+            total_tokens: Some(35),
+        }));
+        let usage = Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(5),
+            total_tokens: Some(15),
+        };
+        totals.record(Some(&usage));
+        assert_eq!(totals.usage.input_tokens, Some(30));
+        assert_eq!(totals.usage.output_tokens, None);
+        assert_eq!(totals.usage.total_tokens, Some(50));
+
+        let mut failed = UsageTotals::default();
+        failed.record(None);
+        failed.record(Some(&usage));
+        assert_eq!(
+            totals.combined(&failed),
+            UsageTotals {
+                call_attempts: 4,
+                usage: Usage {
+                    input_tokens: None,
+                    output_tokens: None,
+                    total_tokens: None,
+                },
+            }
+        );
+        assert_eq!(totals.usage.input_tokens, Some(30));
+        assert_eq!(totals.usage.total_tokens, Some(50));
+    }
+
+    #[cfg(feature = "ldk")]
+    #[test]
+    fn shared_usage_tracker() {
+        #[derive(Clone, Default)]
+        struct Accounting {
+            label: String,
+            first: UsageTotals,
+            second: UsageTotals,
+        }
+
+        let tracker = UsageTracker::<Accounting>::default();
+        let observer = tracker.clone();
+        let initialized = tracker.record(|state| state.label = "session".into());
+        assert_eq!(initialized.first.call_attempts, 0);
+        assert_eq!(initialized.second.call_attempts, 0);
+
+        let usage = Usage {
+            input_tokens: Some(20),
+            output_tokens: Some(10),
+            total_tokens: Some(35),
+        };
+        let first = tracker.record(|state| state.first.record(Some(&usage)));
+        let second = observer.record(|state| state.second.record(Some(&usage)));
+        assert_eq!(first.first.call_attempts, 1);
+        assert_eq!(first.second.call_attempts, 0);
+        assert_eq!(second.label, "session");
+        assert_eq!(second.first, first.first);
+        assert_eq!(second.second.call_attempts, 1);
+        let total = second.first.combined(&second.second);
+        assert_eq!(total.call_attempts, 2);
+        assert_eq!(total.usage.total_tokens, Some(70));
+
+        let mut snapshot = observer.snapshot();
+        snapshot.first.record(None);
+        snapshot.label.clear();
+        let current = tracker.snapshot();
+        assert_eq!(current.first, second.first);
+        assert_eq!(current.second, second.second);
+        assert_eq!(current.label, "session");
+        assert_eq!(UsageTracker::<Accounting>::default().snapshot().first.call_attempts, 0);
+    }
+
+    #[cfg(feature = "ldk")]
+    #[test]
+    fn usage_on_preparation_failure() {
+        use backend::openai_compat::{OpenAiCompatBackend, WebSearchOptions};
+
+        fn assert_send_sync(_: &(impl Send + Sync)) {}
+
+        let backend = OpenAiCompatBackend::chat_completions("test", "unused").web_search(WebSearchOptions::default());
+        let request = ModelRequest::new("test-model", "test prompt");
+        let expected = backend.prepare_request(&request).unwrap_err().to_string();
+        let tracker = UsageTracker::<UsageTotals>::default();
+        let recorder = tracker.clone();
+        let observed = with_usage_observer(backend, move |usage| {
+            recorder.record(|totals| totals.record(usage));
+        });
+        assert_send_sync(&observed);
+        let model = ModelConfig::new("test-model", observed);
+        assert_eq!(call_model(&model, &request).unwrap_err().to_string(), expected);
+        assert_eq!(tracker.snapshot().call_attempts, 1);
+        assert_eq!(tracker.snapshot().usage.total_tokens, None);
+        assert_eq!(call_model(&model.clone(), &request).unwrap_err().to_string(), expected);
+        assert_eq!(tracker.snapshot().call_attempts, 2);
+    }
+
+    #[test]
+    fn usage_observer_delegation() {
+        use std::{cell::RefCell, rc::Rc};
+
+        let backend = backend::openai_compat::OpenAiCompatBackend::responses("test", "unused");
+        let request = ModelRequest::new("test-model", "test prompt").max_output_tokens(8192);
+        let expected_request = backend.prepare_request(&request).unwrap();
+        let response = JsonApiResponse {
+            http: http::Response {
+                status: 200,
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+            json: serde_json::json!({
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "usage": {"input_tokens": 20, "output_tokens": 10, "total_tokens": 35},
+            }),
+        };
+        let expected_response = backend.parse_response(response.clone()).unwrap();
+        let reports = Rc::new(RefCell::new(Vec::new()));
+        let inner_reports = reports.clone();
+        let inner = with_usage_observer(backend, move |usage| {
+            inner_reports.borrow_mut().push(("inner", usage.cloned()));
+        });
+        let outer_reports = reports.clone();
+        let model = ModelConfig::new(
+            "test-model",
+            with_usage_observer(inner, move |usage| {
+                outer_reports.borrow_mut().push(("outer", usage.cloned()));
+            }),
+        );
+        assert_eq!(model.prepare_request(&request).unwrap(), expected_request);
+        let parsed = model.parse_response(response).unwrap();
+        assert_eq!(parsed, expected_response);
+        assert!(parsed.text.is_none());
+        assert_eq!(parsed.finish_reason, Some(FinishReason::Length));
+        assert!(reports.borrow().is_empty());
+        model.clone().on_usage(parsed.usage.as_ref());
+        assert_eq!(
+            *reports.borrow(),
+            vec![("inner", parsed.usage.clone()), ("outer", parsed.usage)]
+        );
+    }
 
     #[test]
     fn invalid_json_keeps_body() {

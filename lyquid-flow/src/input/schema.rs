@@ -9,13 +9,19 @@
 //! submitted JSON.
 
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, generate::SchemaSettings, transform::transform_subschemas};
 use serde_json::{Map, Number, Value as JsonValue, json};
 
-// Spell out Unicode White_Space so the exported ECMAScript pattern and Rust validation agree.
+// Keep non_blank's Unicode White_Space rule explicit; ECMAScript \s uses a different set.
 pub(super) const NON_BLANK: &str =
     r"[^\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]";
+
+// Match JSON Schema clients using ECMAScript Unicode mode, including character classes and escapes.
+pub(super) fn compile_pattern(pattern: &str) -> Result<regress::Regex, String> {
+    regress::Regex::with_flags(pattern, "u").map_err(|error| format!("invalid ECMAScript pattern: {error}"))
+}
 
 pub(super) fn generator() -> SchemaGenerator {
     SchemaSettings::draft2020_12()
@@ -87,14 +93,23 @@ fn resolve<'a>(root: &'a JsonValue, reference: &JsonValue) -> Result<&'a JsonVal
         .ok_or_else(|| format!("unresolved schema reference {reference}"))
 }
 
-/// Reject unsupported constraints when building the form, rather than silently skipping them.
-pub(super) fn check(schema: &JsonValue) -> Result<(), String> {
-    check_node(schema, schema, &mut std::collections::BTreeSet::new())
+/// Check supported JSON Schema constraints, local references, and reference cycles.
+pub fn check(schema: &JsonValue) -> Result<(), String> {
+    let mut references = BTreeSet::new();
+    check_node(schema, schema, &mut references)?;
+    let mut checked = BTreeSet::new();
+    for reference in references {
+        check_reference_cycles(
+            resolve(schema, &reference.into())?,
+            schema,
+            &mut BTreeSet::new(),
+            &mut checked,
+        )?;
+    }
+    Ok(())
 }
 
-fn check_node(
-    schema: &JsonValue, root: &JsonValue, references: &mut std::collections::BTreeSet<String>,
-) -> Result<(), String> {
+fn check_node(schema: &JsonValue, root: &JsonValue, references: &mut BTreeSet<String>) -> Result<(), String> {
     if schema.is_boolean() {
         return Ok(());
     }
@@ -166,8 +181,7 @@ fn check_node(
                 }
             }
             "pattern" => {
-                regex::Regex::new(value.as_str().ok_or("pattern must be a string")?)
-                    .map_err(|error| error.to_string())?;
+                compile_pattern(value.as_str().ok_or("pattern must be a string")?)?;
             }
             "uniqueItems" => {
                 if !value.is_boolean() {
@@ -176,9 +190,42 @@ fn check_node(
             }
             "const" | "$schema" | "$comment" | "title" | "description" | "default" | "examples" | "format" |
             "deprecated" | "readOnly" | "writeOnly" => {}
-            _ => return Err(format!("unsupported input schema keyword {keyword}")),
+            _ => return Err(format!("unsupported JSON Schema keyword {keyword}")),
         }
     }
+    Ok(())
+}
+
+// Follow only edges that validate the same input value. Properties and array items descend into
+// child values, so recursive data schemas remain valid. Every possible cycle contains a $ref;
+// check() starts from each resolved target after checking the complete schema's structure.
+fn check_reference_cycles(
+    schema: &JsonValue, root: &JsonValue, active: &mut BTreeSet<*const JsonValue>,
+    checked: &mut BTreeSet<*const JsonValue>,
+) -> Result<(), String> {
+    // Compare resolved node identities so different URI spellings cannot hide a cycle.
+    let node = std::ptr::from_ref(schema);
+    if checked.contains(&node) {
+        return Ok(());
+    }
+    if !active.insert(node) {
+        return Err("cyclic schema reference does not descend into a child input value".to_owned());
+    }
+    if let Some(reference) = schema.get("$ref") {
+        check_reference_cycles(resolve(root, reference)?, root, active, checked)?;
+    }
+    for keyword in ["allOf", "anyOf", "oneOf"] {
+        for child in schema[keyword].as_array().into_iter().flatten() {
+            check_reference_cycles(child, root, active, checked)?;
+        }
+    }
+    for keyword in ["not", "if", "then", "else"] {
+        if let Some(child) = schema.get(keyword) {
+            check_reference_cycles(child, root, active, checked)?;
+        }
+    }
+    active.remove(&node);
+    checked.insert(node);
     Ok(())
 }
 
@@ -215,14 +262,61 @@ pub(super) fn equal(left: &JsonValue, right: &JsonValue) -> bool {
     }
 }
 
-pub(super) fn validate(schema: &JsonValue, value: &JsonValue, path: &str) -> Result<(), String> {
-    validate_at(schema, schema, value, path)
+pub(super) fn validate(schema: &JsonValue, value: &JsonValue, path: &str) -> Result<(), super::InputError> {
+    validate_at(schema, schema, value, path, None).map_err(ValidationError::into_input_error)
 }
 
-fn validate_at(schema: &JsonValue, root: &JsonValue, value: &JsonValue, path: &str) -> Result<(), String> {
-    let error = |message: &str| format!("{path}: {message}");
+pub(crate) fn validate_bounded(schema: &JsonValue, value: &JsonValue, path: &str) -> Result<(), super::InputError> {
+    validate_at(schema, schema, value, path, Some(0)).map_err(ValidationError::into_input_error)
+}
+
+// A depth limit aborts evaluation; it is not a schema mismatch that composition can negate or ignore.
+enum ValidationError {
+    Mismatch(super::InputError),
+    DepthLimit(super::InputError),
+}
+
+impl ValidationError {
+    fn into_input_error(self) -> super::InputError {
+        match self {
+            Self::Mismatch(error) | Self::DepthLimit(error) => error,
+        }
+    }
+}
+
+impl From<super::InputError> for ValidationError {
+    fn from(error: super::InputError) -> Self {
+        Self::Mismatch(error)
+    }
+}
+
+fn matches_schema(result: Result<(), ValidationError>) -> Result<bool, ValidationError> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(ValidationError::Mismatch(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn validate_at(
+    schema: &JsonValue, root: &JsonValue, value: &JsonValue, path: &str, depth: Option<usize>,
+) -> Result<(), ValidationError> {
+    let error = |message: &str| ValidationError::Mismatch(super::InputError::new(path, message));
+    if depth.is_some_and(|depth| depth > 128) {
+        return Err(ValidationError::DepthLimit(super::InputError::new(
+            path,
+            "schema validation exceeded 128 nested evaluations",
+        )));
+    }
+    let child_depth = depth.map(|depth| depth + 1);
     if let Some(reference) = schema.get("$ref") {
-        validate_at(resolve(root, reference)?, root, value, path)?;
+        validate_at(
+            resolve(root, reference).map_err(|message| error(&message))?,
+            root,
+            value,
+            path,
+            child_depth,
+        )?;
     }
     if schema == &JsonValue::Bool(false) {
         return Err(error("value is not allowed"));
@@ -276,8 +370,8 @@ fn validate_at(schema: &JsonValue, root: &JsonValue, value: &JsonValue, path: &s
     if let Some(text) = value.as_str() {
         length(schema, text.chars().count(), "minLength", "maxLength", path)?;
         if let Some(pattern) = schema["pattern"].as_str() {
-            let regex = regex::Regex::new(pattern).map_err(|cause| error(&cause.to_string()))?;
-            if !regex.is_match(text) {
+            let regex = compile_pattern(pattern).map_err(|cause| error(&cause))?;
+            if regex.find(text).is_none() {
                 return Err(error("text does not match the declared pattern"));
             }
         }
@@ -286,7 +380,7 @@ fn validate_at(schema: &JsonValue, root: &JsonValue, value: &JsonValue, path: &s
         length(schema, items.len(), "minItems", "maxItems", path)?;
         for (index, item) in items.iter().enumerate() {
             if let Some(item_schema) = schema["prefixItems"].get(index).or_else(|| schema.get("items")) {
-                validate_at(item_schema, root, item, &format!("{path}/{index}"))?;
+                validate_at(item_schema, root, item, &format!("{path}/{index}"), child_depth)?;
             }
             if schema["uniqueItems"] == true && items[..index].iter().any(|previous| equal(previous, item)) {
                 return Err(error("list items must be unique"));
@@ -298,7 +392,11 @@ fn validate_at(schema: &JsonValue, root: &JsonValue, value: &JsonValue, path: &s
         if let Some(required) = schema["required"].as_array() {
             for key in required.iter().filter_map(JsonValue::as_str) {
                 if !values.contains_key(key) {
-                    return Err(error(&format!("missing required field {key}")));
+                    return Err(super::InputError::new(
+                        format!("{path}/{}", super::escape_pointer(key)),
+                        format!("missing required field {key}"),
+                    )
+                    .into());
                 }
             }
         }
@@ -307,54 +405,64 @@ fn validate_at(schema: &JsonValue, root: &JsonValue, value: &JsonValue, path: &s
                 .get(key)
                 .or_else(|| schema.get("additionalProperties"));
             if let Some(property) = property {
-                validate_at(property, root, value, &format!("{path}/{}", super::escape_pointer(key)))?;
+                validate_at(
+                    property,
+                    root,
+                    value,
+                    &format!("{path}/{}", super::escape_pointer(key)),
+                    child_depth,
+                )?;
             }
         }
     }
     if let Some(schemas) = schema["allOf"].as_array() {
         for schema in schemas {
-            validate_at(schema, root, value, path)?;
+            validate_at(schema, root, value, path, child_depth)?;
         }
     }
-    if schema["anyOf"].as_array().is_some_and(|schemas| {
-        schemas
-            .iter()
-            .all(|schema| validate_at(schema, root, value, path).is_err())
-    }) {
-        return Err(error("value does not match any permitted type"));
+    if let Some(schemas) = schema["anyOf"].as_array() {
+        let mut matched = false;
+        for schema in schemas {
+            if matches_schema(validate_at(schema, root, value, path, child_depth))? {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return Err(error("value does not match any permitted type"));
+        }
     }
-    if let Some(schemas) = schema["oneOf"].as_array() &&
-        schemas
-            .iter()
-            .filter(|schema| validate_at(schema, root, value, path).is_ok())
-            .count() !=
-            1
-    {
-        return Err(error("value must match exactly one permitted type"));
+    if let Some(schemas) = schema["oneOf"].as_array() {
+        let mut matches = 0;
+        for schema in schemas {
+            matches += usize::from(matches_schema(validate_at(schema, root, value, path, child_depth))?);
+        }
+        if matches != 1 {
+            return Err(error("value must match exactly one permitted type"));
+        }
     }
-    if schema
-        .get("not")
-        .is_some_and(|schema| validate_at(schema, root, value, path).is_ok())
+    if let Some(schema) = schema.get("not") &&
+        matches_schema(validate_at(schema, root, value, path, child_depth))?
     {
         return Err(error("value matches a forbidden schema"));
     }
     if let Some(condition) = schema.get("if") {
-        if validate_at(condition, root, value, path).is_ok() {
+        if matches_schema(validate_at(condition, root, value, path, child_depth))? {
             if let Some(consequence) = schema.get("then") {
-                validate_at(consequence, root, value, path)?;
+                validate_at(consequence, root, value, path, child_depth)?;
             }
         } else if let Some(alternative) = schema.get("else") {
-            validate_at(alternative, root, value, path)?;
+            validate_at(alternative, root, value, path, child_depth)?;
         }
     }
     Ok(())
 }
 
-fn length(schema: &JsonValue, count: usize, min: &str, max: &str, path: &str) -> Result<(), String> {
+fn length(schema: &JsonValue, count: usize, min: &str, max: &str, path: &str) -> Result<(), super::InputError> {
     if schema[min].as_u64().is_some_and(|min| (count as u64) < min) ||
         schema[max].as_u64().is_some_and(|max| (count as u64) > max)
     {
-        return Err(format!("{path}: length is outside the declared bounds"));
+        return Err(super::InputError::new(path, "length is outside the declared bounds"));
     }
     Ok(())
 }

@@ -20,6 +20,9 @@ struct DeployInfo {
     image_digest: B256,
     status: DeployStatus,
     deadline: Option<ChainPos>,
+    // Set only on Pending -> Live. Immediately admitted deployments retain
+    // their original sequencing positions, including the constructor slot.
+    activated_at: Option<(ChainPos, u32)>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -121,6 +124,7 @@ fn next_lyquid_id(
         image_digest,
         status,
         deadline,
+        activated_at: None,
     });
     // Store the dependencies for this lyquid
     for dep in deps {
@@ -172,6 +176,7 @@ fn update_eth_addr(
         image_digest,
         status,
         deadline,
+        activated_at: None,
     });
     // Dependencies belong to the Lyquid ID and remain the ones recorded by its first registration.
     Ok(Some((id, status)))
@@ -195,8 +200,19 @@ fn register(
             "bartender cannot be a Lyquid dependency".into(),
         ));
     }
-    if let Some(id) = deps.iter().find(|id| !ctx.network.lyquid_registry.contains_key(*id)) {
-        return Err(LyquidError::LyquidRuntime(format!("unknown Lyquid dependency {id}")));
+    for id in &deps {
+        let Some(metadata) = ctx.network.lyquid_registry.get(id) else {
+            return Err(LyquidError::LyquidRuntime(format!("unknown Lyquid dependency {id}")));
+        };
+        if metadata
+            .deploy_history
+            .last()
+            .is_none_or(|info| info.status != DeployStatus::Live)
+        {
+            return Err(LyquidError::LyquidRuntime(format!(
+                "Lyquid dependency {id} is not Live"
+            )));
+        }
     }
     let repo_hint = if repo_hint.is_empty() { None } else { Some(repo_hint) };
 
@@ -282,22 +298,39 @@ fn attest_available(ctx: &mut _, image_digest: B256) -> LyquidResult<bool> {
     if !ctx.network.admitted_images.insert(image_digest) {
         return Ok(true);
     }
+    let activated_at = lyquor_api::chain_pos()?;
     let mut activated = Vec::new();
+    let mut order = 0;
     for (id, metadata) in ctx.network.lyquid_registry.iter_mut() {
+        // A backend slot can batch several certified calls. Continue after
+        // initializations assigned by an earlier certificate in that slot.
+        for info in &metadata.deploy_history {
+            if let Some((pos, ordinal)) = info.activated_at &&
+                pos == activated_at
+            {
+                order = order.max(ordinal);
+            }
+        }
         let Some(info) = metadata.deploy_history.last_mut() else {
             continue;
         };
         if info.image_digest == image_digest && info.status == DeployStatus::Pending {
-            info.status = DeployStatus::Live;
-            activated.push((*id, metadata.dependencies.to_vec()));
+            activated.push((*id, info, metadata.dependencies.to_vec()));
         }
     }
-    activated.sort_by_key(|(id, _)| *id);
+    activated.sort_by_key(|(id, _, _)| *id);
     lyquid::println!(
         "attest_available {image_digest} => Live ({} deployments)",
         activated.len()
     );
-    for (id, deps) in activated {
+    // Preserve the Register-event order. Each constructor owns a distinct
+    // root order after this certificate and before the next backend slot.
+    for (id, info, deps) in activated {
+        order = order
+            .checked_add(1)
+            .ok_or_else(|| LyquidError::LyquidRuntime("too many activations in one slot".into()))?;
+        info.status = DeployStatus::Live;
+        info.activated_at = Some((activated_at, order));
         lyquid::log!(Register, &RegisterEvent { id, deps });
     }
     Ok(true)

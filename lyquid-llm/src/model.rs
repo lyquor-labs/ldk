@@ -4,6 +4,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     Backend, JsonApiResponse, LlmError, LlmResult, ModelRequest, ModelResponse, OutputFormat, PreparedJsonApiRequest,
+    Usage,
     backend::{
         gemini::GeminiBackend,
         openai_compat::{OpenAiCompatBackend, ReasoningEffort, Verbosity},
@@ -71,6 +72,10 @@ impl Backend for ModelConfig {
 
     fn parse_response(&self, response: JsonApiResponse) -> LlmResult<ModelResponse> {
         self.backend.parse_response(response)
+    }
+
+    fn on_usage(&self, usage: Option<&Usage>) {
+        self.backend.on_usage(usage);
     }
 }
 

@@ -1,12 +1,9 @@
-use std::fmt::Write as _;
-
-use lyquid_flow::{Flow, FlowError, Scope, State, StateBuilder};
-use multiple_choice_step::{Choice, MultipleChoiceStep};
-use refinement_step::{
-    DECISION_REQUEST_STATE_FIELD, DECISION_STATE_FIELD, DecisionRequest, DecisionState, REFINEMENT_INPUT_FIELD,
-    RefinementStep,
+use lyquid_configured_step::{StepBuilder, ValueSource};
+use lyquid_flow::{
+    Flow, FlowError, InputSpec, Scope, State, StateBuilder, StateNamespace, StateUpdates, Step, TemplateSpec,
+    TraceSummary, TurnProposal,
 };
-use text_input_step::TextInputStep;
+use refinement_step::{DECISION_STATE_FIELD, DecisionRequest, DecisionState, REFINEMENT_INPUT_FIELD};
 
 pub(crate) const INPUT_STEP: &str = "input";
 pub(crate) const REFINE_STEP: &str = "refine";
@@ -17,7 +14,8 @@ pub const CHOICE_STATE_FIELD: &str = "decision_refinement_choice";
 /// The built-in action that collects another message without leaving the loop.
 pub const CONTINUE_CHOICE: &str = "refine";
 
-/// An application-defined menu option whose ID is also the named Flow exit.
+/// A menu option's submitted ID and label. Configured application options name Flow exits;
+/// [`RefinementLoopConfig::choice_options`] also includes the built-in refine action.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExitChoice {
     pub id: String,
@@ -35,11 +33,14 @@ impl ExitChoice {
 
 /// Immutable wiring shared by the Flow, its initial State, UI choices, and model schema.
 ///
-/// The default has no exits or multiple-choice Step: refinement goes directly to text input.
+/// The default has no exits: refinement goes directly to text input. With exits, one form collects
+/// feedback and the chosen action together.
 /// A mounted child Flow requires at least one configured exit; exit-free loops run standalone.
 #[derive(Clone, Debug, Default)]
 pub struct RefinementLoopConfig {
     exits: Vec<ExitChoice>,
+    available: Option<fn(&Scope, &ExitChoice) -> bool>,
+    nonblank: bool,
 }
 
 impl RefinementLoopConfig {
@@ -62,7 +63,24 @@ impl RefinementLoopConfig {
                 return Err(FlowError::Execution(format!("duplicate exit ID {:?}", exit.id)));
             }
         }
-        Ok(Self { exits })
+        Ok(Self {
+            exits,
+            available: None,
+            nonblank: false,
+        })
+    }
+
+    /// Restricts configured exits using committed application State without changing exit wiring.
+    /// The built-in `refine` action remains available even when every exit is filtered out.
+    pub fn with_available(mut self, available: fn(&Scope, &ExitChoice) -> bool) -> Self {
+        self.available = Some(available);
+        self
+    }
+
+    /// Requires nonblank feedback in the loop's text input contract.
+    pub fn nonblank(mut self) -> Self {
+        self.nonblank = true;
+        self
     }
 
     /// Adds refinement State and, only for a loop with exits, a committed choice field.
@@ -94,54 +112,39 @@ impl RefinementLoopConfig {
     }
 
     /// Menu options for rendering, in order: continue refining, then the configured exits.
-    /// Returns an empty list when there is no choice Step. Destinations are internal wiring;
-    /// the application renders IDs and labels and submits the selected ID.
-    pub fn choice_options(&self) -> Vec<Choice> {
+    /// Returns an empty list when there is no choice Step. The application renders IDs and labels
+    /// and submits the selected ID; the loop owns routing to refinement or the named exit.
+    pub fn choice_options(&self) -> Vec<ExitChoice> {
         if self.exits.is_empty() {
             return vec![];
         }
-        let mut choices = vec![Choice::new(CONTINUE_CHOICE, "Continue refining", INPUT_STEP)];
-        choices.extend(
-            self.exits
-                .iter()
-                .map(|exit| Choice::new(&exit.id, &exit.label, exit.id.as_str())),
-        );
+        let mut choices = vec![ExitChoice::new(CONTINUE_CHOICE, "Refine")];
+        choices.extend(self.exits.iter().cloned());
         choices
     }
 
     /// Provider-neutral response schema with the successor used by this configured graph.
     pub fn model_turn_schema(&self) -> serde_json::Value {
-        self.refinement_step().model_turn_schema()
+        refinement_step::model_turn_schema(self.refinement_next())
     }
 
-    pub(crate) fn refinement_step(&self) -> RefinementStep {
-        RefinementStep::new(if self.exits.is_empty() { INPUT_STEP } else { CHOICE_STEP })
+    fn refinement_next(&self) -> &'static str {
+        if self.exits.is_empty() { INPUT_STEP } else { CHOICE_STEP }
     }
 
-    pub(crate) fn choice_step(&self) -> Option<MultipleChoiceStep> {
-        if self.exits.is_empty() {
-            return None;
-        }
-        Some(
-            MultipleChoiceStep::new(
-                CHOICE_STATE_FIELD,
-                "What would you like to do next?",
-                self.choice_options(),
-            )
-            .expect("validated loop exits and the built-in continue action form a valid menu")
-            .with_prompt(|scope| {
-                let mut prompt = decision_summary(scope);
-                prompt.push_str("\nChoose an action ID below. Choose refine to enter a preference or requirement.");
-                prompt
-            }),
-        )
+    pub(crate) fn refinement_step(&self) -> impl Step {
+        refinement_step::refinement_step(self.refinement_next())
+    }
+
+    pub(crate) fn choice_step(&self) -> Option<RefinementInputStep> {
+        (!self.exits.is_empty()).then(|| RefinementInputStep { config: self.clone() })
     }
 
     fn build_flow(&self, entry: &str) -> Flow {
         let mut builder = Flow::builder("refinement-loop")
             .description("Help a user narrow and rank a fixed caller-provided candidate list")
             .entry(entry)
-            .step(INPUT_STEP, input_step())
+            .step(INPUT_STEP, input_step(self.nonblank))
             .step(REFINE_STEP, self.refinement_step());
         if let Some(choice) = self.choice_step() {
             builder = builder.step(CHOICE_STEP, choice);
@@ -155,42 +158,124 @@ impl RefinementLoopConfig {
     }
 }
 
-pub(crate) fn input_step() -> TextInputStep {
-    TextInputStep::new(REFINEMENT_INPUT_FIELD, "What are you looking for?", REFINE_STEP).with_prompt(refinement_prompt)
+pub(crate) fn input_step(nonblank: bool) -> impl Step {
+    StepBuilder::new()
+        .description("Collect a text message")
+        .with_input_factory(move |scope| {
+            let mut input = InputSpec::builder();
+            let field = input.field(REFINEMENT_INPUT_FIELD, refinement_prompt(scope), String::new());
+            let field = if nonblank { field.non_blank() } else { field }.text_input();
+            let submit = input.submit("Send");
+            let layout = input.ui().column(vec![field, submit]);
+            input.finish(layout).expect("valid refinement text input")
+        })
+        .update_from(
+            REFINEMENT_INPUT_FIELD,
+            ValueSource::Input {
+                name: REFINEMENT_INPUT_FIELD.into(),
+            },
+        )
+        .next(REFINE_STEP)
+        .summary("Received a text message")
+        .build()
+        .expect("valid refinement input wiring")
 }
 
 fn refinement_prompt(scope: &Scope) -> String {
-    let mut prompt = decision_summary(scope);
-    prompt.push_str("\nUse the question as a hint if useful, or state any preference or requirement directly.");
-    prompt
-}
-
-fn decision_summary(scope: &Scope) -> String {
-    let request = scope
-        .state()
-        .get::<DecisionRequest>(DECISION_REQUEST_STATE_FIELD)
-        .expect("the refinement Flow requires its request State");
     let decision = scope
         .state()
         .get::<DecisionState>(DECISION_STATE_FIELD)
         .expect("the refinement Flow requires its decision State");
-    let mut prompt = if decision.question.prompt.trim().is_empty() {
-        "What are you looking for?".to_owned()
+    if decision.question.prompt.trim().is_empty() {
+        "What would you like to change?".to_owned()
     } else {
         decision.question.prompt.clone()
-    };
-    prompt.push_str("\n\nCurrent candidates:\n");
-    for candidate_id in &decision.ranking.candidate_ids {
-        if let Some(candidate) = request
-            .candidates
-            .iter()
-            .find(|candidate| candidate.id == *candidate_id)
-        {
-            writeln!(&mut prompt, "- {}: {}", candidate.id, candidate.description)
-                .expect("writing to a String cannot fail");
-        }
     }
-    prompt
+}
+
+/// Collect feedback and its action in one deterministic input turn.
+pub(crate) struct RefinementInputStep {
+    config: RefinementLoopConfig,
+}
+
+impl RefinementInputStep {
+    fn choices(&self, scope: &Scope) -> Vec<ExitChoice> {
+        self.config
+            .choice_options()
+            .into_iter()
+            .filter(|choice| {
+                choice.id == CONTINUE_CHOICE || self.config.available.is_none_or(|available| available(scope, choice))
+            })
+            .collect()
+    }
+}
+
+impl Step for RefinementInputStep {
+    fn description(&self, _: bool) -> String {
+        "Refine your preferences".to_owned()
+    }
+
+    fn input(&self, scope: &Scope) -> Option<InputSpec> {
+        let choices = self.choices(scope);
+        let mut builder = InputSpec::builder();
+        builder
+            .field(CHOICE_STATE_FIELD, "Action", String::new())
+            .choices(choices.iter().map(|choice| (choice.id.clone(), choice.label.clone())));
+        let mut content = vec![builder.ui().text(refinement_prompt(scope))];
+        let feedback = builder
+            .field(REFINEMENT_INPUT_FIELD, "Feedback", String::new())
+            .required_when(CHOICE_STATE_FIELD, [CONTINUE_CHOICE]);
+        let feedback = if self.config.nonblank {
+            feedback.non_blank_when(CHOICE_STATE_FIELD, [CONTINUE_CHOICE])
+        } else {
+            feedback
+        };
+        content.push(feedback.text_area());
+        let buttons = choices
+            .iter()
+            .map(|choice| builder.submit_with(&choice.label, [(CHOICE_STATE_FIELD, choice.id.clone())]))
+            .collect();
+        content.push(builder.ui().row(buttons));
+        let root = builder.ui().column(content);
+        Some(builder.finish(root).expect("valid refinement input declaration"))
+    }
+
+    fn model_template(&self, _: &Scope) -> TemplateSpec {
+        TemplateSpec::Skip(TurnProposal::Advance {
+            next: None,
+            updates: StateUpdates::default(),
+        })
+    }
+
+    fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+        let TurnProposal::Advance { next, updates } = proposal else {
+            return Err(FlowError::Execution(
+                "refinement input does not allow restore proposals".into(),
+            ));
+        };
+        let choice = scope
+            .get::<String>(StateNamespace::Input, CHOICE_STATE_FIELD)
+            .and_then(|id| self.choices(scope).into_iter().find(|choice| choice.id == *id))
+            .ok_or_else(|| FlowError::Execution("invalid refinement action".into()))?;
+        let mut accepted = StateUpdates::default();
+        if choice.id == CONTINUE_CHOICE {
+            let feedback = scope
+                .get::<String>(StateNamespace::Input, REFINEMENT_INPUT_FIELD)
+                .ok_or_else(|| FlowError::Execution("missing refinement feedback".into()))?;
+            if self.config.nonblank && feedback.trim().is_empty() {
+                return Err(FlowError::Execution("refinement feedback must not be blank".into()));
+            }
+            accepted.set(REFINEMENT_INPUT_FIELD.into(), Some(Box::new(feedback.clone())));
+        }
+        accepted.set(CHOICE_STATE_FIELD.into(), Some(Box::new(choice.id.clone())));
+        *next = Some(if choice.id == CONTINUE_CHOICE {
+            REFINE_STEP.into()
+        } else {
+            choice.id.as_str().into()
+        });
+        *updates = accepted;
+        Ok(TraceSummary::Summary(format!("Chose {}", choice.id)))
+    }
 }
 
 #[cfg(test)]

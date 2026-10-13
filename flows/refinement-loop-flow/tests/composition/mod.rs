@@ -3,13 +3,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::flow::{CHOICE_STEP, INPUT_STEP, REFINE_STEP, input_step};
 use crate::*;
+use lyquid_configured_step::{StepBuilder, ValueSource};
 use lyquid_flow::{
     AutoCheckpointConfig, ExitTransitions, Flow, FlowError, InputSpec, Scope, State, StateNamespace, StateUpdates,
     Step, TemplateSpec, TraceMode, TraceSummary, TurnProposal,
 };
 use lyquid_test::test;
-use refinement_step::RefinementStep;
-use text_input_step::TextInputStep;
 
 // Replace only input transport and model calls. Actual library finalizers, commits and child joins run unchanged.
 struct Submitted {
@@ -17,6 +16,7 @@ struct Submitted {
     field: &'static str,
     values: Vec<String>,
     index: AtomicUsize,
+    feedback: Vec<String>,
 }
 
 impl Submitted {
@@ -26,6 +26,7 @@ impl Submitted {
             field,
             values: values.iter().map(|value| (*value).to_owned()).collect(),
             index: AtomicUsize::new(0),
+            feedback: vec![],
         }
     }
 }
@@ -48,16 +49,24 @@ impl Step for Submitted {
             self.field.to_owned(),
             Some(Box::new(self.values.get(index).expect("unexpected input wait").clone())),
         );
+        if self.field == CHOICE_STATE_FIELD && self.values[index] == CONTINUE_CHOICE {
+            let feedback_index = self.values[..index].iter().filter(|id| *id == CONTINUE_CHOICE).count();
+            received.set(
+                StateNamespace::Input,
+                REFINEMENT_INPUT_FIELD.into(),
+                Some(Box::new(self.feedback[feedback_index].clone())),
+            );
+        }
         self.step.finalize(&received, proposal)
     }
 }
 
-struct ModelTurn {
-    step: RefinementStep,
+struct ModelTurn<S> {
+    step: S,
     attempts: AtomicUsize,
     reject_first: bool,
 }
-impl Step for ModelTurn {
+impl<S: Step> Step for ModelTurn<S> {
     fn description(&self, _: bool) -> String {
         "Scripted model response".to_owned()
     }
@@ -136,7 +145,7 @@ fn scripted_flow(
         .entry(entry)
         .step(
             INPUT_STEP,
-            Submitted::new(input_step(), REFINEMENT_INPUT_FIELD, messages),
+            Submitted::new(input_step(false), REFINEMENT_INPUT_FIELD, messages),
         )
         .step(
             REFINE_STEP,
@@ -150,7 +159,10 @@ fn scripted_flow(
         for choice in config.choice_options().iter().skip(1) {
             builder = builder.exit(choice.id.as_str());
         }
-        builder = builder.step(CHOICE_STEP, Submitted::new(choice_step, CHOICE_STATE_FIELD, choices));
+        let mut submitted = Submitted::new(choice_step, CHOICE_STATE_FIELD, choices);
+        let feedback = if entry == INPUT_STEP { &messages[1..] } else { messages };
+        submitted.feedback = feedback.iter().map(|message| (*message).to_owned()).collect();
+        builder = builder.step(CHOICE_STEP, submitted);
     } else {
         assert!(choices.is_empty(), "an exit-free loop must not request choices");
     }
@@ -193,14 +205,14 @@ fn default_loop_collects_refinement_text_directly_without_a_choice_round() {
     assert_eq!(scope.current_step().0, REFINE_STEP);
     scope.advance().unwrap();
     assert_eq!(scope.current_step().0, INPUT_STEP);
-    let input = input_step().input(&scope).unwrap();
+    let input = input_step(false).input(&scope).unwrap();
     assert!(input.field_schema(REFINEMENT_INPUT_FIELD).is_some());
     let prompt = input.field_schema(REFINEMENT_INPUT_FIELD).unwrap()["title"]
         .as_str()
         .unwrap();
     assert!(prompt.starts_with("What size?"));
-    assert!(prompt.contains("- blue: Blue option"));
-    assert!(!prompt.contains("- red:"));
+    assert!(!prompt.contains("Blue option"));
+    assert!(!prompt.contains("Red option"));
     scope.advance().unwrap();
     assert_eq!(
         scope.state().get::<String>(REFINEMENT_INPUT_FIELD).unwrap(),
@@ -233,14 +245,13 @@ fn configured_loop_continues_refinement_then_leaves_through_a_custom_exit() {
     scope.advance().unwrap();
     scope.advance().unwrap();
     assert_eq!(scope.current_step().0, CHOICE_STEP);
-    scope.advance().unwrap();
-    assert_eq!(scope.current_step().0, INPUT_STEP);
     let before = scope
         .state()
         .get::<DecisionState>(DECISION_STATE_FIELD)
         .unwrap()
         .clone();
     scope.advance().unwrap();
+    assert_eq!(scope.current_step().0, REFINE_STEP);
     assert_eq!(scope.state().get::<DecisionState>(DECISION_STATE_FIELD), Some(&before));
     scope.advance().unwrap();
     assert_eq!(scope.current_step().0, CHOICE_STEP);
@@ -263,14 +274,7 @@ fn configured_loop_continues_refinement_then_leaves_through_a_custom_exit() {
     );
     assert_eq!(
         trace_steps(&scope),
-        [
-            INPUT_STEP,
-            REFINE_STEP,
-            CHOICE_STEP,
-            INPUT_STEP,
-            REFINE_STEP,
-            CHOICE_STEP
-        ]
+        [INPUT_STEP, REFINE_STEP, CHOICE_STEP, REFINE_STEP, CHOICE_STEP]
     );
 }
 
@@ -320,11 +324,11 @@ fn public_graph_entries_and_model_schema_agree_for_both_configurations() {
             INPUT_STEP
         );
         assert_eq!(config.model_turn_schema()["properties"]["next"]["enum"][0], next);
-        // The real production graph skips the model for an empty caller list.
-        let mut empty = scope(&config, config.flow(), DecisionRequest::new("An option", vec![]));
-        empty.advance().unwrap();
-        assert_eq!(empty.current_step().0, next);
-        assert!(!empty.is_finished());
+        let step = config.refinement_step();
+        let TemplateSpec::Template(template) = step.model_template(&supplied) else {
+            panic!("non-empty candidates should request refinement");
+        };
+        assert_eq!(template.next_step_criteria[0].0.as_ref().unwrap().0, next);
     }
 }
 
@@ -447,7 +451,27 @@ fn parent_routes_custom_exits_and_collects_restart_feedback_outside_the_child() 
             .step(
                 "collect_feedback",
                 Submitted::new(
-                    TextInputStep::new(APP_FEEDBACK, "What should change?", "retrieve_candidates"),
+                    StepBuilder::new()
+                        .description("Collect a text message")
+                        .with_input({
+                            let mut input = InputSpec::builder();
+                            let field = input
+                                .field(APP_FEEDBACK, "What should change?", String::new())
+                                .text_input();
+                            let submit = input.submit("Send");
+                            let layout = input.ui().column(vec![field, submit]);
+                            input.finish(layout).unwrap()
+                        })
+                        .update_from(
+                            APP_FEEDBACK,
+                            ValueSource::Input {
+                                name: APP_FEEDBACK.into(),
+                            },
+                        )
+                        .next("retrieve_candidates")
+                        .summary("Received a text message")
+                        .build()
+                        .unwrap(),
                     APP_FEEDBACK,
                     &[feedback],
                 ),
@@ -536,10 +560,10 @@ fn empty_ranking_can_be_refined_again_in_either_graph() {
                 .is_empty()
         );
         assert!(!scope.is_finished());
-        if !choices.is_empty() {
-            scope.advance().unwrap();
-        }
-        assert_eq!(scope.current_step().0, INPUT_STEP);
+        assert_eq!(
+            scope.current_step().0,
+            if choices.is_empty() { INPUT_STEP } else { CHOICE_STEP }
+        );
         scope.advance().unwrap();
         scope.advance().unwrap();
         assert_eq!(

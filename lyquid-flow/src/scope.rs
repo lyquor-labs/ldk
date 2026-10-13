@@ -60,7 +60,7 @@ pub enum AutoCheckpointConfig {
 pub enum FlowError {
     /// Input failed schema validation or field decoding.
     #[error("invalid input: {0}")]
-    InputInvalid(String),
+    InputInvalid(crate::InputError),
     /// No Step is currently waiting for input.
     #[error("there is no pending input request")]
     NoPendingInput,
@@ -263,8 +263,13 @@ pub struct Scope {
     state: Arc<State>,
     /// Ordered Trace entries committed locally by this Flow execution.
     trace: Arc<Trace>,
+    /// Selected result of the last completed child, retained after its execution is dropped.
+    /// A projection error is retained too; it must not undo a successful child commit.
+    completed_child_view: Option<Result<crate::ViewSpec, String>>,
     /// Uncommitted values owned by the active Step.
     updates: StateUpdates,
+    /// Raw response visible only while the current Step's finalization runs.
+    model_response: Option<ModelResponse>,
     /// Whole-field replacements committed locally since this execution was created or forked.
     accumulated_updates: StateUpdates,
     /// Current Step, or the exit through which a finished Scope returned.
@@ -316,7 +321,9 @@ impl Clone for Scope {
             parent: self.parent.clone(),
             state: Arc::clone(&self.state),
             trace: Arc::clone(&self.trace),
+            completed_child_view: self.completed_child_view.clone(),
             updates: self.updates.clone(),
+            model_response: None,
             accumulated_updates: self.accumulated_updates.clone(),
             current_step: self.current_step.clone(),
             model_config: self.model_config.clone(),
@@ -351,7 +358,9 @@ impl Scope {
             parent: None,
             state: Arc::new(state),
             trace: Arc::new(Trace::default()),
+            completed_child_view: None,
             updates: StateUpdates::default(),
+            model_response: None,
             accumulated_updates: StateUpdates::default(),
             current_step,
             model_config,
@@ -368,6 +377,12 @@ impl Scope {
         };
         scope.auto_checkpoint();
         scope
+    }
+
+    /// Reads the current Step's original model response during finalization.
+    /// Absent for Steps without a model; never retained in clones, checkpoints, or later turns.
+    pub fn model_response(&self) -> Option<&ModelResponse> {
+        self.model_response.as_ref()
     }
 
     /// Observes provider-reported token usage after each template-backed model call.
@@ -419,6 +434,15 @@ impl Scope {
         }
     }
 
+    /// Reads a Step-scoped value without requiring its concrete type.
+    /// Like [`Self::get`], the default namespace reads staged replacements, not committed State.
+    pub fn get_value(&self, namespace: StateNamespace, name: &str) -> Option<&dyn crate::Value> {
+        match namespace {
+            StateNamespace::Default => self.updates.staging.get(name).map(Box::as_ref),
+            StateNamespace::Input => self.updates.ephemeral.get(&namespace)?.get(name).map(Box::as_ref),
+        }
+    }
+
     /// Adds, replaces, or removes one Step-scoped value in the requested namespace.
     pub fn set(&mut self, namespace: StateNamespace, name: String, value: Option<Box<dyn crate::Value>>) {
         match namespace {
@@ -448,6 +472,79 @@ impl Scope {
     /// Reports whether this Scope has completed, with or without a declared exit.
     pub fn is_finished(&self) -> bool {
         matches!(self.phase, RunPhase::Finished(_))
+    }
+
+    /// Presents this stable Scope (or its active child) using its own committed data.
+    /// Calling this on a saved Scope uses that saved State and Trace, never another execution.
+    pub fn view(&self) -> Result<crate::ViewSpec, FlowError> {
+        if let Some(view) = self.flow.view {
+            return view(self.presentation_step()?.0);
+        }
+        if let Some(child) = self.running_child() &&
+            (self.trace.entries.is_empty() || child.has_committed_result())
+        {
+            return child.view();
+        }
+        if let Some(view) = &self.completed_child_view {
+            return view.clone().map_err(FlowError::Execution);
+        }
+        // Results belong to their producing Step. A subsequent failing Step must not replace
+        // the last committed result with its own (possibly empty) presentation.
+        let id = self
+            .trace
+            .entries
+            .last()
+            .map_or(&self.current_step, |entry| &entry.step);
+        self.flow
+            .step(id)
+            .ok_or_else(|| FlowError::Execution(format!("unknown presentation Step {id}")))?
+            .view(self)
+    }
+
+    fn has_committed_result(&self) -> bool {
+        !self.trace.entries.is_empty() || self.running_child().is_some_and(Self::has_committed_result)
+    }
+
+    pub(crate) fn history_metadata(
+        &self, previous: Option<&serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, FlowError> {
+        match self.flow.history {
+            Some(history) => history(self.presentation_step()?.0, previous),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn presentation_step(&self) -> Result<(&Self, StepId, &dyn Step), FlowError> {
+        if let Some(child) = self.running_child() {
+            return child.presentation_step();
+        }
+        let id = if self.is_finished() {
+            self.trace
+                .entries
+                .last()
+                .map_or(&self.current_step, |entry| &entry.step)
+        } else {
+            &self.current_step
+        };
+        let step = self
+            .flow
+            .step(id)
+            .ok_or_else(|| FlowError::Execution(format!("unknown presentation Step {id}")))?;
+        Ok((self, id.clone(), step))
+    }
+
+    // Reopen only a retained failed input contract, without running another Step or rebuilding input.
+    pub(crate) fn retry_input(&mut self) -> Result<(), FlowError> {
+        if let Some(child) = self.running_child_mut() {
+            return child.retry_input();
+        }
+        if !self.is_finished() &&
+            self.input_receiver.is_none() &&
+            let Some(spec) = &self.pending_input_spec
+        {
+            self.input_receiver = Some(self.input_handle.request(spec.clone(), Arc::clone(&self.state))?);
+        }
+        Ok(())
     }
 
     /// Advances this execution by one Step at its Flow's level.
@@ -641,21 +738,29 @@ impl Scope {
     fn process_model_template(
         &mut self, step: Arc<dyn Step>, wait_for_input: bool,
     ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
-        let proposal = match step.model_template(self) {
+        let (proposal, response) = match step.model_template(self) {
             TemplateSpec::Template(template) => {
                 self.validate_model_template(&template)?;
                 let request = prompt::build_request(self.model()?, &template, &self.flow, self)?;
-                let output = self.call_model(request)?;
-                prompt::parse_response(self.state(), &template, &output)?
+                let response = self.call_model(request)?;
+                let output = response.text.as_deref().expect("model response text was validated");
+                let proposal = prompt::parse_response(self.state(), &template, output)?;
+                (proposal, Some(response))
             }
-            TemplateSpec::Skip(proposal) => proposal,
+            TemplateSpec::Skip(proposal) => (proposal, None),
         };
-        self.run_finalize(step.as_ref(), proposal, wait_for_input)
+        self.run_finalize(step.as_ref(), proposal, response, wait_for_input)
+    }
+
+    /// Checks a proposed local Step/exit or root completion before performing external work.
+    /// The runtime still validates the final destination when committing the turn.
+    pub fn validate_next(&self, next: &Option<StepId>) -> Result<(), String> {
+        self.resolve_next(next).map(|_| ())
     }
 
     /// Finalizes an ordinary Step, or starts a child Flow that will be finalized when it exits.
     fn run_finalize(
-        &mut self, step: &dyn Step, mut proposal: TurnProposal, wait_for_input: bool,
+        &mut self, step: &dyn Step, mut proposal: TurnProposal, response: Option<ModelResponse>, wait_for_input: bool,
     ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
         if let Some(child_flow) = self.flow.child_flow(self.current_step()) {
             let TurnProposal::Advance { next, mut updates } = proposal else {
@@ -675,7 +780,10 @@ impl Scope {
             return self.start_child(child_flow, wait_for_input);
         }
 
-        let summary = step.finalize(self, &mut proposal)?;
+        self.model_response = response;
+        let finalized = step.finalize(self, &mut proposal);
+        self.model_response = None;
+        let summary = finalized?;
         self.commit_proposal(proposal, summary)?;
         Ok(None)
     }
@@ -848,7 +956,9 @@ impl Scope {
             parent: Some(parent),
             state: Arc::new(state),
             trace: Arc::new(Trace::default()),
+            completed_child_view: None,
             updates: StateUpdates::default(),
+            model_response: None,
             accumulated_updates: updates,
             current_step,
             model_config: self.model_config.clone(),
@@ -873,14 +983,16 @@ impl Scope {
         })
     }
 
-    fn call_model(&self, request: ModelRequest) -> Result<String, FlowError> {
+    fn call_model(&self, request: ModelRequest) -> Result<ModelResponse, FlowError> {
         let model_config = self.model_config.as_ref().ok_or_else(|| {
             FlowError::Execution("Scope model configuration is missing for a template-backed Step".to_owned())
         })?;
         self.handle_model_response(lyquid_llm::call_model(model_config, &request))
     }
 
-    fn handle_model_response(&self, response: lyquid_llm::LlmResult<ModelResponse>) -> Result<String, FlowError> {
+    fn handle_model_response(
+        &self, response: lyquid_llm::LlmResult<ModelResponse>,
+    ) -> Result<ModelResponse, FlowError> {
         if let Some(observer) = self.usage_observer.as_ref() {
             observer(
                 self,
@@ -893,9 +1005,10 @@ impl Scope {
                 "model output exceeded the configured output-token budget".to_owned(),
             ));
         }
-        response
-            .text
-            .ok_or_else(|| FlowError::Execution("model returned no text".to_owned()))
+        if response.text.is_none() {
+            return Err(FlowError::Execution("model returned no text".to_owned()));
+        }
+        Ok(response)
     }
 
     /// Atomically commits the active Step's staged replacements, resolved target, and Trace entry.
@@ -913,8 +1026,17 @@ impl Scope {
             summary,
         });
 
+        // Capture the child's own final State/Trace before replacing RunningChild. TraceMode may
+        // collapse its trace, so reconstructing a child presentation from the parent is not valid.
+        let completed_child_view = if self.flow.view.is_none() {
+            self.running_child()
+                .map(|child| child.view().map_err(|error| error.to_string()))
+        } else {
+            None
+        };
         self.state = next_state;
         self.trace = Arc::new(next_trace);
+        self.completed_child_view = completed_child_view;
         self.accumulated_updates.merge(updates);
         self.pending_input_spec = None;
         match next {
@@ -948,293 +1070,13 @@ enum RunPhase {
 }
 
 #[cfg(test)]
-mod tests {
+mod input_tests {
     use std::any::Any;
 
-    use lyquid_llm::{Backend, JsonApiResponse, LlmError, LlmResult, PreparedJsonApiRequest};
     use lyquid_test::test;
-    use serde_json::Value as JsonValue;
 
     use super::*;
     use crate::Value;
-
-    struct TestStep;
-
-    impl Step for TestStep {
-        fn description(&self, _concise: bool) -> String {
-            "Test Step".to_owned()
-        }
-
-        fn input(&self, _scope: &Scope) -> Option<InputSpec> {
-            None
-        }
-
-        fn model_template(&self, _scope: &Scope) -> TemplateSpec {
-            TemplateSpec::Skip(TurnProposal::Advance {
-                next: None,
-                updates: StateUpdates::default(),
-            })
-        }
-
-        fn finalize(&self, _scope: &Scope, _proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
-            Ok(TraceSummary::Summary("tested".to_owned()))
-        }
-    }
-
-    type Observations = Arc<Mutex<Vec<(String, String, Option<Usage>)>>>;
-
-    struct FailingBackend;
-
-    impl Backend for FailingBackend {
-        fn prepare_request(&self, _request: &ModelRequest) -> LlmResult<PreparedJsonApiRequest> {
-            Err(LlmError::Backend {
-                provider: "test".to_owned(),
-                message: "request preparation failed".to_owned(),
-            })
-        }
-
-        fn parse_response(&self, _response: JsonApiResponse) -> LlmResult<ModelResponse> {
-            unreachable!("the test backend never sends a request")
-        }
-    }
-
-    fn usage_scope(observations: &Observations) -> Scope {
-        let observations = Arc::clone(observations);
-        let config = ModelConfig::new("test-model", FailingBackend);
-        let flow = Flow::builder("usage-flow")
-            .entry("start")
-            .step("start", TestStep)
-            .build()
-            .unwrap();
-        Scope::new(
-            Arc::new(flow),
-            State::builder().build().unwrap(),
-            AutoCheckpointConfig::Unbounded,
-            Some(config),
-        )
-        .on_usage(move |scope, usage| {
-            observations.lock().push((
-                scope.execution_id().to_string(),
-                scope.current_step().to_string(),
-                usage.cloned(),
-            ));
-        })
-    }
-
-    fn usage_response(usage: JsonValue) -> ModelResponse {
-        let backend = lyquid_llm::backend::openai_compat::OpenAiCompatBackend::responses("test", "unused");
-        backend
-            .parse_response(JsonApiResponse {
-                http: lyquid::http::Response {
-                    status: 200,
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                },
-                json: serde_json::json!({
-                    "output_text": "model output",
-                    "usage": usage,
-                }),
-            })
-            .unwrap()
-    }
-
-    #[test]
-    fn token_usage_reporting() {
-        // Report token usage whenever the provider returns it, even if the output
-        // is rejected; otherwise report None.
-        let observations = Arc::new(Mutex::new(Vec::new()));
-        let scope = usage_scope(&observations);
-        let response = usage_response(serde_json::json!({
-            "input_tokens": 20, "output_tokens": 10, "total_tokens": 35,
-        }));
-        assert_eq!(
-            scope.handle_model_response(Ok(response.clone())).unwrap(),
-            "model output"
-        );
-
-        let mut truncated = response.clone();
-        truncated.finish_reason = Some(FinishReason::Length);
-        assert!(scope.handle_model_response(Ok(truncated)).is_err());
-
-        let mut empty = response.clone();
-        empty.text = None;
-        assert!(scope.handle_model_response(Ok(empty)).is_err());
-
-        scope
-            .handle_model_response(Ok(usage_response(JsonValue::Null)))
-            .unwrap();
-        scope
-            .handle_model_response(Ok(usage_response(serde_json::json!({ "input_tokens": 20 }))))
-            .unwrap();
-        assert!(matches!(
-            scope.call_model(ModelRequest::new("test-model", "test prompt")),
-            Err(FlowError::Model(_))
-        ));
-
-        let observations = observations.lock();
-        for (execution, step, _) in observations.iter() {
-            assert_eq!(execution, &scope.execution_id().to_string());
-            assert_eq!(step, "start");
-        }
-        let usages = observations
-            .iter()
-            .map(|(_, _, usage)| usage.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            usages,
-            vec![
-                response.usage.clone(),
-                response.usage.clone(),
-                response.usage,
-                None,
-                Some(Usage {
-                    input_tokens: Some(20),
-                    output_tokens: None,
-                    total_tokens: None,
-                }),
-                None,
-            ]
-        );
-        assert!(scope.trace().entries.is_empty());
-    }
-
-    #[test]
-    fn token_usage_across_scopes() {
-        // Collect token usage from both parent and child Scopes, and keep the records
-        // when restoring a checkpoint.
-        let observations = Arc::new(Mutex::new(Vec::new()));
-        let mut scope = usage_scope(&observations);
-        let checkpoint = scope.checkpoint();
-        let child = scope.fork_child(Arc::clone(&scope.flow), StateUpdates::default());
-        let response = usage_response(serde_json::json!({ "total_tokens": 12 }));
-        child.handle_model_response(Ok(response.clone())).unwrap();
-        scope.handle_model_response(Ok(response.clone())).unwrap();
-        scope.advance().unwrap();
-        assert_eq!(observations.lock().len(), 2);
-
-        scope.restore(&checkpoint).unwrap();
-        scope.handle_model_response(Ok(response)).unwrap();
-        let observations = observations.lock();
-        assert_eq!(observations.len(), 3);
-        assert_eq!(observations[0].0, child.execution_id().to_string());
-        assert_eq!(observations[1].0, scope.execution_id().to_string());
-        assert_eq!(observations[2].0, scope.execution_id().to_string());
-    }
-
-    #[test]
-    fn usage_after_restore_and_clone() {
-        let observations = Arc::new(Mutex::new(Vec::new()));
-        let mut scope = usage_scope(&observations);
-        // Scope::new creates this checkpoint before on_usage installs the observer.
-        let checkpoint = scope.checkpoint_ids().next().unwrap().clone();
-        scope.restore(&checkpoint).unwrap();
-        let cloned = scope.clone();
-        let response = usage_response(serde_json::json!({ "total_tokens": 12 }));
-        scope.handle_model_response(Ok(response.clone())).unwrap();
-        cloned.handle_model_response(Ok(response)).unwrap();
-
-        let observations = observations.lock();
-        assert_eq!(observations.len(), 2);
-        assert_eq!(observations[0].0, scope.execution_id().to_string());
-        assert_eq!(observations[1].0, cloned.execution_id().to_string());
-        assert!(
-            observations
-                .iter()
-                .all(|(_, _, usage)| usage.as_ref().unwrap().total_tokens == Some(12))
-        );
-    }
-
-    #[test]
-    fn validates_model_template() {
-        let flow = Arc::new(
-            Flow::builder("test-flow")
-                .entry("start")
-                .exit("done")
-                .step("start", TestStep)
-                .step("review", TestStep)
-                .build()
-                .expect("test Flow should be valid"),
-        );
-        let state = State::builder()
-            .field("title", "Current release title", "Draft".to_owned())
-            .build()
-            .expect("test State should be valid");
-        let scope = Scope::new(Arc::clone(&flow), state, AutoCheckpointConfig::Disabled, None);
-
-        let mut valid = ModelTemplate::new(
-            "Review the work",
-            vec![
-                (Some("review".into()), "More review is required".to_owned()),
-                (Some("done".into()), "The mounted Flow should exit".to_owned()),
-                (None, "The root Flow is complete".to_owned()),
-            ],
-            Vec::new(),
-        );
-        assert!(scope.validate_model_template(&valid).is_ok());
-
-        let empty = ModelTemplate::new("Review the work", Vec::new(), Vec::new());
-        assert_eq!(
-            scope.validate_model_template(&empty).err().as_deref(),
-            Some("a model template must declare at least one next-step criterion")
-        );
-
-        let duplicate = ModelTemplate::new(
-            "Review the work",
-            vec![
-                (Some("review".into()), "More review is required".to_owned()),
-                (Some("review".into()), "A second description is not allowed".to_owned()),
-            ],
-            Vec::new(),
-        );
-        assert_eq!(
-            scope.validate_model_template(&duplicate).err().as_deref(),
-            Some("duplicate next-step criterion for Step review")
-        );
-
-        let unknown = ModelTemplate::new(
-            "Review the work",
-            vec![(Some("missing".into()), "Use an unknown destination".to_owned())],
-            Vec::new(),
-        );
-        assert_eq!(
-            scope.validate_model_template(&unknown).err().as_deref(),
-            Some("model template declares unknown next Step missing")
-        );
-
-        let mounted = scope.fork_child(flow, StateUpdates::default());
-        let mounted_completion = ModelTemplate::new(
-            "Review the work",
-            vec![(None, "Complete the parent Flow".to_owned())],
-            Vec::new(),
-        );
-        assert_eq!(
-            mounted.validate_model_template(&mounted_completion).err().as_deref(),
-            Some("a mounted Flow model template cannot declare root Flow completion")
-        );
-        valid.next_step_criteria.pop();
-        assert!(mounted.validate_model_template(&valid).is_ok());
-
-        valid
-            .state_update_criteria
-            .push(("title".to_owned(), "Replace when the approved title changes".to_owned()));
-        assert!(scope.validate_model_template(&valid).is_ok());
-
-        let mut unknown_field = valid.clone();
-        unknown_field.state_update_criteria[0].0 = "missing".to_owned();
-        assert_eq!(
-            scope.validate_model_template(&unknown_field).err().as_deref(),
-            Some("model template declares unknown State field missing")
-        );
-
-        let mut duplicate_field = valid;
-        duplicate_field
-            .state_update_criteria
-            .push(("title".to_owned(), "Replace when the editor changes it".to_owned()));
-        assert_eq!(
-            scope.validate_model_template(&duplicate_field).err().as_deref(),
-            Some("duplicate State update criterion for field title")
-        );
-    }
 
     fn text_spec() -> InputSpec {
         let mut builder = InputSpec::builder();
@@ -1258,6 +1100,47 @@ mod tests {
             handle.submit_input(r#"{"feedback":"no waiting Step"}"#),
             Err(FlowError::NoPendingInput)
         ));
+    }
+
+    #[derive(Clone, schemars::JsonSchema)]
+    struct Digits(#[schemars(regex(pattern = r"^\d+$"))] String);
+
+    impl Value for Digits {
+        fn encode(&self) -> String {
+            serde_json::to_string(&self.0).unwrap()
+        }
+
+        fn decode(&self, encoded: &str) -> Result<Box<dyn Value>, String> {
+            serde_json::from_str::<String>(encoded)
+                .map(|value| Box::new(Self(value)) as Box<dyn Value>)
+                .map_err(|error| error.to_string())
+        }
+
+        fn clone_box(&self) -> Box<dyn Value> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn pattern_submission() {
+        let mut builder = InputSpec::builder();
+        let field = builder.field("digits", "Digits", Digits(String::new())).text_input();
+        let spec = builder.finish(field).unwrap();
+        assert_eq!(spec.field_schema("digits").unwrap()["pattern"], r"^\d+$");
+        let handle = InputHandle::new();
+        let receiver = handle.request(spec.clone(), Arc::new(State::default())).unwrap();
+        for digits in ["١", "１２"] {
+            assert!(matches!(
+                handle.submit_input(&serde_json::json!({"digits": digits}).to_string()),
+                Err(FlowError::InputInvalid(error)) if error.path == "/digits"
+            ));
+            assert_eq!(handle.input_spec().unwrap().schema(), spec.schema());
+        }
+        handle.submit_input(r#"{"digits":"123"}"#).unwrap();
+        let decoded = receiver.recv().unwrap();
+        let value: &dyn Any = decoded["digits"].as_ref();
+        assert_eq!(value.downcast_ref::<Digits>().unwrap().0, "123");
+        assert!(handle.input_spec().is_none());
     }
 
     #[derive(Clone, schemars::JsonSchema)]
@@ -1492,5 +1375,348 @@ mod tests {
             handle.submit_input(r#"{"feedback":"closed"}"#),
             Err(FlowError::InputClosed)
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lyquid_llm::{Backend, JsonApiResponse, LlmError, LlmResult, PreparedJsonApiRequest};
+    use lyquid_test::test;
+    use serde_json::Value as JsonValue;
+
+    use super::*;
+
+    struct TestStep;
+
+    impl Step for TestStep {
+        fn description(&self, _concise: bool) -> String {
+            "Test Step".to_owned()
+        }
+
+        fn input(&self, _scope: &Scope) -> Option<InputSpec> {
+            None
+        }
+
+        fn model_template(&self, _scope: &Scope) -> TemplateSpec {
+            TemplateSpec::Skip(TurnProposal::Advance {
+                next: None,
+                updates: StateUpdates::default(),
+            })
+        }
+
+        fn finalize(&self, scope: &Scope, _proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+            assert!(scope.model_response().is_none());
+            Ok(TraceSummary::Summary("tested".to_owned()))
+        }
+    }
+
+    type Observations = Arc<Mutex<Vec<(String, String, Option<Usage>)>>>;
+
+    struct FailingBackend;
+
+    impl Backend for FailingBackend {
+        fn prepare_request(&self, _request: &ModelRequest) -> LlmResult<PreparedJsonApiRequest> {
+            Err(LlmError::Backend {
+                provider: "test".to_owned(),
+                message: "request preparation failed".to_owned(),
+            })
+        }
+
+        fn parse_response(&self, _response: JsonApiResponse) -> LlmResult<ModelResponse> {
+            unreachable!("the test backend never sends a request")
+        }
+    }
+
+    fn usage_scope(observations: &Observations) -> Scope {
+        let observations = Arc::clone(observations);
+        let config = ModelConfig::new("test-model", FailingBackend);
+        let flow = Flow::builder("usage-flow")
+            .entry("start")
+            .step("start", TestStep)
+            .build()
+            .unwrap();
+        Scope::new(
+            Arc::new(flow),
+            State::builder().build().unwrap(),
+            AutoCheckpointConfig::Unbounded,
+            Some(config),
+        )
+        .on_usage(move |scope, usage| {
+            observations.lock().push((
+                scope.execution_id().to_string(),
+                scope.current_step().to_string(),
+                usage.cloned(),
+            ));
+        })
+    }
+
+    fn usage_response(usage: JsonValue) -> ModelResponse {
+        let backend = lyquid_llm::backend::openai_compat::OpenAiCompatBackend::responses("test", "unused");
+        backend
+            .parse_response(JsonApiResponse {
+                http: lyquid::http::Response {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                },
+                json: serde_json::json!({
+                    "output_text": "model output",
+                    "usage": usage,
+                }),
+            })
+            .unwrap()
+    }
+
+    struct ResponseStep {
+        response: ModelResponse,
+        fail: bool,
+    }
+
+    impl Step for ResponseStep {
+        fn description(&self, _: bool) -> String {
+            "Observe response".into()
+        }
+        fn input(&self, _: &Scope) -> Option<InputSpec> {
+            None
+        }
+        fn model_template(&self, _: &Scope) -> TemplateSpec {
+            TemplateSpec::Skip(TurnProposal::Advance {
+                next: None,
+                updates: StateUpdates::default(),
+            })
+        }
+        fn finalize(&self, scope: &Scope, _: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+            assert_eq!(scope.model_response(), Some(&self.response));
+            assert!(scope.clone().model_response().is_none());
+            if self.fail {
+                return Err("finalization failed".to_owned().into());
+            }
+            Ok(TraceSummary::Summary("observed".into()))
+        }
+    }
+
+    #[test]
+    fn response_context_is_cleared_after_success_or_failure_and_excluded_from_checkpoints() {
+        for fail in [false, true] {
+            let observations = Arc::new(Mutex::new(Vec::new()));
+            let mut scope = usage_scope(&observations);
+            let response = usage_response(serde_json::json!({"total_tokens": 5}));
+            let step = ResponseStep {
+                response: response.clone(),
+                fail,
+            };
+            let proposal = TurnProposal::Advance {
+                next: None,
+                updates: StateUpdates::default(),
+            };
+            let checkpoints = scope.checkpoint_ids().count();
+            assert_eq!(
+                scope.run_finalize(&step, proposal, Some(response), false).is_err(),
+                fail
+            );
+            assert!(scope.model_response().is_none());
+            assert!(scope.checkpoints.values().all(|saved| saved.model_response().is_none()));
+            if fail {
+                assert_eq!(scope.checkpoint_ids().count(), checkpoints);
+                assert!(scope.trace().entries.is_empty());
+                scope.advance().unwrap(); // The following model-free attempt sees no stale response.
+                assert!(scope.model_response().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn token_usage_reporting() {
+        // Report token usage whenever the provider returns it, even if the output
+        // is rejected; otherwise report None.
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let scope = usage_scope(&observations);
+        let response = usage_response(serde_json::json!({
+            "input_tokens": 20, "output_tokens": 10, "total_tokens": 35,
+        }));
+        assert_eq!(scope.handle_model_response(Ok(response.clone())).unwrap(), response);
+
+        let mut truncated = response.clone();
+        truncated.finish_reason = Some(FinishReason::Length);
+        assert!(scope.handle_model_response(Ok(truncated)).is_err());
+
+        let mut empty = response.clone();
+        empty.text = None;
+        assert!(scope.handle_model_response(Ok(empty)).is_err());
+
+        scope
+            .handle_model_response(Ok(usage_response(JsonValue::Null)))
+            .unwrap();
+        scope
+            .handle_model_response(Ok(usage_response(serde_json::json!({ "input_tokens": 20 }))))
+            .unwrap();
+        assert!(matches!(
+            scope.call_model(ModelRequest::new("test-model", "test prompt")),
+            Err(FlowError::Model(_))
+        ));
+
+        let observations = observations.lock();
+        for (execution, step, _) in observations.iter() {
+            assert_eq!(execution, &scope.execution_id().to_string());
+            assert_eq!(step, "start");
+        }
+        let usages = observations
+            .iter()
+            .map(|(_, _, usage)| usage.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            usages,
+            vec![
+                response.usage.clone(),
+                response.usage.clone(),
+                response.usage,
+                None,
+                Some(Usage {
+                    input_tokens: Some(20),
+                    output_tokens: None,
+                    total_tokens: None,
+                }),
+                None,
+            ]
+        );
+        assert!(scope.trace().entries.is_empty());
+    }
+
+    #[test]
+    fn token_usage_across_scopes() {
+        // Collect token usage from both parent and child Scopes, and keep the records
+        // when restoring a checkpoint.
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let mut scope = usage_scope(&observations);
+        let checkpoint = scope.checkpoint();
+        let child = scope.fork_child(Arc::clone(&scope.flow), StateUpdates::default());
+        let response = usage_response(serde_json::json!({ "total_tokens": 12 }));
+        child.handle_model_response(Ok(response.clone())).unwrap();
+        scope.handle_model_response(Ok(response.clone())).unwrap();
+        scope.advance().unwrap();
+        assert_eq!(observations.lock().len(), 2);
+
+        scope.restore(&checkpoint).unwrap();
+        scope.handle_model_response(Ok(response)).unwrap();
+        let observations = observations.lock();
+        assert_eq!(observations.len(), 3);
+        assert_eq!(observations[0].0, child.execution_id().to_string());
+        assert_eq!(observations[1].0, scope.execution_id().to_string());
+        assert_eq!(observations[2].0, scope.execution_id().to_string());
+    }
+
+    #[test]
+    fn usage_after_restore_and_clone() {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let mut scope = usage_scope(&observations);
+        // Scope::new creates this checkpoint before on_usage installs the observer.
+        let checkpoint = scope.checkpoint_ids().next().unwrap().clone();
+        scope.restore(&checkpoint).unwrap();
+        let cloned = scope.clone();
+        let response = usage_response(serde_json::json!({ "total_tokens": 12 }));
+        scope.handle_model_response(Ok(response.clone())).unwrap();
+        cloned.handle_model_response(Ok(response)).unwrap();
+
+        let observations = observations.lock();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].0, scope.execution_id().to_string());
+        assert_eq!(observations[1].0, cloned.execution_id().to_string());
+        assert!(
+            observations
+                .iter()
+                .all(|(_, _, usage)| usage.as_ref().unwrap().total_tokens == Some(12))
+        );
+    }
+
+    #[test]
+    fn validates_model_template() {
+        let flow = Arc::new(
+            Flow::builder("test-flow")
+                .entry("start")
+                .exit("done")
+                .step("start", TestStep)
+                .step("review", TestStep)
+                .build()
+                .expect("test Flow should be valid"),
+        );
+        let state = State::builder()
+            .field("title", "Current release title", "Draft".to_owned())
+            .build()
+            .expect("test State should be valid");
+        let scope = Scope::new(Arc::clone(&flow), state, AutoCheckpointConfig::Disabled, None);
+
+        let mut valid = ModelTemplate::new(
+            "Review the work",
+            vec![
+                (Some("review".into()), "More review is required".to_owned()),
+                (Some("done".into()), "The mounted Flow should exit".to_owned()),
+                (None, "The root Flow is complete".to_owned()),
+            ],
+            Vec::new(),
+        );
+        assert!(scope.validate_model_template(&valid).is_ok());
+
+        let empty = ModelTemplate::new("Review the work", Vec::new(), Vec::new());
+        assert_eq!(
+            scope.validate_model_template(&empty).err().as_deref(),
+            Some("a model template must declare at least one next-step criterion")
+        );
+
+        let duplicate = ModelTemplate::new(
+            "Review the work",
+            vec![
+                (Some("review".into()), "More review is required".to_owned()),
+                (Some("review".into()), "A second description is not allowed".to_owned()),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(
+            scope.validate_model_template(&duplicate).err().as_deref(),
+            Some("duplicate next-step criterion for Step review")
+        );
+
+        let unknown = ModelTemplate::new(
+            "Review the work",
+            vec![(Some("missing".into()), "Use an unknown destination".to_owned())],
+            Vec::new(),
+        );
+        assert_eq!(
+            scope.validate_model_template(&unknown).err().as_deref(),
+            Some("model template declares unknown next Step missing")
+        );
+
+        let mounted = scope.fork_child(flow, StateUpdates::default());
+        let mounted_completion = ModelTemplate::new(
+            "Review the work",
+            vec![(None, "Complete the parent Flow".to_owned())],
+            Vec::new(),
+        );
+        assert_eq!(
+            mounted.validate_model_template(&mounted_completion).err().as_deref(),
+            Some("a mounted Flow model template cannot declare root Flow completion")
+        );
+        valid.next_step_criteria.pop();
+        assert!(mounted.validate_model_template(&valid).is_ok());
+
+        valid
+            .state_update_criteria
+            .push(("title".to_owned(), "Replace when the approved title changes".to_owned()));
+        assert!(scope.validate_model_template(&valid).is_ok());
+
+        let mut unknown_field = valid.clone();
+        unknown_field.state_update_criteria[0].0 = "missing".to_owned();
+        assert_eq!(
+            scope.validate_model_template(&unknown_field).err().as_deref(),
+            Some("model template declares unknown State field missing")
+        );
+
+        let mut duplicate_field = valid;
+        duplicate_field
+            .state_update_criteria
+            .push(("title".to_owned(), "Replace when the editor changes it".to_owned()));
+        assert_eq!(
+            scope.validate_model_template(&duplicate_field).err().as_deref(),
+            Some("duplicate State update criterion for field title")
+        );
     }
 }
