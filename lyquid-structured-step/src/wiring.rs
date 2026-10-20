@@ -77,8 +77,8 @@ pub struct Binding {
     pub to: BindingTarget,
 }
 
-/// Data for saving and loading a `StepBuilder`'s wiring: description, bindings, routing, and trace.
-/// Import/export it through `StepBuilder::with_wiring` and `StepBuilder::wiring`.
+/// Data for saving and loading a `StructuredStepBuilder`'s wiring: description, bindings, routing, and trace.
+/// Import/export it through `StructuredStepBuilder::with_wiring` and `StructuredStepBuilder::wiring`.
 /// Input specifications, model templates, and executable callbacks are supplied separately on the builder;
 /// this data contains only the wiring portion of a Step. The builder's `build` method produces
 /// the runnable Step using Flow's existing lifecycle.

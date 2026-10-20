@@ -8,7 +8,7 @@ Formatting is optional: attach the action only when parsed JSON is needed.
 ## Quick start
 
 ```rust
-use lyquid_configured_step::StepBuilder;
+use lyquid_structured_step::StructuredStepBuilder;
 use lyquid_json_formatter::{JsonFormatterConfig, json_formatter};
 use serde_json::{Value, json};
 
@@ -19,7 +19,7 @@ let config = JsonFormatterConfig::json_schema(json!({
     "additionalProperties": false
 }));
 
-let step = StepBuilder::operation(|_: &Value| Ok(r#"{"count":8}"#.to_owned()))
+let step = StructuredStepBuilder::operation(|_: &Value| Ok(r#"{"count":8}"#.to_owned()))
     .action(json_formatter(config)?)
     .update("count", "/count")
     .next("done")
@@ -41,7 +41,7 @@ sources, provider JSON, HTTP response, web-search flag, and finish reason, remai
 Save the formatted value with `action_named` so later actions can read it after intervening results:
 
 ```rust
-use lyquid_configured_step::{StepBuilder, ValueSource};
+use lyquid_structured_step::{StructuredStepBuilder, ValueSource};
 use lyquid_flow::ModelTemplate;
 use lyquid_json_formatter::{JsonFormatterConfig, model_response_json_formatter};
 
@@ -50,7 +50,7 @@ let template = ModelTemplate::new(
     vec![(Some("done".into()), "When complete".into())],
     vec![("answer".into(), "The numeric answer".into())],
 );
-let step = StepBuilder::new()
+let step = StructuredStepBuilder::new()
     .with_model(template)
     .action(|_, _| Ok("an unrelated first result"))
     .action_named("formatted", model_response_json_formatter(JsonFormatterConfig::new())?)
@@ -74,17 +74,17 @@ Declare compatible `answer` and `raw_reply` State fields and the `done` destinat
 parses its `advance`/`restore` envelope before finalization; the raw text and any formatter schema
 cover that complete envelope. For example, an advance response contains
 `{"type":"advance","next":"done","updates":{"answer":42}}`. This action does not change the model
-request or replace Flow's parser. Configured Steps skip forward actions for restore proposals.
+request or replace Flow's parser. Structured Steps skip forward actions for restore proposals.
 
 For domain JSON stored as a String inside a model-proposed field, start with
-`StepBuilder::<serde_json::Value, String>::proposed("reply")`, attach a template declaring that
+`StructuredStepBuilder::<serde_json::Value, String>::proposed("reply")`, attach a template declaring that
 String field, and use `.action_named("formatted", json_formatter(config)?)` instead.
 
 Raw responses and saved outputs last only for the current finalization. State bindings and trace
 templates persist only the selected values. Model-response binding paths include `/text`,
 `/usage/total_tokens`, `/sources`, `/raw_json`, and `/http/status`. Saved formatted output uses
 `ValueSource::ActionResult { action, pointer }`. See the
-[temporary context guide](../../../lyquid-configured-step/GUIDE.md#temporary-model-response-and-named-outputs).
+[temporary context guide](../../../lyquid-structured-step/GUIDE.md#temporary-model-response-and-named-outputs).
 
 ## Configuration
 

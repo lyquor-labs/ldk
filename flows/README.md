@@ -1,7 +1,7 @@
 # Building Flows
 
 Flows connect Steps and child Flows, define entry points and exits, and carry data between turns. Build your own
-with the [Flow runtime](../lyquid-flow/README.md) and [configured Steps](../lyquid-configured-step/README.md).
+with the [Flow runtime](../lyquid-flow/README.md) and [structured Steps](../lyquid-structured-step/README.md).
 
 The LDK focuses on making custom Step and Flow configuration easy, with reusable
 [actions](../steps/actions/) supplying behavior. The Flows in this directory are examples of composition;

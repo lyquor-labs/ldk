@@ -5,12 +5,12 @@ use std::sync::Arc;
 use lyquid::prelude::{HashMap, HashSet, hashbrown::hash_map::Entry, new_hashmap, new_hashset};
 use serde::{Deserialize, Serialize};
 
-use crate::InputSpec;
 use crate::TurnProposal;
 use crate::scope::{FlowError, Scope};
 use crate::state::StateUpdates;
 use crate::step::{Step, StepId, TemplateSpec};
 use crate::trace::TraceSummary;
+use crate::{InputSpec, ToolManifest, ToolStep};
 
 type ViewFn = fn(&Scope) -> Result<crate::ViewSpec, FlowError>;
 type HistoryFn = fn(&Scope, Option<&serde_json::Value>) -> Result<Option<serde_json::Value>, FlowError>;
@@ -99,6 +99,8 @@ pub struct FlowBuilder {
     exits: HashSet<StepId>,
     /// Local Step implementations retained until their IDs and child wiring are validated.
     steps: Vec<(StepId, Arc<dyn Step>)>,
+    /// Fixed manifests captured by explicit tool registrations.
+    tool_manifests: HashMap<StepId, ToolManifest>,
 }
 
 impl FlowBuilder {
@@ -146,6 +148,16 @@ impl FlowBuilder {
         self
     }
 
+    /// Registers a ToolStep and captures its fixed manifest.
+    pub fn tool_step<S>(mut self, id: impl Into<StepId>, step: S) -> Self
+    where
+        S: ToolStep + 'static,
+    {
+        let id = id.into();
+        self.tool_manifests.insert(id.clone(), step.manifest());
+        self.step(id, step)
+    }
+
     /// Registers a child Flow, connects its exits, and selects how its Trace is recorded.
     ///
     /// The reusable graph is shallow-cloned so this mount owns its exit mapping and Trace mode.
@@ -184,6 +196,7 @@ impl FlowBuilder {
             entry: entry.clone(),
             exits: self.exits,
             steps,
+            tool_manifests: self.tool_manifests,
             exit_transitions: ExitTransitions::new(),
             trace_mode: TraceMode::Expanded,
         };
@@ -216,6 +229,8 @@ pub struct Flow {
     exits: HashSet<StepId>,
     /// Validated local Step implementations indexed by stable ID.
     steps: HashMap<StepId, Arc<dyn Step>>,
+    /// Manifests exposed by Steps registered through [`FlowBuilder::tool_step`].
+    tool_manifests: HashMap<StepId, ToolManifest>,
     /// Parent-local targets configured when this Flow is mounted as a Step.
     exit_transitions: ExitTransitions,
     /// Representation configured for this Flow's Trace when mounted as a Step.
@@ -233,6 +248,7 @@ impl Flow {
             entries: Vec::new(),
             exits: new_hashset(),
             steps: Vec::new(),
+            tool_manifests: new_hashmap(),
         }
     }
 
@@ -250,6 +266,10 @@ impl Flow {
 
     pub(super) fn step(&self, id: &StepId) -> Option<&dyn Step> {
         self.steps.get(id).map(AsRef::as_ref)
+    }
+
+    pub(super) fn tool_manifest(&self, id: &StepId) -> Option<&ToolManifest> {
+        self.tool_manifests.get(id)
     }
 
     pub(super) fn step_ids(&self) -> impl Iterator<Item = &StepId> {

@@ -7,7 +7,7 @@ use lyquid_flow::{InputSpec, State};
 use lyquid_test::test;
 use serde_json::{Value, json};
 
-use crate::{BindingTarget, StepBuilder, ValueSource};
+use crate::{BindingTarget, StructuredStepBuilder, ValueSource};
 
 fn input(mut field: Value, optional: bool) -> InputSpec {
     let mut builder = InputSpec::builder();
@@ -23,14 +23,14 @@ fn input(mut field: Value, optional: bool) -> InputSpec {
     serde_json::from_value(specification).unwrap()
 }
 
-fn count(input: InputSpec, source: ValueSource) -> StepBuilder {
-    StepBuilder::new()
+fn count(input: InputSpec, source: ValueSource) -> StructuredStepBuilder {
+    StructuredStepBuilder::new()
         .data::<u64>("count")
         .with_input(input)
         .bind_data("count", source)
 }
 
-fn rejects(builder: StepBuilder, message: &str) {
+fn rejects(builder: StructuredStepBuilder, message: &str) {
     let exported = builder.to_json().unwrap_err();
     let built = builder.build().err().expect("invalid binding must fail build");
     for error in [exported, built] {
@@ -51,7 +51,7 @@ fn static_input_rejects_unknown_fields_for_context_and_state() {
         rejects(count(input(json!({"type": "integer"}), false), source), "missing");
     }
     rejects(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_input(input(json!({"type": "integer"}), false))
             .bind(
                 ValueSource::Input { name: "missing".into() },
@@ -89,7 +89,7 @@ fn static_input_rejects_disjoint_declared_types_and_resolves_references() {
         );
     }
     let source = ValueSource::Input { name: "reply".into() };
-    let target_reference = StepBuilder::new()
+    let target_reference = StructuredStepBuilder::new()
         .data_schema(
             "count",
             json!({"$ref": "#/$defs/count", "$defs": {"count": {"type": "integer"}}}),
@@ -123,7 +123,7 @@ fn static_input_checks_nested_projections_without_requiring_array_values() {
         rejects(count(input(schema.clone(), false), source.clone().at(pointer)), pointer);
     }
     rejects(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .data::<String>("count")
             .with_input(input(schema, false))
             .bind_data("count", source.at("/items/0/count")),
@@ -167,7 +167,7 @@ fn static_input_validates_reachable_fallbacks_using_argument_constraints() {
         default: json!(256),
     };
     rejects(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .data::<u8>("count")
             .with_input(input(json!({"type": "integer"}), true))
             .bind_data("count", source.clone()),
@@ -175,7 +175,7 @@ fn static_input_validates_reachable_fallbacks_using_argument_constraints() {
     );
     // A required field is always supplied; its fallback is unreachable.
     assert!(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .data::<u8>("count")
             .with_input(input(json!({"type": "integer"}), false))
             .bind_data("count", source)
@@ -244,7 +244,7 @@ fn static_and_dynamic_inputs_retain_runtime_validation_and_atomic_failure() {
         let action_calls = Arc::new(AtomicUsize::new(0));
         let counted = action_calls.clone();
         let spec = input(json!({"type": ["integer", "string"]}), false);
-        let builder = StepBuilder::new()
+        let builder = StructuredStepBuilder::new()
             .data::<u64>("count")
             .bind_input("count", "reply")
             .action_with_config("count", (), move |_, value, &()| {

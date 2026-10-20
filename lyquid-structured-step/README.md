@@ -1,11 +1,14 @@
-# Step builder
+# Structured Step builder
 
-`lyquid-configured-step` provides `StepBuilder` to assemble an ordinary
+`lyquid-structured-step` provides `StructuredStepBuilder` to assemble an ordinary
 [lyquid-flow](../lyquid-flow/README.md) Step from reusable input, model, and finalization components.
+The built `StructuredStep` implements the core `Step` contract. "Structured" describes this Rust
+authoring layer; declarative configuration is a separate capability, and opaque Rust callbacks can
+run natively even when configuration export is unavailable.
 Configure behavior and data wiring in one chain instead of writing a custom Step implementation:
 
 ```rust
-let step = StepBuilder::new()
+let step = StructuredStepBuilder::new()
     .with_input(input_spec)
     .with_model(model_template)
     .action(action1)
@@ -32,7 +35,7 @@ The optional [JSON formatter action](../steps/actions/json_formatter/README.md) 
 and schema validation through the same action API. See the [usage guide and API reference](GUIDE.md)
 for Rust APIs, saved JSON wiring, shared action inputs, examples, and failure behavior.
 
-`StepBuilder` and the built `ConfiguredStep` expose `.to_json()` for configuration export.
+`StructuredStepBuilder` and the built `StructuredStep` expose `.to_json()` for configuration export.
 Use `.action_with_config(name, settings, callback)` to retain an explicit callback reference alongside
 its native Rust implementation. Export never executes callbacks and does not change typed State or
 input codecs. Opaque callbacks still run natively but produce an export error. JSON execution belongs
@@ -49,4 +52,4 @@ produce strings. Dynamic schemas and value-dependent validation remain runtime c
 Model prompts, actions, and summaries can use the prepared `context.<argument>`, including nested
 fields. Native model templates also retain `state`, interactive `input`, `trace`, and `step`.
 See the [data-contract guide](GUIDE.md#declare-data-contracts) for phase availability and logical model outputs.
-These contracts support the [configured FlowBuilder work](https://github.com/lyquor-labs/lyquor/issues/1656).
+These contracts support the [Flow graph authoring work](https://github.com/lyquor-labs/lyquor/issues/1656).

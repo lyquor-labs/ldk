@@ -1,8 +1,8 @@
-use lyquid_configured_step::{StepBuilder, ValueSource};
 use lyquid_flow::{
     Flow, FlowError, InputSpec, Scope, State, StateBuilder, StateNamespace, StateUpdates, Step, TemplateSpec,
     TraceSummary, TurnProposal,
 };
+use lyquid_structured_step::{StructuredStepBuilder, ValueSource};
 use refinement_step::{DECISION_STATE_FIELD, DecisionRequest, DecisionState, REFINEMENT_INPUT_FIELD};
 
 pub(crate) const INPUT_STEP: &str = "input";
@@ -159,7 +159,7 @@ impl RefinementLoopConfig {
 }
 
 pub(crate) fn input_step(nonblank: bool) -> impl Step {
-    StepBuilder::new()
+    StructuredStepBuilder::new()
         .description("Collect a text message")
         .with_input_factory(move |scope| {
             let mut input = InputSpec::builder();

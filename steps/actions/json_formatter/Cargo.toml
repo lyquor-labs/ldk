@@ -7,12 +7,12 @@ edition.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Optional JSON parsing and schema validation actions for configured Steps."
+description = "Optional JSON parsing and schema validation actions for structured Steps."
 
 [dependencies]
-lyquid-configured-step.workspace = true
 lyquid-flow.workspace = true
 lyquid-llm.workspace = true
+lyquid-structured-step.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

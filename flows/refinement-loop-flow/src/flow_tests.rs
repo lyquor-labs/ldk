@@ -7,7 +7,10 @@ fn input_flow(config: &RefinementLoopConfig) -> Flow {
     let mut builder = Flow::builder("input-contract")
         .entry(CHOICE_STEP)
         .step(CHOICE_STEP, config.choice_step().unwrap())
-        .step(REFINE_STEP, StepBuilder::new().next(CHOICE_STEP).build().unwrap());
+        .step(
+            REFINE_STEP,
+            StructuredStepBuilder::new().next(CHOICE_STEP).build().unwrap(),
+        );
     for exit in &config.exits {
         builder = builder.exit(exit.id.as_str());
     }

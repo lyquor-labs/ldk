@@ -344,7 +344,7 @@ fn malformed_partial_decisions_are_rejected_by_the_value_decoder() {
 #[test]
 fn configured_step_exports_typed_contracts_and_a_named_action() {
     let step = refinement_step(HANDOFF_EXIT);
-    let saved: lyquid_configured_step::StepConfiguration = serde_json::from_str(&step.to_json().unwrap()).unwrap();
+    let saved: lyquid_structured_step::StepConfiguration = serde_json::from_str(&step.to_json().unwrap()).unwrap();
     let request_schema = &saved.data.arguments["request"].schema;
     lyquid_flow::validate_json_schema(request_schema, &serde_json::to_value(request()).unwrap(), "request").unwrap();
     assert!(

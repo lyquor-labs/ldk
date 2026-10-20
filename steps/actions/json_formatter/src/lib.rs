@@ -1,12 +1,12 @@
-//! Optional JSON parsing and validation actions for configured Steps.
+//! Optional JSON parsing and validation actions for structured Steps.
 //!
 //! Parse a preceding text result or read the original model response from temporary action context.
-//! Save the parsed value with `StepBuilder::action_named` to make it available to later actions and bindings.
+//! Save the parsed value with `StructuredStepBuilder::action_named` to make it available to later actions and bindings.
 //! These actions do not call a model, change its request, select a next Step, or write State.
 
-use lyquid_configured_step::ActionContext;
 use lyquid_flow::{check_json_schema, validate_json_schema};
 use lyquid_llm::FinishReason;
+use lyquid_structured_step::ActionContext;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,7 +32,7 @@ impl JsonFormatterConfig {
 
 /// Build an ordinary finalization action from JSON text to a validated JSON value.
 /// Static schema errors fail here, before the action is attached or a model is called.
-/// Pass the returned callback to `StepBuilder::action` or `StepBuilder::action_named`.
+/// Pass the returned callback to `StructuredStepBuilder::action` or `StructuredStepBuilder::action_named`.
 pub fn json_formatter<C>(
     config: JsonFormatterConfig,
 ) -> Result<impl Fn(&ActionContext<'_, C>, String) -> Result<Value, String> + Clone + Send + Sync, String> {

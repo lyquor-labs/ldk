@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use lyquid_configured_step::{ActionContext, StepBuilder, ValueSource};
 use lyquid_flow::{
     AutoCheckpointConfig, Flow, ModelTemplate, Scope, State, StateUpdates, Step, TraceSummary, TurnProposal,
 };
 use lyquid_llm::{FinishReason, ModelResponse, Usage};
+use lyquid_structured_step::{ActionContext, StructuredStepBuilder, ValueSource};
 use lyquid_test::test;
 use serde_json::{Value, json};
 
@@ -60,7 +60,7 @@ fn config() -> JsonFormatterConfig {
 
 #[test]
 fn formatter_runs_between_actions_before_bindings_routing_and_trace() {
-    let step = StepBuilder::new()
+    let step = StructuredStepBuilder::new()
         .bind_state("count", "count")
         .action(|context: &ActionContext<'_, Value>, previous: Value| {
             assert_eq!(context.prepared(), &previous);
@@ -89,7 +89,7 @@ fn invalid_json_or_schema_stops_later_actions_and_preserves_the_turn() {
     for text in ["not JSON", r#"{"count":0,"route":"finish"}"#] {
         let called = Arc::new(AtomicUsize::new(0));
         let count_calls = called.clone();
-        let step = StepBuilder::operation(move |_: &Value| Ok(text.to_owned()))
+        let step = StructuredStepBuilder::operation(move |_: &Value| Ok(text.to_owned()))
             .action(json_formatter(config()).unwrap())
             .action(move |_, value| {
                 count_calls.fetch_add(1, Ordering::SeqCst);
@@ -114,7 +114,7 @@ fn invalid_json_or_schema_stops_later_actions_and_preserves_the_turn() {
 
 #[test]
 fn named_formatter_output_survives_intervening_actions_and_supplies_bindings() {
-    let step = StepBuilder::operation(|_: &Value| Ok(r#"{"count":8,"route":"finish"}"#.to_owned()))
+    let step = StructuredStepBuilder::operation(|_: &Value| Ok(r#"{"count":8,"route":"finish"}"#.to_owned()))
         .action_named("formatted", json_formatter(config()).unwrap())
         .action(|_, _| Ok(false))
         .action(|context, previous| {
@@ -145,7 +145,7 @@ fn named_formatter_output_survives_intervening_actions_and_supplies_bindings() {
 
 #[test]
 fn model_response_formatter_rejects_missing_context_without_running_later_actions() {
-    let step = StepBuilder::new()
+    let step = StructuredStepBuilder::new()
         .action(|_, _| Ok("unrelated result"))
         .action_named("formatted", model_response_json_formatter(config()).unwrap())
         .action(|_, _| -> Result<Value, String> { panic!("later action must not run") })
@@ -164,7 +164,7 @@ fn model_response_formatter_rejects_missing_context_without_running_later_action
 
 #[test]
 fn omitting_the_formatter_keeps_plain_text_usable() {
-    let step = StepBuilder::operation(|_: &Value| Ok("Plain text { without JSON".to_owned()))
+    let step = StructuredStepBuilder::operation(|_: &Value| Ok("Plain text { without JSON".to_owned()))
         .update("text", "")
         .next("done")
         .build()
@@ -179,7 +179,7 @@ fn omitting_the_formatter_keeps_plain_text_usable() {
 
 #[test]
 fn model_proposed_text_can_feed_the_formatter_without_replacing_flows_parser() {
-    let step = StepBuilder::<Value, String>::proposed("text")
+    let step = StructuredStepBuilder::<Value, String>::proposed("text")
         .with_model(ModelTemplate::new(
             "Produce JSON text in the text field",
             vec![(Some("done".into()), "When complete".into())],

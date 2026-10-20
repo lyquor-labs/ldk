@@ -56,7 +56,7 @@ pub type Input = JsonValue;
 /// A retained input page and its complete validation and decoding contract.
 ///
 /// JSON deserialization validates the UI and schema, then retains `serde_json::Value` decoders for
-/// the declared fields. These fields are read as JSON values; configured-step bindings can decode
+/// the declared fields. These fields are read as JSON values; structured-step bindings can decode
 /// them into typed arguments or State replacements. Rust-built specs retain their original codecs.
 #[derive(Clone, Serialize)]
 pub struct InputSpec {

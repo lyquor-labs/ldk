@@ -6,7 +6,7 @@ use lyquid_flow::{AutoCheckpointConfig, Flow, InputSpec, Scope, State, Step, Tra
 use lyquid_test::test;
 use serde_json::{Value, json};
 
-use crate::{StepBuilder, ValueSource};
+use crate::{StructuredStepBuilder, ValueSource};
 
 #[path = "../multiple-choice/input.rs"] mod multiple_choice;
 #[path = "../text/input.rs"] mod text;
@@ -70,7 +70,7 @@ fn text_examples_preserve_exact_submissions_with_direct_state_bindings() {
         let control = assert_ui(&input, "message", "TextField", "Your message", "Send");
         assert_eq!(control["variant"], "shortText");
         for message in ["", " \n\t ", "  Keep {{ this }} exactly.\n"] {
-            let step = StepBuilder::new()
+            let step = StructuredStepBuilder::new()
                 .description("Collect a text message")
                 .with_input(input.clone())
                 .update_from("message", ValueSource::Input { name: "message".into() })
@@ -118,7 +118,7 @@ fn choice_examples_use_ids_as_data_and_consumer_owned_routes() {
             ])
         );
         for (choice, destination) in [("edit", "text_input"), ("finish", "done")] {
-            let step = StepBuilder::new()
+            let step = StructuredStepBuilder::new()
                 .description("Choose an action")
                 .with_input(input.clone())
                 .bind_input("choice", "choice")

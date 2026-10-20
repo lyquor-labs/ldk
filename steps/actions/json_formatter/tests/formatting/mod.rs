@@ -1,5 +1,5 @@
-use lyquid_configured_step::ActionContext;
 use lyquid_llm::FinishReason;
+use lyquid_structured_step::ActionContext;
 use lyquid_test::test;
 use serde_json::{Map, Value, json};
 

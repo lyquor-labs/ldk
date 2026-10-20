@@ -1,10 +1,10 @@
 mod view;
 
-use lyquid_configured_step::{StepBuilder, ValueSource};
 use lyquid_flow::{
     ExitTransitions, Flow, FlowError, InputSpec, Scope, State, StateUpdates, Step, TemplateSpec, TraceMode,
     TraceSummary, TurnProposal,
 };
+use lyquid_structured_step::{StructuredStepBuilder, ValueSource};
 use refinement_loop_flow::{CandidateRanking, DecisionRequest, DecisionState, ExitChoice, RefinementLoopConfig};
 
 use crate::{ProductCatalog, SearchContext, ShoppingSearchState};
@@ -61,7 +61,7 @@ fn text_input(field: &str, prompt: &str) -> InputSpec {
 }
 
 fn restart_feedback_step() -> impl Step {
-    StepBuilder::new()
+    StructuredStepBuilder::new()
         .description("Collect a text message")
         .with_input(text_input(
             RESTART_FEEDBACK_FIELD,
@@ -92,7 +92,7 @@ fn build_flow(aggregation: impl Step, refinement: Flow, feedback: impl Step) -> 
         .entry(SHOPPING_REQUEST_STEP)
         .step(
             SHOPPING_REQUEST_STEP,
-            StepBuilder::new()
+            StructuredStepBuilder::new()
                 .description("Collect a text message")
                 .with_input(text_input(
                     SHOPPING_REQUEST_STATE_FIELD,

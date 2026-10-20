@@ -11,7 +11,7 @@ use lyquid_test::test;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{NextCase, NextStep, StepBuilder, StepWiring};
+use crate::{NextCase, NextStep, StepWiring, StructuredStepBuilder};
 
 fn scope(step: impl Step) -> Scope {
     Scope::new(
@@ -30,7 +30,7 @@ fn scope(step: impl Step) -> Scope {
 }
 
 fn wiring() -> StepWiring {
-    StepBuilder::new()
+    StructuredStepBuilder::new()
         .description("Route a result")
         .next("done")
         .update("value", "/value")
@@ -48,27 +48,27 @@ fn all_declared_routes_are_validated_before_the_action() {
     };
     for wiring in [
         empty,
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .route_by("not-a-pointer", [("a", "done")])
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .route_by("/bad~", [("a", "done")])
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .route_by("/bad~2", [("a", "done")])
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .route_by("/route", [("a", "done"), ("a", "done")])
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .route_by("/route", [("a", "done"), ("b", "missing")])
             .wiring()
@@ -76,7 +76,7 @@ fn all_declared_routes_are_validated_before_the_action() {
     ] {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let built = StepBuilder::operation(move |_: &Value| {
+        let built = StructuredStepBuilder::operation(move |_: &Value| {
             counted.fetch_add(1, Ordering::Relaxed);
             Ok(json!({"route": "a", "value": 8}))
         })
@@ -103,7 +103,7 @@ fn unknown_missing_and_non_string_routes_do_not_commit_a_turn() {
         json!({"route": "other", "value": 8}),
     ] {
         let mut scope = scope(
-            StepBuilder::operation(move |_: &Value| Ok(result.clone()))
+            StructuredStepBuilder::operation(move |_: &Value| Ok(result.clone()))
                 .with_wiring(wiring())
                 .build()
                 .unwrap(),
@@ -123,7 +123,7 @@ fn routes_round_trip_and_may_share_a_target_or_complete_the_root() {
         let encoded = serde_json::to_string(&wiring()).unwrap();
         let wiring = serde_json::from_str(&encoded).unwrap();
         let mut scope = scope(
-            StepBuilder::operation(move |_: &Value| Ok(json!({"route": route, "value": 8})))
+            StructuredStepBuilder::operation(move |_: &Value| Ok(json!({"route": route, "value": 8})))
                 .with_wiring(wiring)
                 .build()
                 .unwrap(),
@@ -142,7 +142,7 @@ fn routes_round_trip_and_may_share_a_target_or_complete_the_root() {
         }],
     };
     let mut scope = scope(
-        StepBuilder::operation(|_: &Value| Ok(json!({"route": "finish", "value": 9})))
+        StructuredStepBuilder::operation(|_: &Value| Ok(json!({"route": "finish", "value": 9})))
             .with_wiring(wiring)
             .build()
             .unwrap(),
@@ -160,7 +160,7 @@ fn routing_uses_json_pointer_escapes_and_the_complete_result() {
         ("/routes/0", json!({"routes": ["finish"]})),
     ] {
         let mut scope = scope(
-            StepBuilder::operation(move |_: &Value| Ok(result.clone()))
+            StructuredStepBuilder::operation(move |_: &Value| Ok(result.clone()))
                 .description("Route")
                 .next("done")
                 .route_by(pointer, [("finish", "done")])
@@ -182,7 +182,7 @@ struct Identity {
 fn execution_id_binding_uses_the_actual_mounted_execution() {
     let expected_id = Arc::new(Mutex::new(None));
     let observed_id = expected_id.clone();
-    let step = StepBuilder::operation(|context: &Identity| Ok(context.id.clone()))
+    let step = StructuredStepBuilder::operation(|context: &Identity| Ok(context.id.clone()))
         .description("Capture identity")
         .next("done")
         .bind_execution_id("id")

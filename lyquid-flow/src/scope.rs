@@ -428,27 +428,18 @@ impl Scope {
 
     /// Returns one Step-scoped value from the requested namespace.
     pub fn get<V: crate::Value>(&self, namespace: StateNamespace, name: &str) -> Option<&V> {
-        match namespace {
-            StateNamespace::Default => self.updates.get(name),
-            StateNamespace::Input => self.updates.get_ephemeral(namespace, name),
-        }
+        self.updates.get_in(namespace, name)
     }
 
     /// Reads a Step-scoped value without requiring its concrete type.
-    /// Like [`Self::get`], the default namespace reads staged replacements, not committed State.
+    /// Committed values are available through [`Self::state`].
     pub fn get_value(&self, namespace: StateNamespace, name: &str) -> Option<&dyn crate::Value> {
-        match namespace {
-            StateNamespace::Default => self.updates.staging.get(name).map(Box::as_ref),
-            StateNamespace::Input => self.updates.ephemeral.get(&namespace)?.get(name).map(Box::as_ref),
-        }
+        self.updates.get_value_in(namespace, name)
     }
 
     /// Adds, replaces, or removes one Step-scoped value in the requested namespace.
     pub fn set(&mut self, namespace: StateNamespace, name: String, value: Option<Box<dyn crate::Value>>) {
-        match namespace {
-            StateNamespace::Default => self.updates.set(name, value),
-            StateNamespace::Input => self.updates.set_ephemeral(namespace, name, value),
-        }
+        self.updates.set_in(namespace, name, value);
     }
 
     pub(super) fn updates(&self) -> &StateUpdates {
@@ -727,7 +718,7 @@ impl Scope {
             if !seen_fields.insert(field) {
                 return Err(format!("duplicate State update criterion for field {field}"));
             }
-            if !self.state().fields.contains_key(field) {
+            if self.state().get_value(field).is_none() {
                 return Err(format!("model template declares unknown State field {field}"));
             }
         }
@@ -740,6 +731,9 @@ impl Scope {
     ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
         let (proposal, response) = match step.model_template(self) {
             TemplateSpec::Template(template) => {
+                if self.flow.tool_manifest(self.current_step()).is_some() {
+                    return Err(format!("ToolStep {} must skip model execution", self.current_step()).into());
+                }
                 self.validate_model_template(&template)?;
                 let request = prompt::build_request(self.model()?, &template, &self.flow, self)?;
                 let response = self.call_model(request)?;

@@ -1,6 +1,6 @@
 # Building Steps
 
-Use [StepBuilder](../lyquid-configured-step/README.md) to configure your own Steps from an optional `InputSpec`,
+Use [StructuredStepBuilder](../lyquid-structured-step/README.md) to configure your own Steps from an optional `InputSpec`,
 an optional `ModelTemplate`, ordered actions, and data bindings. Compose those Steps into
 [Flows](../flows/README.md).
 

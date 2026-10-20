@@ -1,6 +1,6 @@
-# Configured-step usage guide
+# Structured-step usage guide
 
-This guide shows how to configure and run Steps with `lyquid-configured-step`, using Rust builders
+This guide shows how to configure and run Steps with `lyquid-structured-step`, using Rust builders
 or JSON wiring with typed behavior supplied by the application. See the [module overview](README.md)
 for its purpose and relationship to the Flow runtime.
 
@@ -17,7 +17,7 @@ for its purpose and relationship to the Flow runtime.
 
 ## Choose phase components
 
-`StepBuilder::build()` returns an implementation of the existing `lyquid-flow::Step` hooks. Choose the work in each phase:
+`StructuredStepBuilder::build()` returns an implementation of the existing `lyquid-flow::Step` hooks. Choose the work in each phase:
 
 | Phase | Reusable components | How to skip optional work |
 | --- | --- | --- |
@@ -29,7 +29,7 @@ There is still a finalization hook and an atomic runtime commit for every succes
 custom processing does not skip bindings, routing, trace rendering, or validation. Input-only,
 model-only, processing-only, and combined steps all use the same runner.
 
-Use one `StepBuilder` chain for both wiring and behavior. Start with `new()`, attach
+Use one `StructuredStepBuilder` chain for both wiring and behavior. Start with `new()`, attach
 an optional `InputSpec` and `ModelTemplate`, append finalization functions with `.action(...)`, configure wiring, and call
 `build()` to get a Step for `Flow::builder().step(...)`. Typed Rust operation and proposed-value
 constructors are also available. Reusable application behavior is an ordinary Rust function passed
@@ -45,7 +45,7 @@ and commits the step.
 ```rust
 use std::sync::Arc;
 
-use lyquid_configured_step::StepBuilder;
+use lyquid_structured_step::StructuredStepBuilder;
 use lyquid_flow::{AutoCheckpointConfig, Flow, Scope, State};
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +54,7 @@ struct Context {
     count: u64,
 }
 
-let step = StepBuilder::operation(|context: &Context| {
+let step = StructuredStepBuilder::operation(|context: &Context| {
     Ok(Context { count: context.count + 1 })
 })
     .description("Increment a counter")
@@ -86,8 +86,8 @@ To store wiring or import it from a UI, see [Save and load JSON wiring](#save-an
 
 ## API reference
 
-Import `StepBuilder` and the configuration data types from `lyquid_configured_step`. All fluent
-methods below belong to `StepBuilder`; the serialized structs contain data only.
+Import `StructuredStepBuilder` and the configuration data types from `lyquid_structured_step`. All fluent
+methods below belong to `StructuredStepBuilder`; the serialized structs contain data only.
 
 The types table shows serialized values. Wiring methods show the corresponding fields inside a complete
 `StepWiring`, which requires `description`, `bindings`, `next`, and `summary`. Field names and values
@@ -96,7 +96,7 @@ for that API; the application supplies its behavior in Rust or through the host.
 
 ### Step-building APIs
 
-These methods describe what the Step does. Start with `StepBuilder::new()`, optionally attach an input
+These methods describe what the Step does. Start with `StructuredStepBuilder::new()`, optionally attach an input
 specification and a model template, then append `.action(unit)` calls in execution order. Omitted components
 are skipped automatically. There are no explicit bypass or disable methods. Bindings, routing, and
 summary rendering still finalize every successful turn.
@@ -115,7 +115,7 @@ summary rendering still finalize every successful turn.
 Names must be nonblank and unique within the chain; only named outputs require serialization.
 
 The JSON input object can be deserialized as `InputSpec` data. Complete Step configuration is exported
-through `.to_json()` on the same `StepBuilder` or its built Step; it does not create a JSON runtime.
+through `.to_json()` on the same `StructuredStepBuilder` or its built Step; it does not create a JSON runtime.
 A formatter is an ordinary `.action(formatter)` callback. For export, give the formatter an explicit
 reference and settings with `.action_with_config(...)`.
 
@@ -144,19 +144,20 @@ succeeds. Use the Rust import/export utilities below to work with saved wiring.
 
 These APIs construct, reuse, inspect, or convert Rust objects; they are separate from the Step's
 input/model/action configuration. `clone()` and `build()` are coding operations with no JSON fields.
-For `StepBuilder<C, O, I>`, `I` is the decoded binding input, `C` the prepared context, and `O` the
+For `StructuredStepBuilder<C, O, I>`, `I` is the decoded binding input, `C` the prepared context, and `O` the
 finalization result. Callbacks usually infer these types.
 
 | Rust API | JSON format | Purpose |
 | --- | --- | --- |
-| `StepBuilder::new()` / `default()` | Default wiring: `{"description":"Step","bindings":[],"next":{"kind":"fixed","next":null},"summary":"Step"}`. | Starts with no input, model, or custom actions. Until an action is attached, the prepared JSON context is the result. |
-| `StepBuilder::operation(operation)` | Rust/host only. | Runs an operation in finalize, returning a typed result or an error without a model call. |
-| `StepBuilder::<C, O>::proposed(field)` | `finalization.input: {kind: "proposed", field}`. | Selects an `O: Value + Clone` from proposed State updates for processing. The model must declare the field; a missing proposed value fails finalization. |
+| `StructuredStepBuilder::new()` / `default()` | Default wiring: `{"description":"Step","bindings":[],"next":{"kind":"fixed","next":null},"summary":"Step"}`. | Starts with no input, model, or custom actions. Until an action is attached, the prepared JSON context is the result. |
+| `StructuredStepBuilder::operation(operation)` | Rust/host only. | Runs an operation in finalize, returning a typed result or an error without a model call. |
+| `StructuredStepBuilder::<C, O>::proposed(field)` | `finalization.input: {kind: "proposed", field}`. | Selects an `O: Value + Clone` from proposed State updates for processing. The model must declare the field; a missing proposed value fails finalization. |
 | `with_context(prepare)` | Rust/host only. | Decodes bindings as `I`, then prepares `C`; `C` need not implement Deserialize. Preparation must be pure. |
 | `wiring()` | Returns a borrowed `StepWiring`. | Exports the current wiring for serialization or inspection, including drafts not yet validated by `build`. |
+| `configured_model()` | Inspects the `ModelTemplate` exported as `model`; no serialized operation. | Returns `Result<Option<ModelTemplate>, String>` with bound logical output destinations resolved, even when callbacks prevent configuration export. Does not execute callbacks or models. Example: `let model = builder.configured_model()?;` |
 | `with_wiring(wiring)` | Accepts a complete `StepWiring` object. | Replaces wiring while retaining behavior, context preparation, input, and model. |
 | `clone()` | No serialized operation. | Reuses a configured builder for independent variants; executable callbacks are shared. The built Step is also cloneable. |
-| `build()` | Validates imported JSON using the same rules as Rust wiring. | Checks static configuration and returns `Result<ConfiguredStep<C, O>, String>`. Does not execute callbacks. Scope-dependent checks run before model/action effects. |
+| `build()` | Validates imported JSON using the same rules as Rust wiring. | Checks static configuration and returns `Result<StructuredStep<C, O>, String>`. Does not execute callbacks. Scope-dependent checks run before model/action effects. |
 
 ### Serialized configuration types
 
@@ -280,7 +281,7 @@ never modify State.
 
 `next` is a `NextStep`:
 
-- `Fixed { next }` selects a configured Step/exit ID, or `None` to finish a root Flow.
+- `Fixed { next }` selects a structured Step/exit ID, or `None` to finish a root Flow.
   Mounted child Flows must finish through a declared exit.
 - `Result { pointer, cases }` selects a declared case using a string in the action result.
 - `Proposed` keeps the destination from the model’s validated proposal; it requires `with_model`.
@@ -326,8 +327,8 @@ import that same data:
 
 ```rust
 let saved_json = serde_json::to_string(builder.wiring())?;
-let wiring = serde_json::from_str::<lyquid_configured_step::StepWiring>(&saved_json)?;
-let step = StepBuilder::operation(increment)
+let wiring = serde_json::from_str::<lyquid_structured_step::StepWiring>(&saved_json)?;
+let step = StructuredStepBuilder::operation(increment)
     .with_wiring(wiring)
     .build()?;
 ```
@@ -343,7 +344,7 @@ and array elements. Declare it in Rust and export its JSON Schema with `.to_json
 template or a sample invocation. `InputSpec` continues to describe interactive input separately.
 
 ```rust
-use lyquid_configured_step::{StepBuilder, ValueSource};
+use lyquid_structured_step::{StructuredStepBuilder, ValueSource};
 use schemars::JsonSchema;
 
 #[derive(JsonSchema)]
@@ -358,7 +359,7 @@ struct Request {
     candidates: Vec<Candidate>,
 }
 
-let reusable = StepBuilder::new()
+let reusable = StructuredStepBuilder::new()
     .data::<Request>("request")
     .result::<String>()
     .action_with_config("describe-request", (), |context, _, &()| {
@@ -420,7 +421,7 @@ including when presentation is rebuilt during finalization. Its factory can use 
 construct a prompt or choices. Preparation can still run more than once under the existing Step
 hooks; context is never cached on the shared Step.
 
-**Model prompts receive prepared context.** A configured Step supplies its validated, prepared
+**Model prompts receive prepared context.** A structured Step supplies its validated, prepared
 data through `Step::model_context`; the native renderer makes it available as `context` in the goal,
 next-step criteria, and State-update criteria. For example, a reusable prompt can read
 `{{ context.request.user_request }}` and iterate over `context.request.candidates` while callers bind
@@ -448,7 +449,7 @@ Native execution retains a typed codec for `T: Value + Serialize + JsonSchema`. 
 must provision that concrete State type; the model cannot propose undeclared fields. For example:
 
 ```rust
-let step = StepBuilder::new()
+let step = StructuredStepBuilder::new()
     .with_model(model_template) // Do not separately declare the same State-update destination.
     .model_output::<u64>("count", "", "Return the count")
     .action_with_config("increment", (), |context, _, &()| {
@@ -468,12 +469,12 @@ TurnProposal routing or introduce a separate model executor.
 
 ## Export Step configuration
 
-`StepBuilder` builds native Steps. Both the builder and built `ConfiguredStep` provide `.to_json()`
+`StructuredStepBuilder` builds native Steps. Both the builder and built `StructuredStep` provide `.to_json()`
 and `data_contract()`. The concrete built type is public for these inspection methods and implements
 the ordinary `Step` trait; it adds no separate executor or authoring object. JSON contains configuration only.
 
 ```rust
-let builder = StepBuilder::new()
+let builder = StructuredStepBuilder::new()
     .bind_state("count", "count")
     .action_with_config("increment", 1_u64, |context, _, amount| {
         Ok(context["count"].as_u64().ok_or("invalid count")? + amount)
@@ -521,7 +522,7 @@ without a model. Export never invokes actions or input factories.
 
 `StepConfiguration` can be deserialized to inspect or store JSON data. It has no execution/build
 method. The [configured FlowBuilder work](https://github.com/lyquor-labs/lyquor/issues/1656) consumes
-these native `StepBuilder<C, O, I>` contracts. Flow entry/exit selection and State initialization stay
+these native `StructuredStepBuilder<C, O, I>` contracts. Flow entry/exit selection and State initialization stay
 in that workstream.
 
 ## Collect input
@@ -530,7 +531,7 @@ Build an `InputSpec` directly with `lyquid_flow::InputSpec::builder()` and pass 
 The field declarations provide typed decoders and validation; the layout supplies the input UI:
 
 ```rust
-use lyquid_configured_step::StepBuilder;
+use lyquid_structured_step::StructuredStepBuilder;
 use lyquid_flow::InputSpec;
 
 let mut input = InputSpec::builder();
@@ -541,9 +542,9 @@ let submit = input.submit("Send");
 let layout = input.ui().column(vec![message, submit]);
 let input_spec = input.finish(layout)?;
 
-let step = StepBuilder::new()
+let step = StructuredStepBuilder::new()
     .with_input(input_spec)
-    .update_from("message", lyquid_configured_step::ValueSource::Input { name: "message".into() })
+    .update_from("message", lyquid_structured_step::ValueSource::Input { name: "message".into() })
     .summary("Received a message")
     .build()?;
 ```
@@ -585,7 +586,7 @@ Only the last result supplies Result bindings and result-based routing. Trace te
 prepared context, the model response, and named action outputs.
 
 ```rust
-let step = StepBuilder::new()
+let step = StructuredStepBuilder::new()
     .with_input(input_spec)
     .with_model(model_template)
     .action(action1)
@@ -613,7 +614,7 @@ The response is read-only, absent when no model ran, and excluded from Scope clo
 The runner clears it on success or failure. Each action chain also starts with an empty named-result map.
 
 ```rust
-let step = StepBuilder::new()
+let step = StructuredStepBuilder::new()
     .with_model(model_template)
     .action(|_, _| Ok("unrelated first result"))
     .action_named("formatted", |context, _| {
@@ -643,11 +644,11 @@ after their action and output serialization succeed; a failure stops the chain a
 
 ### Operations and context preparation
 
-`StepBuilder::operation` runs application-owned retrieval, deterministic processing, or fixtures in
+`StructuredStepBuilder::operation` runs application-owned retrieval, deterministic processing, or fixtures in
 finalize. `action` composes transformations or a formatter without another Step implementation:
 
 ```rust
-let builder = StepBuilder::operation(|context: &Context| Ok(context.count))
+let builder = StructuredStepBuilder::operation(|context: &Context| Ok(context.count))
     .action(|_, count| Ok(Context { count: count + 1 }));
 ```
 
@@ -667,7 +668,7 @@ the same goal, next-step criteria, and State-update criteria. Scope renders the 
 validates the response against the declared destinations/State fields, and passes the resulting
 `TurnProposal` to finalize. Model calls retain the existing usage reporting and error handling.
 
-Select a typed proposed State replacement with `StepBuilder::proposed`, then compose processing:
+Select a typed proposed State replacement with `StructuredStepBuilder::proposed`, then compose processing:
 
 ```rust
 use lyquid_flow::ModelTemplate;
@@ -677,7 +678,7 @@ let template = ModelTemplate::new(
     vec![(Some("done".into()), "When complete".into())],
     vec![("counter".into(), "The incremented count".into())],
 );
-let step = StepBuilder::<serde_json::Value, u64>::proposed("counter")
+let step = StructuredStepBuilder::<serde_json::Value, u64>::proposed("counter")
     .action(|_, count| Ok(Context { count }))
     .with_model(template)
     .proposed_next()
@@ -696,7 +697,7 @@ Optional JSON parsing and schema
 validation are supplied by the [JSON formatter action](../steps/actions/json_formatter/README.md).
 It runs during finalize and does not replace Flow's model-response parser or modify model requests.
 
-Without custom processing, use `StepBuilder::new()`
+Without custom processing, use `StructuredStepBuilder::new()`
 and configure no result bindings. Model-proposed State updates are retained. Configured
 bindings override the fields they target; `proposed_next()` retains the model-selected destination,
 while fixed or result routing deliberately overrides it during finalize. These changes commit together.
@@ -711,7 +712,7 @@ formatter action:
 ```rust
 use lyquid_json_formatter::{JsonFormatterConfig, json_formatter};
 
-let step = StepBuilder::operation(|_: &serde_json::Value| Ok(r#"{"count":8}"#.to_owned()))
+let step = StructuredStepBuilder::operation(|_: &serde_json::Value| Ok(r#"{"count":8}"#.to_owned()))
     .action(json_formatter(JsonFormatterConfig::new())?)
     .update("count", "/count")
     .next("done")
@@ -732,7 +733,7 @@ cloned before attaching optional components to construct different variants.
 
 ## Handle execution and failures
 
-`build()` checks static wiring before returning a Step. `ConfiguredStep` follows **input → model → finalize → validate/commit**:
+`build()` checks static wiring before returning a Step. `StructuredStep` follows **input → model → finalize → validate/commit**:
 
 1. Flow collects and validates optional `InputSpec` input.
 2. With a model attached, the adapter prevalidates wiring, prepared context, and action requirements.

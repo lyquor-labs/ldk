@@ -9,6 +9,7 @@ mod scope;
 pub mod service;
 mod state;
 mod step;
+mod tool;
 mod trace;
 pub mod ui;
 
@@ -18,6 +19,7 @@ pub use input::{FieldBuilder, Input, InputError, InputSpec, InputSpecBuilder};
 pub use scope::{AutoCheckpointConfig, FlowError, InputHandle, Scope, ScopeId, ScopeSnapshot};
 pub use state::{List, Mapping, State, StateBuilder, StateNamespace, StateUpdates, Value};
 pub use step::{ModelTemplate, Step, StepId, TemplateSpec};
+pub use tool::{ToolAction, ToolManifest, ToolParameter, ToolStep};
 pub use trace::{Trace, TraceEntry, TraceSummary};
 pub use ui::{UiDocument, ViewSpec};
 

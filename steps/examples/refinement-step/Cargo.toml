@@ -10,8 +10,8 @@ repository.workspace = true
 description = "Example candidate refinement Step for the refinement loop Flow."
 
 [dependencies]
-lyquid-configured-step.workspace = true
 lyquid-flow.workspace = true
+lyquid-structured-step.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

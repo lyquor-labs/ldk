@@ -7,7 +7,7 @@ actions; this example does not need to become a general-purpose workflow compone
 
 `RefinementLoopConfig` builds a loop over a fixed, caller-provided candidate list using the
 [refinement Step](../../steps/examples/refinement-step/README.md) and native
-[text InputSpec](../../steps/inputs/text/README.md) composed with `StepBuilder`.
+[text InputSpec](../../steps/inputs/text/README.md) composed with `StructuredStepBuilder`.
 Each message updates the goal, ranking, and next hint. Users may answer the hint or state any requirement directly.
 
 The default loop has no menu or exits:
@@ -105,7 +105,7 @@ inside the loop. `DECISION_STATE_FIELD` holds the `DecisionState`: goal, ranking
 Use blocking `Scope::advance()` or cooperative `Scope::run_until_input()`. Both publish requests through
 `InputHandle`; submit the complete field object through `submit_input()`. For cooperative
 execution, call `run_until_input()` again after acceptance. Step IDs and constructors are internal; compose
-`InputSpec` with `StepBuilder` and the refinement Step directly for other graphs.
+`InputSpec` with `StructuredStepBuilder` and the refinement Step directly for other graphs.
 
 Input commits separately from refinement. A failed model turn preserves the last decision and leaves the submitted
 message available for retry. Invalid choices do not commit a route. Retry and abandoned-session cleanup policies

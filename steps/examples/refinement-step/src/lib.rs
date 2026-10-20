@@ -1,6 +1,6 @@
 //! One example refinement turn for the refinement loop Flow.
 //!
-//! StepBuilder composes its prompt, typed bindings, domain actions, and result writes.
+//! StructuredStepBuilder composes its prompt, typed bindings, domain actions, and result writes.
 //! The preceding action supplies a non-empty candidate list.
 //! Its State fields and decision contract are specific to this example. It does not
 //! collect user input, retrieve candidates, select a provider, or wire a refinement loop.

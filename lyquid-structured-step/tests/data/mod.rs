@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{BindingTarget, Presence, StepBuilder, StepConfiguration, ValueSource};
+use crate::{BindingTarget, Presence, StepConfiguration, StructuredStepBuilder, ValueSource};
 
 mod static_input;
 
@@ -43,7 +43,7 @@ struct Count {
 
 #[test]
 fn nested_projection_retains_native_u64_and_reusable_bindings() {
-    let builder = StepBuilder::operation_with_config("identity", (), |value: &Count, &()| Ok(value.count))
+    let builder = StructuredStepBuilder::operation_with_config("identity", (), |value: &Count, &()| Ok(value.count))
         .data::<u64>("count")
         .result::<u64>()
         .next("done");
@@ -72,7 +72,7 @@ fn nested_projection_retains_native_u64_and_reusable_bindings() {
 
 #[test]
 fn required_optional_default_and_null_have_distinct_meanings() {
-    let step = StepBuilder::new()
+    let step = StructuredStepBuilder::new()
         .data::<Option<String>>("nullable")
         .optional_data::<String>("absent")
         .data_default::<Option<String>>("defaulted", None)
@@ -95,7 +95,7 @@ fn required_optional_default_and_null_have_distinct_meanings() {
         Some(&json!({"nullable": null, "defaulted": null}))
     );
     assert!(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .data::<String>("value")
             .bind_data("value", ValueSource::Constant { value: Value::Null })
             .build()
@@ -106,14 +106,14 @@ fn required_optional_default_and_null_have_distinct_meanings() {
 #[test]
 fn declarations_reject_invalid_defaults_duplicates_and_known_bad_results() {
     assert!(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .data::<String>("value")
             .data::<String>("value")
             .to_json()
             .is_err()
     );
     assert!(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .data_schema(
                 "value",
                 json!({"type": "integer"}),
@@ -123,7 +123,7 @@ fn declarations_reject_invalid_defaults_duplicates_and_known_bad_results() {
             .is_err()
     );
     assert!(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .data::<u64>("value")
             .bind_state("other", "source")
             .build()
@@ -144,7 +144,7 @@ fn declarations_reject_invalid_defaults_duplicates_and_known_bad_results() {
         .at("/missing"),
         ValueSource::Result { pointer: "".into() }.at("/count").at("/missing"),
     ] {
-        let builder = StepBuilder::new()
+        let builder = StructuredStepBuilder::new()
             .result::<Count>()
             .bind(source, BindingTarget::State { field: "output".into() });
         for error in [builder.to_json().unwrap_err(), builder.build().err().unwrap()] {
@@ -152,7 +152,7 @@ fn declarations_reject_invalid_defaults_duplicates_and_known_bad_results() {
             assert!(error.contains("/missing"), "{error}");
         }
     }
-    let step = StepBuilder::new()
+    let step = StructuredStepBuilder::new()
         .data::<u8>("value")
         .bind_data("value", ValueSource::Constant { value: json!(256) });
     assert!(step.build().is_err());
@@ -183,14 +183,14 @@ fn result_projections_resolve_terminal_schema_references() {
     }
 
     for pointer in ["/x", "/chained", "/items/0"] {
-        let forbidden = StepBuilder::new()
+        let forbidden = StructuredStepBuilder::new()
             .result::<ReferencedResult<false>>()
             .update("output", pointer);
         for error in [forbidden.to_json().unwrap_err(), forbidden.build().err().unwrap()] {
             assert!(error.contains("result schema forbids the value"), "{error}");
             assert!(error.contains(pointer), "{error}");
         }
-        let allowed = StepBuilder::new()
+        let allowed = StructuredStepBuilder::new()
             .result::<ReferencedResult<true>>()
             .update("output", pointer);
         assert!(allowed.to_json().is_ok());
@@ -205,7 +205,7 @@ fn result_selectors_preserve_valid_paths_and_runtime_array_checks() {
         (ValueSource::Result { pointer: "".into() }.at("/0").at("/count"), true),
         (ValueSource::Result { pointer: "/1".into() }.at("/count"), false),
     ] {
-        let builder = StepBuilder::new()
+        let builder = StructuredStepBuilder::new()
             .action_with_config("counts", (), |_, _, &()| Ok(vec![Count { count: 7 }]))
             .result::<Vec<Count>>()
             .bind(source, BindingTarget::State { field: "output".into() })
@@ -230,7 +230,7 @@ fn result_selectors_preserve_valid_paths_and_runtime_array_checks() {
 
 #[test]
 fn result_routes_reject_known_impossible_paths_and_non_string_types() {
-    let base = StepBuilder::new().action_with_config("unused", (), |_, _, &()| -> Result<Value, String> {
+    let base = StructuredStepBuilder::new().action_with_config("unused", (), |_, _, &()| -> Result<Value, String> {
         panic!("construction must not run actions")
     });
     for (builder, pointer) in [
@@ -252,12 +252,32 @@ fn result_routes_reject_known_impossible_paths_and_non_string_types() {
 #[test]
 fn result_routes_allow_strings_and_defer_value_dependent_failures() {
     for (builder, pointer, output, succeeds) in [
-        (StepBuilder::new().result::<String>(), "", json!("done"), true),
-        (StepBuilder::new().result::<Option<String>>(), "", json!("done"), true),
-        (StepBuilder::new().result::<Option<String>>(), "", Value::Null, false),
-        (StepBuilder::new().result::<Value>(), "", json!(7), false),
-        (StepBuilder::new().result::<Vec<String>>(), "/0", json!(["done"]), true),
-        (StepBuilder::new().result::<Vec<String>>(), "/0", json!([]), false),
+        (StructuredStepBuilder::new().result::<String>(), "", json!("done"), true),
+        (
+            StructuredStepBuilder::new().result::<Option<String>>(),
+            "",
+            json!("done"),
+            true,
+        ),
+        (
+            StructuredStepBuilder::new().result::<Option<String>>(),
+            "",
+            Value::Null,
+            false,
+        ),
+        (StructuredStepBuilder::new().result::<Value>(), "", json!(7), false),
+        (
+            StructuredStepBuilder::new().result::<Vec<String>>(),
+            "/0",
+            json!(["done"]),
+            true,
+        ),
+        (
+            StructuredStepBuilder::new().result::<Vec<String>>(),
+            "/0",
+            json!([]),
+            false,
+        ),
     ] {
         let builder = builder
             .action_with_config("route", output, |_, _, output| Ok(output.clone()))
@@ -293,7 +313,9 @@ fn input_and_output_schemas_follow_serde_direction() {
         #[serde(rename(serialize = "sent", deserialize = "received"))]
         field: String,
     }
-    let step = StepBuilder::new().data::<Renamed>("payload").result::<Renamed>();
+    let step = StructuredStepBuilder::new()
+        .data::<Renamed>("payload")
+        .result::<Renamed>();
     let contract = step.data_contract();
     assert!(
         contract.arguments["payload"].schema["properties"]
@@ -307,7 +329,7 @@ fn input_and_output_schemas_follow_serde_direction() {
 
 #[test]
 fn input_presentation_receives_bound_data_before_interactive_input() {
-    let step = StepBuilder::new()
+    let step = StructuredStepBuilder::new()
         .data::<String>("prompt")
         .data::<String>("answer")
         .bind_state("prompt", "question")
@@ -370,7 +392,7 @@ struct PromptRequest {
 fn native_model_prompt_uses_bound_data_and_input_in_every_section_once() {
     let mut input = InputSpec::builder();
     let reply = input.field("reply", "Reply", String::new()).text_input();
-    let base = StepBuilder::new()
+    let base = StructuredStepBuilder::new()
         .data::<PromptRequest>("request")
         .data::<String>("answer")
         .bind_input("answer", "reply")
@@ -433,7 +455,7 @@ fn native_model_prompt_uses_bound_data_and_input_in_every_section_once() {
 
 #[test]
 fn model_context_exposes_prepared_values_and_rejects_invalid_arguments_before_backend() {
-    let step = StepBuilder::operation(|context: &Count| Ok(context.count))
+    let step = StructuredStepBuilder::operation(|context: &Count| Ok(context.count))
         .data::<u64>("count")
         .bind_state("count", "source")
         .with_context(|count: Count| Ok(Count { count: count.count + 1 }))
@@ -481,7 +503,7 @@ fn model_context_exposes_prepared_values_and_rejects_invalid_arguments_before_ba
 fn invalid_arguments_prevent_actions_and_result_failure_prevents_commit() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = calls.clone();
-    let base = StepBuilder::new()
+    let base = StructuredStepBuilder::new()
         .data::<u64>("count")
         .bind_state("count", "source")
         .action_with_config("bad-result", (), move |_, _, &()| {
@@ -516,7 +538,7 @@ fn missing_early_state_binding_sources_prevent_actions() {
     ] {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let step = StepBuilder::new()
+        let step = StructuredStepBuilder::new()
             .bind(source, BindingTarget::State { field: "output".into() })
             .action_with_config("effect", (), move |_, _, &()| {
                 counted.fetch_add(1, Ordering::SeqCst);
@@ -548,7 +570,7 @@ fn missing_early_state_binding_sources_prevent_actions() {
 
 #[test]
 fn logical_model_outputs_follow_caller_bindings_and_validate_before_actions() {
-    let base = StepBuilder::new()
+    let base = StructuredStepBuilder::new()
         .with_model(ModelTemplate::new(
             "Count",
             vec![(Some("done".into()), "Done".into())],
@@ -656,7 +678,7 @@ impl lyquid_flow::Value for NonemptyText {
 fn model_output_constraints_validate_the_proposal_instead_of_initial_state() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = calls.clone();
-    let step = StepBuilder::new()
+    let step = StructuredStepBuilder::new()
         .with_model(ModelTemplate::new(
             "Describe",
             vec![(Some("done".into()), "Done".into())],
@@ -699,9 +721,12 @@ fn model_output_constraints_validate_the_proposal_instead_of_initial_state() {
 #[test]
 fn build_and_export_reject_invalid_action_bindings_without_execution() {
     let named = |name| {
-        StepBuilder::new().action_named_with_config(name, "unused", (), |_, _, &()| -> Result<Value, String> {
-            panic!("construction must not run actions")
-        })
+        StructuredStepBuilder::new().action_named_with_config(
+            name,
+            "unused",
+            (),
+            |_, _, &()| -> Result<Value, String> { panic!("construction must not run actions") },
+        )
     };
     for (builder, message) in [
         (named(""), "nonblank and unique"),
@@ -733,7 +758,7 @@ fn build_and_export_reject_invalid_action_bindings_without_execution() {
 
 #[test]
 fn export_preserves_action_settings_without_executing_callbacks() {
-    let step = StepBuilder::new()
+    let step = StructuredStepBuilder::new()
         .data_default("count", 7_u64)
         .action_named_with_config("first", "add", 2_u64, |context, _, amount| {
             Ok(context["count"].as_u64().unwrap() + amount)
@@ -754,11 +779,12 @@ fn export_preserves_action_settings_without_executing_callbacks() {
     );
     run.advance().unwrap();
     assert_eq!(run.state().get::<u64>("output"), Some(&27));
-    let factory =
-        StepBuilder::new().with_data_input_factory_config("input", (), |_, _| panic!("not during build/export"));
+    let factory = StructuredStepBuilder::new()
+        .with_data_input_factory_config("input", (), |_, _| panic!("not during build/export"));
     assert!(factory.to_json().is_ok());
     assert!(factory.build().is_ok());
-    let opaque = StepBuilder::new().with_context(|_: Value| -> Result<Value, String> { panic!("not during export") });
+    let opaque =
+        StructuredStepBuilder::new().with_context(|_: Value| -> Result<Value, String> { panic!("not during export") });
     assert!(opaque.to_json().is_err());
     assert!(opaque.build().is_ok());
 }

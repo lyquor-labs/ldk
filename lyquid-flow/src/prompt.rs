@@ -16,7 +16,7 @@ pub(super) fn build_request(
     model: &str, template: &ModelTemplate, flow: &Flow, scope: &Scope,
 ) -> Result<ModelRequest, String> {
     let prompt = render_step_prompt(flow, scope, template)?;
-    let response_contract = response_contract(scope, template)?;
+    let response_contract = response_contract(flow, scope, template)?;
     let flow_description = match flow.description() {
         "" => "Execute the current Flow.",
         description => description,
@@ -83,7 +83,8 @@ pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &s
         }
         let field = state
             .fields
-            .get(name)
+            .get(&StateNamespace::Default)
+            .and_then(|fields| fields.get(name))
             .ok_or_else(|| format!("unknown State field {name}"))?;
         let value = field.value.decode(&encoded.to_string())?;
         updates.set(name.clone(), Some(value));
@@ -165,7 +166,7 @@ fn render_step_prompt(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> R
 }
 
 /// Builds the model response contract from valid local transitions and State fields.
-fn response_contract(scope: &Scope, template: &ModelTemplate) -> Result<String, String> {
+fn response_contract(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> Result<String, String> {
     let state = scope.state();
     let update_fields = template
         .state_update_criteria
@@ -173,7 +174,8 @@ fn response_contract(scope: &Scope, template: &ModelTemplate) -> Result<String, 
         .map(|(name, _)| {
             let field = state
                 .fields
-                .get(name)
+                .get(&StateNamespace::Default)
+                .and_then(|fields| fields.get(name))
                 .expect("model template State fields are validated before building the request");
             Ok((
                 name.clone(),
@@ -187,8 +189,14 @@ fn response_contract(scope: &Scope, template: &ModelTemplate) -> Result<String, 
     let next_options = template
         .next_step_criteria
         .iter()
-        .map(|(next, _)| json!({ "value": next.as_ref().map(|next| &next.0) }))
-        .collect::<Vec<_>>();
+        .map(|(next, _)| {
+            let mut option = json!({ "value": next.as_ref().map(|next| &next.0) });
+            if let Some(manifest) = next.as_ref().and_then(|id| flow.tool_manifest(id)) {
+                option["tool"] = manifest.prompt_json()?;
+            }
+            Ok(option)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     // TODO: Use provider-native structured output / JSON Schema to enforce the model response format.
     let mut response_contract = json!({
         "advance": {
@@ -833,5 +841,14 @@ mod tests {
             undeclared_update,
             "model output attempted undeclared State update tasks"
         );
+
+        let invalid_type = parse_response(
+            scope.state(),
+            &template,
+            r#"{"type":"advance","next":"review","updates":{"title":7}}"#,
+        )
+        .err()
+        .expect("a State update with the wrong type should be rejected");
+        assert!(invalid_type.contains("expected a string"));
     }
 }

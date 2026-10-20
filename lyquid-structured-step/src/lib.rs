@@ -1,4 +1,4 @@
-//! Build ordinary `lyquid_flow::Step`s with `StepBuilder`.
+//! Build ordinary `lyquid_flow::Step`s with `StructuredStepBuilder`.
 //!
 //! Attach Flow's `InputSpec` and `ModelTemplate`, append ordinary Rust functions for ordered
 //! finalization, and configure wiring in one builder chain. Built Steps follow Flow's
@@ -13,7 +13,7 @@ mod next;
 mod step;
 mod wiring;
 
-pub use builder::StepBuilder;
+pub use builder::StructuredStepBuilder;
 pub use configuration::{
     ActionConfiguration, ActionInput, ActionPlan, CallbackConfiguration, InputConfiguration, ModelConfiguration,
     StepConfiguration,
@@ -21,7 +21,7 @@ pub use configuration::{
 pub use context::ActionContext;
 pub use data::{DataArgument, ModelOutput, Presence, StepData};
 pub use next::{NextCase, NextStep};
-pub use step::ConfiguredStep;
+pub use step::StructuredStep;
 pub use wiring::{Binding, BindingTarget, StepWiring, ValueSource};
 
 // Shaker discovers guest tests in the library artifact, including public composition coverage.

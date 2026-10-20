@@ -7,11 +7,11 @@ Both files describe only the form. The containing Step chooses how to save the s
 Load the JSON form and attach it directly:
 
 ```rust
-use lyquid_configured_step::{StepBuilder, ValueSource};
+use lyquid_structured_step::{StructuredStepBuilder, ValueSource};
 use lyquid_flow::InputSpec;
 
 let input: InputSpec = serde_json::from_str(include_str!("input.json"))?;
-let step = StepBuilder::new()
+let step = StructuredStepBuilder::new()
     .description("Choose an action")
     .with_input(input)
     .bind_input("choice", "choice")

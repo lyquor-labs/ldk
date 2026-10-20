@@ -21,7 +21,7 @@ pub(super) type InputFactory = dyn Fn(&Scope, &JsonValue) -> Result<InputSpec, F
 /// An ordinary Flow Step composed from wiring and optional input, model, and processing units.
 /// Input uses `InputSpec`; model work uses `ModelTemplate`; `ActionChain` runs during finalize.
 /// Flow retains the existing input → model → finalize → validate/commit lifecycle.
-pub struct ConfiguredStep<C, O> {
+pub struct StructuredStep<C, O> {
     pub(super) wiring: StepWiring,
     pub(super) input: Option<Arc<InputFactory>>,
     pub(super) model: Option<ModelTemplate>,
@@ -32,7 +32,7 @@ pub struct ConfiguredStep<C, O> {
     pub(super) model_codecs: BTreeMap<String, crate::data::ModelCodec>,
 }
 
-impl<C, O> ConfiguredStep<C, O> {
+impl<C, O> StructuredStep<C, O> {
     pub fn configuration(&self) -> Result<&StepConfiguration, String> {
         self.configuration.as_ref().map_err(Clone::clone)
     }
@@ -46,7 +46,7 @@ impl<C, O> ConfiguredStep<C, O> {
     }
 }
 
-impl<C, O> Clone for ConfiguredStep<C, O> {
+impl<C, O> Clone for StructuredStep<C, O> {
     fn clone(&self) -> Self {
         Self {
             wiring: self.wiring.clone(),
@@ -61,7 +61,7 @@ impl<C, O> Clone for ConfiguredStep<C, O> {
     }
 }
 
-impl<C: Serialize + 'static, O: Serialize + 'static> ConfiguredStep<C, O> {
+impl<C: Serialize + 'static, O: Serialize + 'static> StructuredStep<C, O> {
     fn validate_wiring(&self, scope: &Scope) -> Result<(), FlowError> {
         match &self.wiring.next {
             NextStep::Fixed { next } => scope.validate_next(next)?,
@@ -217,7 +217,7 @@ impl<C: Serialize + 'static, O: Serialize + 'static> ConfiguredStep<C, O> {
     }
 }
 
-impl<C: Serialize + 'static, O: Serialize + 'static> Step for ConfiguredStep<C, O> {
+impl<C: Serialize + 'static, O: Serialize + 'static> Step for StructuredStep<C, O> {
     fn description(&self, _concise: bool) -> String {
         self.wiring.description.clone()
     }

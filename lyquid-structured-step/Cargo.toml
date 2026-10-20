@@ -1,0 +1,21 @@
+[package]
+name = "lyquid-structured-step"
+workspace = ".."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Structured workflow Steps with typed actions and declarative State bindings."
+
+[dependencies]
+lyquid-flow.workspace = true
+lyquid-llm = { workspace = true, features = ["ldk"] }
+schemars.workspace = true
+serde = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+tera.workspace = true
+
+[lints]
+workspace = true

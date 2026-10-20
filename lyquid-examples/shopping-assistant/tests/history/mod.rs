@@ -100,7 +100,7 @@ fn fixture() -> (Scope, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         .step("choose", Choose)
         .step(
             "feedback",
-            StepBuilder::new()
+            StructuredStepBuilder::new()
                 .description("Collect a text message")
                 .with_input(text_input(REFINEMENT_INPUT_FIELD, "Feedback"))
                 .update_from(
@@ -443,7 +443,7 @@ fn blocking_input_cancellation() {
         .exit("done")
         .step(
             "feedback",
-            StepBuilder::new()
+            StructuredStepBuilder::new()
                 .with_input_factory(|scope| {
                     // Stop after reaching input, so advance() exercises its waiting adapter.
                     scope.input_handle().request_stop();

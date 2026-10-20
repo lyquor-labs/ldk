@@ -1,5 +1,5 @@
-use lyquid_configured_step::{ConfiguredStep, StepBuilder};
 use lyquid_flow::{ModelTemplate, State, StateBuilder, StepId};
+use lyquid_structured_step::{StructuredStep, StructuredStepBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{CandidateId, CandidateRanking, DecisionRequest, DecisionState, RefinementQuestion};
@@ -79,9 +79,9 @@ pub struct RefinementContext {
 /// Performs one decision turn using the caller message already committed to State.
 /// Requires a non-empty original candidate list, checked by the configured data contract.
 /// Every successful turn uses the configured successor; model restores are excluded by fixed routing.
-pub fn refinement_step(next: impl Into<StepId>) -> ConfiguredStep<RefinementContext, DecisionState> {
+pub fn refinement_step(next: impl Into<StepId>) -> StructuredStep<RefinementContext, DecisionState> {
     let next = next.into();
-    StepBuilder::<RefinementContext, DecisionState>::proposed(DECISION_STATE_FIELD)
+    StructuredStepBuilder::<RefinementContext, DecisionState>::proposed(DECISION_STATE_FIELD)
         .description("Apply a message to the goal and candidate ranking, then suggest a refinement hint")
         .data::<DecisionRequest>("request")
         .data::<String>("message")

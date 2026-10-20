@@ -7,9 +7,9 @@ edition.workspace = true
 
 [dependencies]
 lyquid = { workspace = true, features = ["ldk"] }
-lyquid-configured-step.workspace = true
 lyquid-flow.workspace = true
 lyquid-llm = { workspace = true, features = ["ldk"] }
+lyquid-structured-step.workspace = true
 refinement-loop-flow = { path = "../../flows/refinement-loop-flow" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

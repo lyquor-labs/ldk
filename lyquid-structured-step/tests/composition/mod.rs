@@ -8,7 +8,7 @@ use lyquid_test::test;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 
-use crate::{BindingTarget, StepBuilder, StepWiring, ValueSource};
+use crate::{BindingTarget, StepWiring, StructuredStepBuilder, ValueSource};
 use lyquid_flow::{
     AutoCheckpointConfig, ExitTransitions, Flow, FlowError, InputSpec, ModelTemplate, Scope, State, StateNamespace,
     StateUpdates, Step, TemplateSpec, TraceMode, TraceSummary, TurnProposal, Value,
@@ -20,7 +20,7 @@ struct CounterContext {
 }
 
 fn wiring() -> StepWiring {
-    StepBuilder::new()
+    StructuredStepBuilder::new()
         .description("Increment a counter")
         .next("done")
         .bind_state("count", "count")
@@ -72,8 +72,9 @@ fn unchanged(scope: &Scope) {
 fn serializable_wiring_drives_typed_updates_and_trace() {
     let encoded = serde_json::to_string(&wiring()).unwrap();
     let wiring: StepWiring = serde_json::from_str(&encoded).unwrap();
-    let action =
-        StepBuilder::operation(|context: &CounterContext| Ok(json!({"count": context.count + 1, "protected": 0})));
+    let action = StructuredStepBuilder::operation(|context: &CounterContext| {
+        Ok(json!({"count": context.count + 1, "protected": 0}))
+    });
     let mut scope = scope(action.with_wiring(wiring).build().unwrap());
     scope.advance().unwrap();
     assert!(scope.is_finished());
@@ -91,13 +92,13 @@ fn one_builder_chain_and_imported_json_execute_the_same_step() {
             count: context.count + 1,
         })
     }
-    let authored = StepBuilder::operation(increment)
+    let authored = StructuredStepBuilder::operation(increment)
         .description("Increment")
         .bind_state("count", "count")
         .update("count", "/count")
         .next("done")
         .summary("Count {{ result.count }}");
-    let imported = StepBuilder::operation(increment).with_wiring(
+    let imported = StructuredStepBuilder::operation(increment).with_wiring(
         serde_json::from_str(
             r#"{
                 "description": "Increment",
@@ -132,7 +133,7 @@ fn building_does_not_execute_callbacks_and_prepared_context_need_not_deserialize
     let operations = Arc::new(AtomicUsize::new(0));
     let counted_preparations = preparations.clone();
     let counted_operations = operations.clone();
-    let builder = StepBuilder::operation(move |context: &Prepared| {
+    let builder = StructuredStepBuilder::operation(move |context: &Prepared| {
         counted_operations.fetch_add(1, Ordering::SeqCst);
         Ok(context.count)
     })
@@ -156,11 +157,11 @@ fn building_does_not_execute_callbacks_and_prepared_context_need_not_deserialize
 
 #[test]
 fn summary_can_read_unbound_state_context_and_result_before_commit() {
-    let wiring = StepBuilder::new().with_wiring(wiring()).summary(
+    let wiring = StructuredStepBuilder::new().with_wiring(wiring()).summary(
         "State {{ state.count }} / unbound {{ state.protected }} / context {{ context.count }} / result {{ result.count }}",
     ).wiring().clone();
     let mut scope = scope(
-        StepBuilder::operation(|context: &CounterContext| Ok(json!({"count": context.count + 1})))
+        StructuredStepBuilder::operation(|context: &CounterContext| Ok(json!({"count": context.count + 1})))
             .with_wiring(wiring)
             .build()
             .unwrap(),
@@ -178,7 +179,7 @@ fn input_is_optional_and_can_be_attached_to_the_same_builder_configuration() {
     let mut builder = InputSpec::builder();
     let field = builder.field("answer", "Answer", String::new()).text_input();
     let input = builder.finish(field).unwrap();
-    let builder = StepBuilder::operation(|context: &CounterContext| Ok(json!({"count": context.count + 1})))
+    let builder = StructuredStepBuilder::operation(|context: &CounterContext| Ok(json!({"count": context.count + 1})))
         .with_wiring(wiring());
     let step = builder.clone().with_input(input.clone()).build().unwrap();
     let waiting = scope(step.clone());
@@ -201,27 +202,27 @@ fn input_is_optional_and_can_be_attached_to_the_same_builder_configuration() {
 #[test]
 fn bad_bindings_and_destinations_fail_before_the_action() {
     let invalid = [
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .bind_state("count", "protected")
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .bind_state("missing", "not_a_field")
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .update("count", "/count")
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .update("missing", "/count")
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .update("protected", "not-a-pointer")
             .wiring()
@@ -240,7 +241,7 @@ fn bad_bindings_and_destinations_fail_before_the_action() {
     for wiring in invalid {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let step = StepBuilder::operation(move |_: &CounterContext| {
+        let step = StructuredStepBuilder::operation(move |_: &CounterContext| {
             counted.fetch_add(1, Ordering::SeqCst);
             Ok(json!({"count": 8}))
         })
@@ -265,14 +266,14 @@ fn invalid_prepared_context_updates_fail_before_the_action() {
     ] {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let wiring = StepBuilder::new()
+        let wiring = StructuredStepBuilder::new()
             .description("Save prepared count")
             .next("done")
             .bind_state("count", "count")
             .update_from("count", ValueSource::Context { name: "count".into() })
             .wiring()
             .clone();
-        let step = StepBuilder::operation(move |_: &JsonValue| {
+        let step = StructuredStepBuilder::operation(move |_: &JsonValue| {
             counted.fetch_add(1, Ordering::SeqCst);
             Ok(())
         })
@@ -322,7 +323,7 @@ fn preflight_rejects_decoders_that_return_a_different_concrete_state_type() {
             let actions = Arc::new(AtomicUsize::new(0));
             let models = Arc::new(AtomicUsize::new(0));
             let called = actions.clone();
-            let builder = StepBuilder::operation(move |_: &JsonValue| {
+            let builder = StructuredStepBuilder::operation(move |_: &JsonValue| {
                 called.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             })
@@ -374,7 +375,7 @@ fn invalid_summary_syntax_fails_before_the_action() {
     for summary in ["{{", "{% if result.count %}"] {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let result = StepBuilder::operation(move |_: &CounterContext| {
+        let result = StructuredStepBuilder::operation(move |_: &CounterContext| {
             counted.fetch_add(1, Ordering::SeqCst);
             Ok(json!({"count": 8}))
         })
@@ -390,7 +391,7 @@ fn invalid_summary_syntax_fails_before_the_action() {
 fn failed_input_presentation_rejects_the_turn_before_model_or_action() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = calls.clone();
-    let builder = StepBuilder::operation(move |_: &CounterContext| {
+    let builder = StructuredStepBuilder::operation(move |_: &CounterContext| {
         counted.fetch_add(1, Ordering::SeqCst);
         Ok(json!({"count": 8}))
     })
@@ -434,7 +435,7 @@ fn failed_input_presentation_rejects_the_turn_before_model_or_action() {
 
 #[test]
 fn fallible_input_presentation_uses_state_before_the_action() {
-    let step = StepBuilder::operation(|context: &CounterContext| Ok(json!({"count": context.count + 1})))
+    let step = StructuredStepBuilder::operation(|context: &CounterContext| Ok(json!({"count": context.count + 1})))
         .with_wiring(wiring())
         .with_fallible_input_factory(|scope| {
             let mut builder = InputSpec::builder();
@@ -459,7 +460,7 @@ fn processing_decode_and_summary_errors_do_not_partially_commit() {
         (wiring(), Ok(json!({"wrong": 8}))),
         (wiring(), Ok(json!({"count": "wrong type"}))),
         (
-            StepBuilder::new()
+            StructuredStepBuilder::new()
                 .with_wiring(wiring())
                 .summary("{{ result.missing }}")
                 .wiring()
@@ -467,7 +468,7 @@ fn processing_decode_and_summary_errors_do_not_partially_commit() {
             Ok(json!({"count": 8})),
         ),
         (
-            StepBuilder::new()
+            StructuredStepBuilder::new()
                 .with_wiring(wiring())
                 .summary("{{ state.missing }}")
                 .wiring()
@@ -477,7 +478,7 @@ fn processing_decode_and_summary_errors_do_not_partially_commit() {
     ] {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let action = StepBuilder::operation(move |_: &CounterContext| {
+        let action = StructuredStepBuilder::operation(move |_: &CounterContext| {
             counted.fetch_add(1, Ordering::SeqCst);
             result.clone()
         });
@@ -497,7 +498,7 @@ fn finalization_actions_run_in_order_and_stop_at_the_first_error() {
         let first = calls.clone();
         let second = calls.clone();
         let third = calls.clone();
-        let step = StepBuilder::operation(move |context: &CounterContext| {
+        let step = StructuredStepBuilder::operation(move |context: &CounterContext| {
             assert_eq!(first.fetch_add(1, Ordering::SeqCst), 0);
             if fail_at == Some(0) {
                 return Err("first action failed".into());
@@ -552,7 +553,7 @@ fn finalization_actions_run_in_order_and_stop_at_the_first_error() {
 fn ordinary_step_finalization_executes_the_action_once() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = calls.clone();
-    let step = StepBuilder::operation(move |context: &CounterContext| {
+    let step = StructuredStepBuilder::operation(move |context: &CounterContext| {
         counted.fetch_add(1, Ordering::SeqCst);
         Ok(json!({"count": context.count + 1}))
     })
@@ -561,7 +562,7 @@ fn ordinary_step_finalization_executes_the_action_once() {
     .unwrap();
     let scope = scope(step.clone());
     let TemplateSpec::Skip(mut proposal) = step.model_template(&scope) else {
-        panic!("configured Steps use the ordinary finalization path");
+        panic!("structured Steps use the ordinary finalization path");
     };
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     step.finalize(&scope, &mut proposal).unwrap();
@@ -577,7 +578,7 @@ fn ordinary_step_finalization_executes_the_action_once() {
 #[test]
 fn model_response_fixtures_use_the_same_decode_processing_and_commit_path() {
     for text in [Some("2"), Some("invalid JSON"), Some("\"wrong type\""), None] {
-        let action = StepBuilder::operation(move |_: &CounterContext| {
+        let action = StructuredStepBuilder::operation(move |_: &CounterContext| {
             Ok(ModelResponse {
                 text: text.map(str::to_owned),
                 finish_reason: None,
@@ -614,7 +615,7 @@ fn model_response_fixtures_use_the_same_decode_processing_and_commit_path() {
 
 #[test]
 fn revisiting_a_step_prepares_a_fresh_context_from_committed_state() {
-    let step = StepBuilder::operation(|context: &CounterContext| {
+    let step = StructuredStepBuilder::operation(|context: &CounterContext| {
         Ok(json!({"count": context.count, "route": if context.count < 9 { "again" } else { "finish" }}))
     })
     .with_wiring(wiring())
@@ -634,7 +635,7 @@ fn revisiting_a_step_prepares_a_fresh_context_from_committed_state() {
 
 #[test]
 fn public_value_access_keeps_committed_and_step_scoped_data_separate() {
-    let action = StepBuilder::operation(|_: &CounterContext| Ok(json!({"count": 8})));
+    let action = StructuredStepBuilder::operation(|_: &CounterContext| Ok(json!({"count": 8})));
     let mut scope = scope(action.with_wiring(wiring()).build().unwrap());
     scope.set(StateNamespace::Default, "count".into(), Some(Box::new(11_u64)));
     scope.set(
@@ -673,7 +674,7 @@ fn public_value_access_keeps_committed_and_step_scoped_data_separate() {
 
 #[test]
 fn typed_context_preparation_and_result_mapping_do_not_need_scope_callbacks() {
-    let action = StepBuilder::operation(|context: &CounterContext| Ok(context.count))
+    let action = StructuredStepBuilder::operation(|context: &CounterContext| Ok(context.count))
         .action(|_, count| Ok(json!({"count": count * 2})));
     let step = action
         .with_wiring(wiring())
@@ -690,7 +691,7 @@ fn typed_context_preparation_and_result_mapping_do_not_need_scope_callbacks() {
 
 #[test]
 fn configured_input_reuses_typed_atomic_input_contracts() {
-    let wiring = StepBuilder::new()
+    let wiring = StructuredStepBuilder::new()
         .description("Collect a message")
         .next("done")
         .update_from("message", ValueSource::Input { name: "answer".into() })
@@ -702,7 +703,7 @@ fn configured_input_reuses_typed_atomic_input_contracts() {
     let count = builder.field("count", "Count", 0_u64).number_input();
     let submit = builder.submit("Continue");
     let layout = builder.ui().column(vec![answer, count, submit]);
-    let step = StepBuilder::operation(|context: &JsonValue| {
+    let step = StructuredStepBuilder::operation(|context: &JsonValue| {
         assert_eq!(context, &json!({}), "direct Input-to-State bindings bypass Context");
         Ok(json!("unused result"))
     })
@@ -762,7 +763,7 @@ fn json_input_drives_typed_actions_and_atomic_updates() {
     .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let called = calls.clone();
-    let step = StepBuilder::operation(move |context: &CounterContext| {
+    let step = StructuredStepBuilder::operation(move |context: &CounterContext| {
         called.fetch_add(1, Ordering::SeqCst);
         Ok(CounterContext {
             count: context.count + 1,
@@ -804,7 +805,7 @@ fn json_input_drives_typed_actions_and_atomic_updates() {
 
 #[test]
 fn mounted_configured_action_uses_normal_child_join_and_checkpoint_restore() {
-    let action = StepBuilder::operation(|context: &CounterContext| Ok(json!({"count": context.count + 1})));
+    let action = StructuredStepBuilder::operation(|context: &CounterContext| Ok(json!({"count": context.count + 1})));
     let child = Flow::builder("child")
         .entry("start")
         .step("start", action.with_wiring(wiring()).build().unwrap())
@@ -865,7 +866,7 @@ fn model_phase_uses_flow_usage_reporting_and_does_not_run_finalization_after_fai
     let finalized = Arc::new(AtomicUsize::new(0));
     let observed = observations.clone();
     let processed = finalized.clone();
-    let action = StepBuilder::<CounterContext, u64>::proposed("count").action(move |_, count| {
+    let action = StructuredStepBuilder::<CounterContext, u64>::proposed("count").action(move |_, count| {
         processed.fetch_add(1, Ordering::SeqCst);
         Ok(json!({"count": count}))
     });
@@ -890,7 +891,7 @@ fn model_phase_uses_flow_usage_reporting_and_does_not_run_finalization_after_fai
 
 #[test]
 fn direct_bindings_read_committed_state_and_prepared_context_without_chaining_writes() {
-    let wiring = StepBuilder::new()
+    let wiring = StructuredStepBuilder::new()
         .description("Copy")
         .next("done")
         .bind_state("count", "count")
@@ -900,7 +901,7 @@ fn direct_bindings_read_committed_state_and_prepared_context_without_chaining_wr
         .wiring()
         .clone();
     let wiring = serde_json::from_str(&serde_json::to_string(&wiring).unwrap()).unwrap();
-    let step = StepBuilder::operation(|_: &JsonValue| Ok(json!("unused result")))
+    let step = StructuredStepBuilder::operation(|_: &JsonValue| Ok(json!("unused result")))
         .with_wiring(wiring)
         .with_context(|input: CounterContext| Ok(json!({"label": format!("Count {}", input.count)})))
         .build()
@@ -923,14 +924,14 @@ fn direct_bindings_read_committed_state_and_prepared_context_without_chaining_wr
 
 #[test]
 fn direct_execution_id_binding_and_invalid_source_recovery_use_normal_turn_commit() {
-    let identify = StepBuilder::new()
+    let identify = StructuredStepBuilder::new()
         .description("Identify")
         .next("done")
         .update_from("message", ValueSource::ExecutionId)
         .wiring()
         .clone();
     let mut identified = scope(
-        StepBuilder::operation(|_: &JsonValue| Ok(()))
+        StructuredStepBuilder::operation(|_: &JsonValue| Ok(()))
             .with_wiring(identify)
             .build()
             .unwrap(),
@@ -951,12 +952,12 @@ fn direct_execution_id_binding_and_invalid_source_recovery_use_normal_turn_commi
             name: "wrong_type".into(),
         },
     ] {
-        let wiring = StepBuilder::new()
+        let wiring = StructuredStepBuilder::new()
             .with_wiring(wiring())
             .update_from("protected", source)
             .wiring()
             .clone();
-        let step = StepBuilder::operation(|_: &JsonValue| Ok(json!({"count":8})))
+        let step = StructuredStepBuilder::operation(|_: &JsonValue| Ok(json!({"count":8})))
             .with_wiring(wiring)
             .with_context(|_: CounterContext| Ok(json!({"wrong_type":"text"})))
             .build()
@@ -973,7 +974,7 @@ fn direct_execution_id_binding_and_invalid_source_recovery_use_normal_turn_commi
 #[test]
 fn flat_bindings_are_order_independent_and_constants_can_supply_context() {
     for reverse in [false, true] {
-        let mut wiring = StepBuilder::new()
+        let mut wiring = StructuredStepBuilder::new()
             .description("Prepare and save")
             .next("done")
             .bind(
@@ -1004,14 +1005,15 @@ fn flat_bindings_are_order_independent_and_constants_can_supply_context() {
         if reverse {
             wiring.bindings.reverse();
         }
-        let step =
-            StepBuilder::operation(|context: &JsonValue| Ok(json!({"count": context["count"].as_u64().unwrap() + 1})))
-                .with_wiring(wiring)
-                .with_context(|input: CounterContext| {
-                    Ok(json!({"count": input.count, "label": format!("Prepared {}", input.count)}))
-                })
-                .build()
-                .unwrap();
+        let step = StructuredStepBuilder::operation(|context: &JsonValue| {
+            Ok(json!({"count": context["count"].as_u64().unwrap() + 1}))
+        })
+        .with_wiring(wiring)
+        .with_context(|input: CounterContext| {
+            Ok(json!({"count": input.count, "label": format!("Prepared {}", input.count)}))
+        })
+        .build()
+        .unwrap();
         let mut scope = scope(step);
         scope.advance().unwrap();
         assert_eq!(scope.state().get::<u64>("count"), Some(&11));
@@ -1027,19 +1029,19 @@ fn flat_bindings_are_order_independent_and_constants_can_supply_context() {
 fn unavailable_context_sources_duplicate_targets_and_bad_constants_fail_before_action() {
     let context = BindingTarget::Context { name: "count".into() };
     for wiring in [
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .description("Invalid")
             .next("done")
             .bind(ValueSource::Result { pointer: "".into() }, context.clone())
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .description("Invalid")
             .next("done")
             .bind(ValueSource::Context { name: "count".into() }, context.clone())
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .description("Invalid")
             .next("done")
             .bind(
@@ -1050,12 +1052,12 @@ fn unavailable_context_sources_duplicate_targets_and_bad_constants_fail_before_a
             )
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .bind(ValueSource::Constant { value: json!(3) }, context)
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .bind(
                 ValueSource::Constant { value: json!(3) },
@@ -1063,7 +1065,7 @@ fn unavailable_context_sources_duplicate_targets_and_bad_constants_fail_before_a
             )
             .wiring()
             .clone(),
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .with_wiring(wiring())
             .bind(
                 ValueSource::Constant { value: json!(3) },
@@ -1074,7 +1076,7 @@ fn unavailable_context_sources_duplicate_targets_and_bad_constants_fail_before_a
     ] {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let step = StepBuilder::operation(move |_: &CounterContext| {
+        let step = StructuredStepBuilder::operation(move |_: &CounterContext| {
             counted.fetch_add(1, Ordering::SeqCst);
             Ok(json!({"count": 8}))
         })
@@ -1130,7 +1132,7 @@ fn input_model_and_finalize_follow_flow_order_and_revise_the_existing_proposal()
     let finalized = Arc::new(AtomicUsize::new(0));
     let processed = finalized.clone();
     let model_calls = models.clone();
-    let action = StepBuilder::<CounterContext, u64>::proposed("count").action(move |context, count| {
+    let action = StructuredStepBuilder::<CounterContext, u64>::proposed("count").action(move |context, count| {
         assert_eq!(model_calls.load(Ordering::SeqCst), 1);
         assert_eq!(context.count, 7);
         processed.fetch_add(1, Ordering::SeqCst);
@@ -1203,7 +1205,7 @@ fn model_restore_uses_scope_recovery_without_running_finalization_actions() {
     for unknown_checkpoint in [false, true] {
         let preparations = Arc::new(AtomicUsize::new(0));
         let prepared = preparations.clone();
-        let step = StepBuilder::<CounterContext, u64>::proposed("count")
+        let step = StructuredStepBuilder::<CounterContext, u64>::proposed("count")
             .action(|_, _| -> Result<JsonValue, String> { panic!("restore must skip finalization actions") })
             .with_context(move |context: CounterContext| {
                 prepared.fetch_add(1, Ordering::SeqCst);
@@ -1219,7 +1221,11 @@ fn model_restore_uses_scope_recovery_without_running_finalization_actions() {
             .entry("start")
             .step(
                 "start",
-                StepBuilder::new().constant("count", 8).next("restore").build().unwrap(),
+                StructuredStepBuilder::new()
+                    .constant("count", 8)
+                    .next("restore")
+                    .build()
+                    .unwrap(),
             )
             .step(
                 "restore",
@@ -1278,7 +1284,7 @@ fn deterministic_routing_excludes_restores_before_actions() {
     ] {
         let mut wiring = wiring();
         wiring.next = next;
-        let builder = StepBuilder::operation_with_config(
+        let builder = StructuredStepBuilder::operation_with_config(
             "must_not_run",
             (),
             |_: &CounterContext, &()| -> Result<JsonValue, String> {
@@ -1311,7 +1317,7 @@ fn deterministic_routing_excludes_restores_before_actions() {
 
 #[test]
 fn model_and_custom_processing_are_independently_optional() {
-    let builder = StepBuilder::new()
+    let builder = StructuredStepBuilder::new()
         .description("Pass through")
         .next("done")
         .constant("message", "saved");
@@ -1352,34 +1358,34 @@ fn model_preflight_rejects_static_prepared_and_action_contract_errors_before_cal
         let calls = Arc::new(AtomicUsize::new(0));
         let model = ModelConfig::new("action-model", FailingBackend(calls.clone()));
         let wiring = match case {
-            0 => StepBuilder::new()
+            0 => StructuredStepBuilder::new()
                 .description("Invalid constant")
                 .next("done")
                 .constant("count", "wrong type")
                 .wiring()
                 .clone(),
-            1 => StepBuilder::new()
+            1 => StructuredStepBuilder::new()
                 .description("Invalid context")
                 .next("done")
                 .update_from("count", ValueSource::Context { name: "count".into() })
                 .wiring()
                 .clone(),
-            2 => StepBuilder::new()
+            2 => StructuredStepBuilder::new()
                 .description("Invalid summary")
                 .next("done")
                 .summary("{{")
                 .wiring()
                 .clone(),
-            _ => StepBuilder::new()
+            _ => StructuredStepBuilder::new()
                 .description("Invalid action")
                 .next("done")
                 .wiring()
                 .clone(),
         };
         let action = match case {
-            3 => StepBuilder::<JsonValue, String>::proposed("count").action(|_, value| Ok(json!(value))),
-            4 => StepBuilder::<JsonValue, u64>::proposed("protected").action(|_, value| Ok(json!(value))),
-            _ => StepBuilder::new(),
+            3 => StructuredStepBuilder::<JsonValue, String>::proposed("count").action(|_, value| Ok(json!(value))),
+            4 => StructuredStepBuilder::<JsonValue, u64>::proposed("protected").action(|_, value| Ok(json!(value))),
+            _ => StructuredStepBuilder::new(),
         };
         let step = action
             .with_wiring(wiring)
@@ -1409,7 +1415,7 @@ fn model_preflight_rejects_static_prepared_and_action_contract_errors_before_cal
 fn finalization_rejects_a_missing_proposed_value_without_running_processors() {
     let processed = Arc::new(AtomicUsize::new(0));
     let counted = processed.clone();
-    let action = StepBuilder::<CounterContext, u64>::proposed("count").action(move |_, count| {
+    let action = StructuredStepBuilder::<CounterContext, u64>::proposed("count").action(move |_, count| {
         counted.fetch_add(1, Ordering::SeqCst);
         Ok(json!({"count": count}))
     });
@@ -1457,7 +1463,7 @@ fn a_formatter_uses_the_same_ordered_action_api() {
     }
     assert!(formatter("{{").is_err());
     for (template, succeeds) in [("Count {{ result.count }}", true), ("{{ result.missing }}", false)] {
-        let wiring = StepBuilder::new()
+        let wiring = StructuredStepBuilder::new()
             .description("Format count")
             .next("done")
             .bind_state("count", "count")
@@ -1465,7 +1471,7 @@ fn a_formatter_uses_the_same_ordered_action_api() {
             .wiring()
             .clone();
         let mut scope = scope(
-            StepBuilder::new()
+            StructuredStepBuilder::new()
                 .action(formatter(template).unwrap())
                 .action(|_, text| Ok(format!("{text}!")))
                 .with_wiring(wiring)
@@ -1485,7 +1491,7 @@ fn a_formatter_uses_the_same_ordered_action_api() {
 
 #[test]
 fn named_action_results_survive_intervening_actions_but_not_the_next_turn() {
-    let step = StepBuilder::new()
+    let step = StructuredStepBuilder::new()
         .bind_state("count", "count")
         .action_named("saved", |context, _| {
             assert!(context.model_response().is_none());
@@ -1523,7 +1529,7 @@ fn named_action_results_survive_intervening_actions_but_not_the_next_turn() {
 
 #[test]
 fn failed_named_action_stops_the_chain_without_committing_saved_results() {
-    let step = StepBuilder::new()
+    let step = StructuredStepBuilder::new()
         .action_named("saved", |_, _| Ok(json!({"count": 99})))
         .action_named("failed", |_, _| -> Result<JsonValue, String> {
             Err("action failed".into())
@@ -1547,17 +1553,22 @@ fn failed_named_action_stops_the_chain_without_committing_saved_results() {
 #[test]
 fn named_result_configuration_is_validated_before_actions_run() {
     for name in ["", " "] {
-        assert!(StepBuilder::new().action_named(name, |_, _| Ok(())).build().is_err());
+        assert!(
+            StructuredStepBuilder::new()
+                .action_named(name, |_, _| Ok(()))
+                .build()
+                .is_err()
+        );
     }
     assert!(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .action_named("same", |_, _| Ok(()))
             .action_named("same", |_, _| Ok(()))
             .build()
             .is_err()
     );
     assert!(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .update_from(
                 "count",
                 ValueSource::ActionResult {
@@ -1569,7 +1580,7 @@ fn named_result_configuration_is_validated_before_actions_run() {
             .is_err()
     );
     assert!(
-        StepBuilder::new()
+        StructuredStepBuilder::new()
             .update_from(
                 "count",
                 ValueSource::ModelResponse {

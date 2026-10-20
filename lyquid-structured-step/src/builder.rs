@@ -11,7 +11,7 @@ use serde_json::Value as JsonValue;
 use tera::Tera;
 
 use crate::action::ActionChain;
-use crate::step::{ConfiguredStep, InputFactory};
+use crate::step::{InputFactory, StructuredStep};
 use crate::{
     ActionConfiguration, ActionContext, Binding, BindingTarget, CallbackConfiguration, DataArgument,
     InputConfiguration, ModelOutput, NextCase, NextStep, Presence, StepConfiguration, StepData, StepWiring,
@@ -29,7 +29,7 @@ type PrepareContext<I, C> = dyn Fn(I) -> Result<C, String> + Send + Sync;
 /// `C` is the prepared context, `O` the finalization result, and `I` the decoded binding input
 /// (normally `C`). Types are usually inferred from callbacks. Hosts can save and load wiring through
 /// `wiring` and `with_wiring`; component selection and callbacks remain on the builder.
-pub struct StepBuilder<C = JsonValue, O = C, I = C> {
+pub struct StructuredStepBuilder<C = JsonValue, O = C, I = C> {
     wiring: StepWiring,
     input: Option<Arc<InputFactory>>,
     model: Option<ModelTemplate>,
@@ -42,7 +42,7 @@ pub struct StepBuilder<C = JsonValue, O = C, I = C> {
     model_codecs: BTreeMap<String, crate::data::ModelCodec>,
 }
 
-impl<C, O, I> Clone for StepBuilder<C, O, I> {
+impl<C, O, I> Clone for StructuredStepBuilder<C, O, I> {
     fn clone(&self) -> Self {
         Self {
             wiring: self.wiring.clone(),
@@ -59,20 +59,20 @@ impl<C, O, I> Clone for StepBuilder<C, O, I> {
     }
 }
 
-impl StepBuilder {
+impl StructuredStepBuilder {
     /// Starts with JSON context pass-through, no input/model, and root completion.
     pub fn new() -> Self {
         Self::from_action(ActionChain::passthrough())
     }
 }
 
-impl Default for StepBuilder {
+impl Default for StructuredStepBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<C: 'static, O: 'static> StepBuilder<C, O> {
+impl<C: 'static, O: 'static> StructuredStepBuilder<C, O> {
     fn from_action(action: ActionChain<C, O>) -> Self {
         Self {
             wiring: StepWiring {
@@ -112,14 +112,14 @@ impl<C: 'static, O: 'static> StepBuilder<C, O> {
     }
 }
 
-impl<C: 'static, O: Value + Clone> StepBuilder<C, O> {
+impl<C: 'static, O: Value + Clone> StructuredStepBuilder<C, O> {
     /// Starts by selecting one typed proposed State replacement during finalize.
     pub fn proposed(field: impl Into<String>) -> Self {
         Self::from_action(ActionChain::proposed(field))
     }
 }
 
-impl<C: 'static, O: 'static, I: 'static> StepBuilder<C, O, I> {
+impl<C: 'static, O: 'static, I: 'static> StructuredStepBuilder<C, O, I> {
     /// Declares a required Step-local argument, exposed as `context.<name>`.
     pub fn data<T: JsonSchema>(self, name: impl Into<String>) -> Self {
         self.data_schema(name, crate::data::schema::<T>(false), Presence::Required)
@@ -219,7 +219,9 @@ impl<C: 'static, O: 'static, I: 'static> StepBuilder<C, O, I> {
         self.configuration()?.to_json()
     }
 
-    fn configured_model(&self) -> Result<Option<ModelTemplate>, String> {
+    /// Inspects the native model independently of callback export. Bound logical outputs are
+    /// resolved to State destinations; unresolved outputs still require bindings before build.
+    pub fn configured_model(&self) -> Result<Option<ModelTemplate>, String> {
         self.model
             .clone()
             .map(|mut model| {
@@ -266,8 +268,8 @@ impl<C: 'static, O: 'static, I: 'static> StepBuilder<C, O, I> {
     /// both evaluate it. `C` itself need not implement Deserialize when this method is used.
     pub fn with_context<J: 'static>(
         self, prepare: impl Fn(J) -> Result<C, String> + Send + Sync + 'static,
-    ) -> StepBuilder<C, O, J> {
-        StepBuilder {
+    ) -> StructuredStepBuilder<C, O, J> {
+        StructuredStepBuilder {
             wiring: self.wiring,
             input: self.input,
             model: self.model,
@@ -430,7 +432,7 @@ impl<C: 'static, O: 'static, I: 'static> StepBuilder<C, O, I> {
     pub fn action_named<R: Serialize + 'static>(
         self, name: impl Into<String>,
         process: impl Fn(&ActionContext<'_, C>, O) -> Result<R, String> + Send + Sync + 'static,
-    ) -> StepBuilder<C, R, I> {
+    ) -> StructuredStepBuilder<C, R, I> {
         let mut builder = self.action(process);
         builder.action = builder.action.record(name.into());
         builder
@@ -441,7 +443,7 @@ impl<C: 'static, O: 'static, I: 'static> StepBuilder<C, O, I> {
     pub fn action_with_config<R: 'static, S: Serialize + Send + Sync + 'static>(
         self, name: impl Into<String>, settings: S,
         process: impl Fn(&ActionContext<'_, C>, O, &S) -> Result<R, String> + Send + Sync + 'static,
-    ) -> StepBuilder<C, R, I> {
+    ) -> StructuredStepBuilder<C, R, I> {
         let configuration = self.action.configuration.clone().and_then(|mut plan| {
             plan.actions.push(ActionConfiguration {
                 callback: CallbackConfiguration::new(name, &settings)?,
@@ -457,7 +459,7 @@ impl<C: 'static, O: 'static, I: 'static> StepBuilder<C, O, I> {
     pub fn action_named_with_config<R: Serialize + 'static, S: Serialize + Send + Sync + 'static>(
         self, result: impl Into<String>, name: impl Into<String>, settings: S,
         process: impl Fn(&ActionContext<'_, C>, O, &S) -> Result<R, String> + Send + Sync + 'static,
-    ) -> StepBuilder<C, R, I> {
+    ) -> StructuredStepBuilder<C, R, I> {
         let mut builder = self.action_with_config(name, settings, process);
         builder.action = builder.action.record(result.into());
         builder
@@ -469,8 +471,8 @@ impl<C: 'static, O: 'static, I: 'static> StepBuilder<C, O, I> {
     /// response remain available to other bindings and the trace after all actions succeed.
     pub fn action<R: 'static>(
         self, process: impl Fn(&ActionContext<'_, C>, O) -> Result<R, String> + Send + Sync + 'static,
-    ) -> StepBuilder<C, R, I> {
-        StepBuilder {
+    ) -> StructuredStepBuilder<C, R, I> {
+        StructuredStepBuilder {
             wiring: self.wiring,
             input: self.input,
             model: self.model,
@@ -527,18 +529,18 @@ impl<C: 'static, O: 'static, I: 'static> StepBuilder<C, O, I> {
     }
 }
 
-impl<C: Serialize + 'static, O: Serialize + 'static, I: 'static> StepBuilder<C, O, I> {
+impl<C: Serialize + 'static, O: Serialize + 'static, I: 'static> StructuredStepBuilder<C, O, I> {
     /// Checks static wiring and builds a cloneable ordinary Step. Does not execute callbacks.
     /// State codecs, input values, prepared context, and graph destinations are checked at runtime
     /// before model/action effects, when a Scope is available.
-    pub fn build(self) -> Result<ConfiguredStep<C, O>, String>
+    pub fn build(self) -> Result<StructuredStep<C, O>, String>
     where
         I: DeserializeOwned,
     {
         self.validate(true)?;
         let model = self.configured_model()?;
         let configuration = self.export_configuration(model.as_ref());
-        Ok(ConfiguredStep {
+        Ok(StructuredStep {
             configuration,
             wiring: self.wiring,
             input: self.input,
@@ -637,7 +639,7 @@ mod tests {
 
     #[test]
     fn wiring_round_trips_without_an_input_or_runtime_format() {
-        let wiring = StepBuilder::new()
+        let wiring = StructuredStepBuilder::new()
             .description("Count")
             .next("done")
             .bind_input("count", "answer")
