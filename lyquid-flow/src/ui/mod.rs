@@ -1,5 +1,6 @@
 //! Shared content and layout builders, implemented with native A2UI components.
 
+use crate::Diagnostic;
 use std::sync::Arc;
 
 use lyquid::prelude::Mutex;
@@ -62,7 +63,7 @@ struct BuildState {
     components: Vec<JsonValue>,
     content: Map<String, JsonValue>,
     data: Map<String, JsonValue>,
-    errors: Vec<String>,
+    errors: Vec<crate::Diagnostic>,
 }
 
 /// Shared builder for content and layouts. Input controls are exposed only by `InputSpecBuilder`.
@@ -94,13 +95,16 @@ impl Builder {
         let value = serde_json::to_value(value);
         let mut state = self.state.lock();
         if matches!(name, "content" | "fields") || state.data.contains_key(name) {
-            state.errors.push(format!("duplicate or reserved UI data key {name}"));
+            state.errors.push(Diagnostic::new(
+                name,
+                format!("duplicate or reserved UI data key {name}"),
+            ));
         } else {
             match value {
                 Ok(value) => {
                     state.data.insert(name.to_owned(), value);
                 }
-                Err(error) => state.errors.push(format!("UI data {name}: {error}")),
+                Err(error) => state.errors.push(Diagnostic::with_source(name, error)),
             }
         }
     }
@@ -121,18 +125,23 @@ impl Builder {
             .iter()
             .any(|child| !Arc::ptr_eq(&self.state, &child.owner.state))
         {
-            self.state.lock().errors.push("layout mixes documents".to_owned());
+            self.state
+                .lock()
+                .errors
+                .push(Diagnostic::new("UI", "layout mixes documents"));
         }
     }
 
     /// Finishes a content-only document; input specs use the same document builder internally.
-    pub fn finish(&self, root: Node) -> Result<UiDocument, String> {
+    pub fn finish(&self, root: Node) -> Result<UiDocument, crate::Diagnostics> {
         if !Arc::ptr_eq(&self.state, &root.owner.state) {
-            return Err("root belongs to a different document".to_owned());
+            return Err(Diagnostic::new("root", "belongs to a different document").into());
         }
         let state = self.state.lock();
         if !state.errors.is_empty() {
-            return Err(state.errors.join("; "));
+            return Err(crate::Diagnostics {
+                diagnostics: state.errors.clone(),
+            });
         }
         let root_id = "root";
         let mut components = state.components.clone();
@@ -145,7 +154,7 @@ impl Builder {
             data,
         };
         drop(state);
-        a2ui::validate(&document)?;
+        a2ui::validate(&document).map_err(crate::Diagnostics::from)?;
         Ok(document)
     }
 }

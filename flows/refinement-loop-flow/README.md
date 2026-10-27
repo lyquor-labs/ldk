@@ -6,8 +6,9 @@ specific to this loop. The LDK focuses on helping authors configure their own St
 actions; this example does not need to become a general-purpose workflow component.
 
 `RefinementLoopConfig` builds a loop over a fixed, caller-provided candidate list using the
-[refinement Step](../../steps/examples/refinement-step/README.md) and native
-[text InputSpec](../../steps/inputs/text/README.md) composed with `StructuredStepBuilder`.
+[refinement Step](../../steps/examples/refinement-step/README.md) and native input Steps. The text input Step
+combines a native [text InputSpec](../../steps/inputs/text/README.md) with
+[`StructuredSpec`](../../lyquid-structured-builder/README.md) for State updates and fixed routing.
 Each message updates the goal, ranking, and next hint. Users may answer the hint or state any requirement directly.
 
 The default loop has no menu or exits:
@@ -104,8 +105,9 @@ inside the loop. `DECISION_STATE_FIELD` holds the `DecisionState`: goal, ranking
 
 Use blocking `Scope::advance()` or cooperative `Scope::run_until_input()`. Both publish requests through
 `InputHandle`; submit the complete field object through `submit_input()`. For cooperative
-execution, call `run_until_input()` again after acceptance. Step IDs and constructors are internal; compose
-`InputSpec` with `StructuredStepBuilder` and the refinement Step directly for other graphs.
+execution, call `run_until_input()` again after acceptance. Step IDs and constructors are internal; implement
+native input Steps and compose them with the refinement Step for other graphs. `StructuredSpec` can add
+State updates and fixed routing.
 
 Input commits separately from refinement. A failed model turn preserves the last decision and leaves the submitted
 message available for retry. Invalid choices do not commit a route. Retry and abandoned-session cleanup policies

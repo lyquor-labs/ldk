@@ -1,7 +1,7 @@
 use lyquid::prelude::HashMap;
 use serde_json::{Map, Value as JsonValue, json};
 
-use crate::{Step, Value};
+use crate::Step;
 
 /// A non-model Step whose operations are described to the selecting model Step.
 /// Register with [`crate::FlowBuilder::tool_step`] to expose its manifest.
@@ -23,15 +23,15 @@ pub struct ToolAction {
 
 #[derive(Clone)]
 pub struct ToolParameter {
-    field: Box<dyn Value>,
+    field: JsonValue,
     description: String,
     required: bool,
 }
 
 impl ToolParameter {
-    pub fn new<V: Value>(description: impl Into<String>, field: V) -> Self {
+    pub fn new(description: impl Into<String>, field: impl Into<JsonValue>) -> Self {
         Self {
-            field: Box::new(field),
+            field: field.into(),
             description: description.into(),
             required: false,
         }
@@ -44,7 +44,7 @@ impl ToolParameter {
 }
 
 impl ToolManifest {
-    pub(super) fn prompt_json(&self) -> Result<JsonValue, String> {
+    pub(super) fn prompt_json(&self) -> JsonValue {
         let actions = self
             .actions
             .iter()
@@ -53,29 +53,27 @@ impl ToolManifest {
                     .parameters
                     .iter()
                     .map(|(name, parameter)| {
-                        let value = serde_json::from_str::<JsonValue>(&parameter.field.encode())
-                            .map_err(|error| format!("invalid tool parameter {name}: {error}"))?;
-                        Ok((
+                        (
                             name.clone(),
                             json!({
                                 "description": parameter.description,
                                 "required": parameter.required,
-                                "value": value,
+                                "value": parameter.field,
                             }),
-                        ))
+                        )
                     })
-                    .collect::<Result<Map<_, _>, String>>()?;
-                Ok((
+                    .collect::<Map<_, _>>();
+                (
                     name.clone(),
                     json!({
                         "name": action.name,
                         "description": action.description,
                         "parameters": parameters,
                     }),
-                ))
+                )
             })
-            .collect::<Result<Map<_, _>, String>>()?;
-        Ok(json!({ "actions": actions }))
+            .collect::<Map<_, _>>();
+        json!({ "actions": actions })
     }
 }
 
@@ -131,8 +129,8 @@ mod tests {
                 unreachable!()
             };
             for name in ["method", "keywords"] {
-                let value = updates.get::<String>(name).unwrap().clone();
-                updates.set_in(StateNamespace::Tool, name.into(), Some(Box::new(value)));
+                let value = updates.get(name).and_then(serde_json::Value::as_str).unwrap();
+                updates.set_in(StateNamespace::Tool, name.into(), Some(serde_json::json!(value)));
             }
             Ok(TraceSummary::Summary("Selected catalog".into()))
         }
@@ -199,16 +197,22 @@ mod tests {
 
         fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
             let state = scope.state();
-            let method = state.get_in::<String>(StateNamespace::Tool, "method").unwrap();
-            let query = state.get_in::<String>(StateNamespace::Tool, "keywords").unwrap();
-            let results = match method.as_str() {
+            let method = state
+                .get_in(StateNamespace::Tool, "method")
+                .and_then(serde_json::Value::as_str)
+                .unwrap();
+            let query = state
+                .get_in(StateNamespace::Tool, "keywords")
+                .and_then(serde_json::Value::as_str)
+                .unwrap();
+            let results = match method {
                 "search" => self.search(query),
                 _ => return Err(format!("unknown catalog operation {method}").into()),
             };
             let TurnProposal::Advance { updates, .. } = proposal else {
                 unreachable!()
             };
-            updates.set("results".into(), Some(Box::new(results)));
+            updates.set("results".into(), Some(serde_json::json!(results)));
             Ok(TraceSummary::Summary("Searched catalog".into()))
         }
     }
@@ -229,11 +233,28 @@ mod tests {
                 .unwrap(),
         );
         let state = State::builder()
-            .field_in(StateNamespace::Tool, "method", "Tool operation", String::new())
-            .field_in(StateNamespace::Tool, "keywords", "Tool query", String::new())
-            .field("method", "Catalog operation", String::new())
-            .field("keywords", "Search query", String::new())
-            .field("results", "Matching products", json!([]))
+            .field_in(
+                StateNamespace::Tool,
+                "method",
+                "Tool operation",
+                crate::Type::String,
+                serde_json::json!(""),
+            )
+            .field_in(
+                StateNamespace::Tool,
+                "keywords",
+                "Tool query",
+                crate::Type::String,
+                serde_json::json!(""),
+            )
+            .field(
+                "method",
+                "Catalog operation",
+                crate::Type::String,
+                serde_json::json!(""),
+            )
+            .field("keywords", "Search query", crate::Type::String, serde_json::json!(""))
+            .field("results", "Matching products", crate::Type::Dynamic, json!([]))
             .build()
             .unwrap();
         let scope = Scope::new(flow.clone(), state, AutoCheckpointConfig::Disabled, None);
@@ -273,15 +294,12 @@ mod tests {
 
             scope.advance().unwrap();
             assert_eq!(scope.current_step().0, output["next"].as_str().unwrap());
-            assert_eq!(
-                scope.state().to_json_in(StateNamespace::Tool).unwrap(),
-                output["updates"]
-            );
+            assert_eq!(scope.state().to_json_in(StateNamespace::Tool), output["updates"]);
             assert!(catalog.executions.lock().is_empty());
 
             scope.advance().unwrap();
             assert_eq!(*catalog.executions.lock(), vec![output["updates"].clone()]);
-            assert_eq!(scope.state().get::<JsonValue>("results"), Some(&json!([keywords])));
+            assert_eq!(scope.state().get("results"), Some(&json!([keywords])));
             assert!(scope.is_finished());
             assert_eq!(scope.trace().entries.len(), 2);
         }

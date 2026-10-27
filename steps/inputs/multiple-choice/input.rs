@@ -2,11 +2,11 @@
 
 use lyquid_flow::InputSpec;
 
-/// Build the native form with String decoders for Rust authoring.
-pub fn input_spec() -> Result<InputSpec, String> {
+/// Build the form with a String schema for its choice.
+pub fn input_spec() -> Result<InputSpec, lyquid_flow::Diagnostics> {
     let mut input = InputSpec::builder();
     let field = input
-        .field("choice", "What next?", String::new())
+        .field::<String>("choice", "What next?")
         .choices([("edit", "Edit the details"), ("finish", "Finish")])
         .select_one();
     let submit = input.submit("Choose");

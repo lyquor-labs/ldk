@@ -14,7 +14,7 @@ use lyquid_llm::{
 use lyquid_test::test;
 use serde_json::json;
 
-// Supply a model proposal while exercising the configured finalizer and native child join.
+// Supply a model proposal while exercising refinement's finalizer and the native child join.
 struct ProposedDecision;
 
 impl Step for ProposedDecision {
@@ -30,7 +30,10 @@ impl Step for ProposedDecision {
             TemplateSpec::Template(_)
         ));
         let mut updates = StateUpdates::default();
-        updates.set(DECISION_STATE_FIELD.into(), Some(Box::new(DecisionState::default())));
+        updates.set(
+            DECISION_STATE_FIELD.into(),
+            Some(serde_json::json!(DecisionState::default())),
+        );
         TemplateSpec::Skip(TurnProposal::Advance { next: None, updates })
     }
     fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
@@ -58,7 +61,12 @@ fn mounted_refinement_commits_an_empty_ranking_and_rejoins_the_parent() {
         .build()
         .unwrap();
     let state = add_state_fields(
-        State::builder().field("parent", "Parent-owned data", 7_u64),
+        State::builder().field(
+            "parent",
+            "Parent-owned data",
+            lyquid_flow::Type::U64,
+            serde_json::json!(7_u64),
+        ),
         DecisionRequest::new("Choose an option", vec![Candidate::new("a", "One option")]),
     )
     .unwrap()
@@ -70,10 +78,13 @@ fn mounted_refinement_commits_an_empty_ranking_and_rejoins_the_parent() {
 
     assert!(scope.is_finished());
     assert_eq!(scope.current_step().0, "done");
-    assert_eq!(scope.state().get::<u64>("parent"), Some(&7));
+    assert_eq!(scope.state().get("parent").and_then(serde_json::Value::as_u64), Some(7));
     assert_eq!(
-        scope.state().get::<DecisionState>(DECISION_STATE_FIELD),
-        Some(&DecisionState::default())
+        scope
+            .state()
+            .get(DECISION_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok()),
+        Some(DecisionState::default())
     );
     assert!(scope.input_handle().input_spec().is_none());
     assert_eq!(scope.trace().entries.len(), 1);
@@ -100,19 +111,34 @@ impl Backend for CapturePrompt {
 }
 
 #[test]
-fn configured_data_reaches_the_model_literally_and_invalid_data_prevents_model_work() {
+fn committed_data_reaches_the_model_literally_and_invalid_data_prevents_model_work() {
     for message in [json!("Prefer {{ literal_message }}"), json!(42)] {
         let request = DecisionRequest::new(
             "Choose {{ literal_request }}",
             vec![Candidate::new("a", "Facts {{ literal_candidate }}")],
         );
         let state = State::builder()
-            .field(DECISION_REQUEST_STATE_FIELD, "Request", request)
-            .field(DECISION_STATE_FIELD, "Decision", DecisionState::default())
-            .field(REFINEMENT_INPUT_FIELD, "Message", message.clone())
+            .field(
+                DECISION_REQUEST_STATE_FIELD,
+                "Request",
+                lyquid_flow::Type::Mapping(Box::new(lyquid_flow::Type::Dynamic)),
+                serde_json::json!(request),
+            )
+            .field(
+                DECISION_STATE_FIELD,
+                "Decision",
+                lyquid_flow::Type::Mapping(Box::new(lyquid_flow::Type::Dynamic)),
+                serde_json::json!(DecisionState::default()),
+            )
+            .field(
+                REFINEMENT_INPUT_FIELD,
+                "Message",
+                lyquid_flow::Type::Dynamic,
+                serde_json::json!(message.clone()),
+            )
             .build()
             .unwrap();
-        let before = state.to_json().unwrap();
+        let before = state.to_json();
         let flow = Flow::builder("refine")
             .entry("refine")
             .step("refine", refinement_step("done"))
@@ -135,10 +161,12 @@ fn configured_data_reaches_the_model_literally_and_invalid_data_prevents_model_w
                 assert!(captured[0].contains(&format!("{{{{ {literal} }}}}")));
             }
         } else {
-            assert!(error.to_string().contains("argument message"));
+            assert!(error.to_string().contains(REFINEMENT_INPUT_FIELD));
+            assert!(matches!(&error, FlowError::Execution(diagnostics)
+                if diagnostics.diagnostics[0].source.as_ref().unwrap().is::<serde_json::Error>()));
             assert!(captured.is_empty());
         }
-        assert_eq!(scope.state().to_json().unwrap(), before);
+        assert_eq!(scope.state().to_json(), before);
         assert_eq!(scope.current_step().0, "refine");
         assert!(scope.trace().entries.is_empty());
     }
@@ -156,8 +184,18 @@ fn invalid_refinement_state_fails_without_panicking_or_calling_the_model() {
     let mut scope = Scope::new(
         Arc::new(flow),
         State::builder()
-            .field(DECISION_STATE_FIELD, "Decision", DecisionState::default())
-            .field(REFINEMENT_INPUT_FIELD, "Message", String::new())
+            .field(
+                DECISION_STATE_FIELD,
+                "Decision",
+                lyquid_flow::Type::Mapping(Box::new(lyquid_flow::Type::Dynamic)),
+                serde_json::json!(DecisionState::default()),
+            )
+            .field(
+                REFINEMENT_INPUT_FIELD,
+                "Message",
+                lyquid_flow::Type::String,
+                serde_json::json!(""),
+            )
             .build()
             .unwrap(),
         AutoCheckpointConfig::Disabled,
@@ -185,16 +223,22 @@ fn empty_candidate_input_is_rejected_before_model_work_or_commit() {
         .build()
         .unwrap();
     let state = crate::initial_state(DecisionRequest::new("Find an option", vec![])).unwrap();
-    let before = state.to_json().unwrap();
+    let before = state.to_json();
     let mut scope = Scope::new(
         Arc::new(flow),
         state,
         AutoCheckpointConfig::Disabled,
         Some(ModelConfig::new("fixture", CapturePrompt(prompts.clone()))),
     );
-    assert!(scope.advance().unwrap_err().to_string().contains("argument request"));
+    assert!(
+        scope
+            .advance()
+            .unwrap_err()
+            .to_string()
+            .contains("at least one candidate")
+    );
     assert!(prompts.lock().unwrap().is_empty());
-    assert_eq!(scope.state().to_json().unwrap(), before);
+    assert_eq!(scope.state().to_json(), before);
     assert_eq!(scope.current_step().0, "refine");
     assert!(scope.trace().entries.is_empty());
 }

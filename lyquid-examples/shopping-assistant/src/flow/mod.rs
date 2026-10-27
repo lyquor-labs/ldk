@@ -1,10 +1,10 @@
 mod view;
 
 use lyquid_flow::{
-    ExitTransitions, Flow, FlowError, InputSpec, Scope, State, StateUpdates, Step, TemplateSpec, TraceMode,
-    TraceSummary, TurnProposal,
+    ExitTransitions, Flow, FlowError, InputSpec, Scope, State, StateNamespace, StateUpdates, Step, TemplateSpec,
+    TraceMode, TraceSummary, TurnProposal,
 };
-use lyquid_structured_step::{StructuredStepBuilder, ValueSource};
+use lyquid_structured_builder::{NextCase, NextStep, StructuredSpec, ValueSource};
 use refinement_loop_flow::{CandidateRanking, DecisionRequest, DecisionState, ExitChoice, RefinementLoopConfig};
 
 use crate::{ProductCatalog, SearchContext, ShoppingSearchState};
@@ -35,7 +35,8 @@ pub fn refinement_config() -> RefinementLoopConfig {
         choice.id != FINISH_CHOICE ||
             scope
                 .state()
-                .get::<DecisionState>(refinement_loop_flow::DECISION_STATE_FIELD)
+                .get(refinement_loop_flow::DECISION_STATE_FIELD)
+                .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
                 .expect("shopping decision")
                 .ranking
                 .candidate_ids
@@ -44,7 +45,7 @@ pub fn refinement_config() -> RefinementLoopConfig {
 }
 
 /// Builds the shopping Flow with application-owned retrieval and the reusable refinement child Flow.
-pub fn flow(search: impl Fn(&SearchContext, u64) -> Result<ProductCatalog, String> + Send + Sync + 'static) -> Flow {
+pub fn flow(search: impl Fn(&SearchContext, u64) -> Result<ProductCatalog, FlowError> + Send + Sync + 'static) -> Flow {
     build_flow(
         AggregateCandidatesStep { search },
         refinement_config().flow(),
@@ -54,28 +55,52 @@ pub fn flow(search: impl Fn(&SearchContext, u64) -> Result<ProductCatalog, Strin
 
 fn text_input(field: &str, prompt: &str) -> InputSpec {
     let mut input = InputSpec::builder();
-    let field = input.field(field, prompt, String::new()).non_blank().text_input();
+    let field = input.field::<String>(field, prompt).non_blank().text_input();
     let submit = input.submit("Send");
     let layout = input.ui().column(vec![field, submit]);
     input.finish(layout).expect("valid shopping text input")
 }
 
+struct TextInputStep(InputSpec);
+
+impl Step for TextInputStep {
+    fn description(&self, _: bool) -> String {
+        "Collect a text message".into()
+    }
+
+    fn input(&self, _: &Scope) -> Option<InputSpec> {
+        Some(self.0.clone())
+    }
+
+    fn model_template(&self, _: &Scope) -> TemplateSpec {
+        TemplateSpec::Skip(TurnProposal::Advance {
+            next: None,
+            updates: StateUpdates::default(),
+        })
+    }
+
+    fn finalize(&self, _: &Scope, _: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+        Ok(TraceSummary::Summary("Received a text message".into()))
+    }
+}
+
 fn restart_feedback_step() -> impl Step {
-    StructuredStepBuilder::new()
-        .description("Collect a text message")
-        .with_input(text_input(
+    StructuredSpec::builder()
+        .state_updates(vec![(
+            RESTART_FEEDBACK_FIELD.into(),
+            ValueSource::reference(StateNamespace::Input, RESTART_FEEDBACK_FIELD),
+        )])
+        .next(NextStep {
+            steps: vec![NextCase {
+                next: Some(AGGREGATE_CANDIDATES_STEP.into()),
+                description: "Retrieve new candidates".into(),
+            }],
+        })
+        .build()
+        .with(TextInputStep(text_input(
             RESTART_FEEDBACK_FIELD,
             "What should change about the candidate set?",
-        ))
-        .update_from(
-            RESTART_FEEDBACK_FIELD,
-            ValueSource::Input {
-                name: RESTART_FEEDBACK_FIELD.into(),
-            },
-        )
-        .next(AGGREGATE_CANDIDATES_STEP)
-        .summary("Received a text message")
-        .build()
+        )))
         .expect("valid shopping feedback wiring")
 }
 
@@ -92,21 +117,22 @@ fn build_flow(aggregation: impl Step, refinement: Flow, feedback: impl Step) -> 
         .entry(SHOPPING_REQUEST_STEP)
         .step(
             SHOPPING_REQUEST_STEP,
-            StructuredStepBuilder::new()
-                .description("Collect a text message")
-                .with_input(text_input(
+            StructuredSpec::builder()
+                .state_updates(vec![(
+                    SHOPPING_REQUEST_STATE_FIELD.into(),
+                    ValueSource::reference(StateNamespace::Input, SHOPPING_REQUEST_STATE_FIELD),
+                )])
+                .next(NextStep {
+                    steps: vec![NextCase {
+                        next: Some(AGGREGATE_CANDIDATES_STEP.into()),
+                        description: "Retrieve shopping candidates".into(),
+                    }],
+                })
+                .build()
+                .with(TextInputStep(text_input(
                     SHOPPING_REQUEST_STATE_FIELD,
                     "What are you looking for? Describe the product, budget, and your preferences.",
-                ))
-                .update_from(
-                    SHOPPING_REQUEST_STATE_FIELD,
-                    ValueSource::Input {
-                        name: SHOPPING_REQUEST_STATE_FIELD.into(),
-                    },
-                )
-                .next(AGGREGATE_CANDIDATES_STEP)
-                .summary("Received a text message")
-                .build()
+                )))
                 .expect("valid shopping request wiring"),
         )
         .exit(FINISHED_EXIT)
@@ -123,7 +149,7 @@ fn build_flow(aggregation: impl Step, refinement: Flow, feedback: impl Step) -> 
 }
 
 /// Creates the State for one shopping Scope before candidate retrieval.
-pub fn initial_state() -> Result<State, String> {
+pub fn initial_state() -> Result<State, lyquid_flow::BuildError> {
     let decision_request = DecisionRequest::new("", Vec::new());
     refinement_config()
         .add_state_fields(
@@ -131,22 +157,26 @@ pub fn initial_state() -> Result<State, String> {
                 .field(
                     SHOPPING_REQUEST_STATE_FIELD,
                     "Shopping goal collected by the first input Step",
-                    String::new(),
+                    lyquid_flow::Type::String,
+                    serde_json::json!(""),
                 )
                 .field(
                     CATALOG_STATE_FIELD,
                     "Canonical products returned by candidate aggregation",
-                    ProductCatalog::default(),
+                    lyquid_flow::Type::Mapping(Box::new(lyquid_flow::Type::Dynamic)),
+                    serde_json::json!(ProductCatalog::default()),
                 )
                 .field(
                     SHOPPING_SEARCH_STATE_FIELD,
                     "Parent-owned aggregation round and candidate restart feedback",
-                    ShoppingSearchState::default(),
+                    lyquid_flow::Type::Mapping(Box::new(lyquid_flow::Type::Dynamic)),
+                    serde_json::json!(ShoppingSearchState::default()),
                 )
                 .field(
                     RESTART_FEEDBACK_FIELD,
                     "Feedback for the next aggregation round",
-                    String::new(),
+                    lyquid_flow::Type::String,
+                    serde_json::json!(""),
                 ),
             decision_request,
         )?
@@ -154,10 +184,11 @@ pub fn initial_state() -> Result<State, String> {
 }
 
 /// Returns the canonical aggregated catalog committed by the shopping Flow.
-pub fn catalog(scope: &Scope) -> &ProductCatalog {
+pub fn catalog(scope: &Scope) -> ProductCatalog {
     scope
         .state()
         .get(CATALOG_STATE_FIELD)
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
         .expect("a shopping Scope must use shopping_assistant::initial_state")
 }
 
@@ -167,7 +198,7 @@ struct AggregateCandidatesStep<S> {
 
 impl<S> Step for AggregateCandidatesStep<S>
 where
-    S: Fn(&SearchContext, u64) -> Result<ProductCatalog, String> + Send + Sync + 'static,
+    S: Fn(&SearchContext, u64) -> Result<ProductCatalog, FlowError> + Send + Sync + 'static,
 {
     fn description(&self, concise: bool) -> String {
         if concise {
@@ -191,16 +222,18 @@ where
     fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
         let request = scope
             .state()
-            .get::<String>(SHOPPING_REQUEST_STATE_FIELD)
+            .get(SHOPPING_REQUEST_STATE_FIELD)
+            .and_then(serde_json::Value::as_str)
             .expect("the shopping State must be initialized");
         let mut search_state = scope
             .state()
-            .get::<ShoppingSearchState>(SHOPPING_SEARCH_STATE_FIELD)
-            .expect("the shopping State must include its search state")
-            .clone();
+            .get(SHOPPING_SEARCH_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<ShoppingSearchState>(value.clone()).ok())
+            .expect("the shopping State must include its search state");
         let feedback = scope
             .state()
-            .get::<String>(RESTART_FEEDBACK_FIELD)
+            .get(RESTART_FEEDBACK_FIELD)
+            .and_then(serde_json::Value::as_str)
             .expect("the shopping State must include restart feedback")
             .trim();
         if !feedback.is_empty() {
@@ -210,26 +243,27 @@ where
         search_state.aggregation_round = search_state
             .aggregation_round
             .checked_add(1)
-            .ok_or_else(|| FlowError::Execution("shopping aggregation round sequence exhausted".to_owned()))?;
+            .ok_or_else(|| FlowError::Execution("shopping aggregation round sequence exhausted".into()))?;
 
         let TurnProposal::Advance { next, updates } = proposal else {
             return Err(FlowError::Execution(
-                "the deterministic aggregation Step requires an advance proposal".to_owned(),
+                "the deterministic aggregation Step requires an advance proposal".into(),
             ));
         };
-        let mut context = SearchContext::initial(aggregation_goal(request, &[])).map_err(FlowError::Execution)?;
+        let mut context = SearchContext::initial(aggregation_goal(request, &[]))?;
         if !search_state.restart_feedback.is_empty() {
             let decision = scope
                 .state()
-                .get::<DecisionState>(refinement_loop_flow::DECISION_STATE_FIELD)
+                .get(refinement_loop_flow::DECISION_STATE_FIELD)
+                .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
                 .expect("the shopping State must include the decision");
             context = context.search_again(
                 search_state.restart_feedback.join("\n"),
-                decision.goal.clone(),
-                catalog(scope).products.clone(),
+                decision.goal,
+                catalog(scope).products,
             );
         }
-        let catalog = (self.search)(&context, search_state.aggregation_round).map_err(FlowError::Execution)?;
+        let catalog = (self.search)(&context, search_state.aggregation_round)?;
         let decision_request = context.decision_request(&catalog);
         let candidate_ids = decision_request
             .candidates
@@ -242,31 +276,31 @@ where
         } else {
             REFINE_CANDIDATES_STEP.into()
         });
-        updates.set(CATALOG_STATE_FIELD.to_owned(), Some(Box::new(catalog)));
+        updates.set(CATALOG_STATE_FIELD.to_owned(), Some(serde_json::json!(catalog)));
         updates.set(
             SHOPPING_SEARCH_STATE_FIELD.to_owned(),
-            Some(Box::new(search_state.clone())),
+            Some(serde_json::json!(search_state)),
         );
         updates.set(
             refinement_loop_flow::REFINEMENT_INPUT_FIELD.to_owned(),
-            Some(Box::new(decision_request.user_request.clone())),
+            Some(serde_json::json!(decision_request.user_request)),
         );
         updates.set(
             refinement_loop_flow::DECISION_REQUEST_STATE_FIELD.to_owned(),
-            Some(Box::new(decision_request)),
+            Some(serde_json::json!(decision_request)),
         );
         updates.set(
             refinement_loop_flow::DECISION_STATE_FIELD.to_owned(),
-            Some(Box::new(DecisionState {
+            Some(serde_json::json!(DecisionState {
                 ranking: CandidateRanking { candidate_ids },
                 ..DecisionState::default()
             })),
         );
         updates.set(
             refinement_loop_flow::CHOICE_STATE_FIELD.to_owned(),
-            Some(Box::new(String::new())),
+            Some(serde_json::json!("")),
         );
-        updates.set(RESTART_FEEDBACK_FIELD.to_owned(), Some(Box::new(String::new())));
+        updates.set(RESTART_FEEDBACK_FIELD.to_owned(), Some(serde_json::json!("")));
         let suffix = latest_restart_feedback.as_ref().map_or(String::new(), |feedback| {
             format!(" using restart feedback {feedback:?}")
         });

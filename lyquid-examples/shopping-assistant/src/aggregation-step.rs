@@ -1,4 +1,3 @@
-use lyquid_flow::Value;
 use lyquid_llm::{Backend, FinishReason, ModelRequest, ModelResponse};
 use refinement_loop_flow::{Candidate, DecisionRequest, GoalFrame};
 use serde::{Deserialize, Serialize};
@@ -43,28 +42,12 @@ impl ProductSearch {
         self
     }
 
-    pub fn search(&self, context: &SearchContext, round: u64) -> Result<ProductCatalog, String> {
+    pub fn search(&self, context: &SearchContext, round: u64) -> Result<ProductCatalog, lyquid_flow::FlowError> {
         let mut request = self.request.clone();
         request.prompt = context.prompt()?;
         let response = lyquid_llm::call_model(self.backend.as_ref(), &request)
-            .map_err(|error| format!("product aggregation failed: {error}"))?;
+            .map_err(|error| lyquid_flow::FlowError::context("product aggregation failed", error))?;
         decode_search_response(response, round)
-    }
-}
-
-impl Value for ProductCatalog {
-    fn encode(&self) -> String {
-        serde_json::to_string(self).expect("ProductCatalog serialization cannot fail")
-    }
-
-    fn decode(&self, output: &str) -> Result<Box<dyn Value>, String> {
-        serde_json::from_str::<Self>(output)
-            .map(|value| Box::new(value) as Box<dyn Value>)
-            .map_err(|error| error.to_string())
-    }
-
-    fn clone_box(&self) -> Box<dyn Value> {
-        Box::new(self.clone())
     }
 }
 
@@ -77,9 +60,10 @@ pub struct ProductCatalog {
 }
 
 impl ProductCatalog {
-    fn decode(model_output: &str, search_round: u64) -> Result<Self, String> {
-        let output: ProductSearchOutput = serde_json::from_str(strip_json_fence(model_output))
-            .map_err(|error| format!("decode {} product search output: {error}", model_output.len()))?;
+    fn decode(model_output: &str, search_round: u64) -> Result<Self, lyquid_flow::FlowError> {
+        let output: ProductSearchOutput = serde_json::from_str(strip_json_fence(model_output)).map_err(|error| {
+            lyquid_flow::FlowError::context(format!("decode {} product search output", model_output.len()), error)
+        })?;
         let mut search_summary = clean_text(output.search_summary, 600);
         let mut titles = Vec::new();
         let mut products = Vec::new();
@@ -177,10 +161,10 @@ pub struct SearchContext {
 }
 
 impl SearchContext {
-    pub(crate) fn initial(original_request: impl Into<String>) -> Result<Self, String> {
+    pub(crate) fn initial(original_request: impl Into<String>) -> Result<Self, lyquid_flow::FlowError> {
         let original_request = original_request.into().trim().to_owned();
         if original_request.is_empty() {
-            return Err("the shopping request must not be empty".to_owned());
+            return Err("the shopping request must not be empty".into());
         }
         Ok(Self {
             original_request,
@@ -228,7 +212,7 @@ impl SearchContext {
         sections.join("\n")
     }
 
-    fn prompt(&self) -> Result<String, String> {
+    fn prompt(&self) -> Result<String, lyquid_flow::FlowError> {
         let context = serde_json::json!({
             "original_request": self.original_request,
             "current_goal": self.goal,
@@ -236,7 +220,7 @@ impl SearchContext {
             "previous_products": self.previous_products,
         });
         let context = serde_json::to_string_pretty(&context)
-            .map_err(|error| format!("encode product search context: {error}"))?;
+            .map_err(|error| lyquid_flow::FlowError::context("encode product search context", error))?;
         Ok(format!(
             "Find a strong, diverse product candidate set for this search context. On a refinement search, use the current goal and accumulated_search_feedback together, and prefer genuinely improved or different results over repeating previous_products.\n\nSearch context JSON:\n{context}\n\nReturn this JSON shape exactly:\n{{\"search_summary\":\"short description of what was searched\",\"products\":[{{\"title\":\"product name\",\"source_url\":\"https://supporting-page\",\"source\":\"retailer, maker, or publisher\",\"price\":\"current price with currency, or null\",\"summary\":\"source-supported fit for the request\",\"attributes\":[\"source-supported fact\"]}}]}}"
         ))
@@ -261,7 +245,7 @@ struct ProductSearchCandidate {
     attributes: Vec<String>,
 }
 
-fn decode_search_response(response: ModelResponse, round: u64) -> Result<ProductCatalog, String> {
+fn decode_search_response(response: ModelResponse, round: u64) -> Result<ProductCatalog, lyquid_flow::FlowError> {
     if !response.web_search_used {
         return Err("product aggregation returned without performing web search".into());
     }
@@ -275,7 +259,7 @@ fn decode_search_response(response: ModelResponse, round: u64) -> Result<Product
     Ok(catalog)
 }
 
-fn response_text(response: ModelResponse) -> Result<String, String> {
+fn response_text(response: ModelResponse) -> Result<String, lyquid_flow::FlowError> {
     if response.finish_reason == Some(FinishReason::Length) {
         return Err("product aggregation exceeded its output-token budget".into());
     }
@@ -284,6 +268,7 @@ fn response_text(response: ModelResponse) -> Result<String, String> {
             "product aggregation returned no text; finish={:?}",
             response.finish_reason
         )
+        .into()
     })
 }
 
@@ -461,6 +446,7 @@ mod tests {
             assert!(
                 decode_search_response(no_search, 1)
                     .unwrap_err()
+                    .to_string()
                     .contains("without performing web search")
             );
             let parsed = response(search.backend.as_ref(), raw);
@@ -475,6 +461,7 @@ mod tests {
             assert!(
                 decode_search_response(truncated, 1)
                     .unwrap_err()
+                    .to_string()
                     .contains("output-token budget")
             );
             let mut missing_text = parsed.clone();
@@ -482,6 +469,7 @@ mod tests {
             assert!(
                 decode_search_response(missing_text, 1)
                     .unwrap_err()
+                    .to_string()
                     .contains("returned no text")
             );
 
@@ -528,7 +516,13 @@ mod tests {
         );
         let context = SearchContext::initial("Find a travel mug").unwrap();
         let error = search.search(&context, 1).unwrap_err();
-        assert!(error.contains("product aggregation failed: scripted-search: request preparation failed"));
+        assert!(
+            error
+                .to_string()
+                .contains("product aggregation failed: scripted-search: request preparation failed")
+        );
+        assert!(matches!(&error, lyquid_flow::FlowError::Execution(diagnostics)
+            if diagnostics.diagnostics[0].source.as_ref().unwrap().is::<lyquid_llm::LlmError>()));
         let snapshot = tracker.snapshot().to_json();
         assert_eq!(
             snapshot["search"],
@@ -635,7 +629,9 @@ mod tests {
     #[test]
     fn reject_empty_request() {
         assert_eq!(
-            SearchContext::initial("   ").expect_err("blank requests should be rejected"),
+            SearchContext::initial("   ")
+                .expect_err("blank requests should be rejected")
+                .to_string(),
             "the shopping request must not be empty"
         );
     }

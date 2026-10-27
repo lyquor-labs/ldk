@@ -1,3 +1,4 @@
+use crate::Diagnostic;
 use serde::Serialize;
 
 use super::{Builder, Node, UiDocument};
@@ -14,7 +15,7 @@ impl ViewSpec {
         Builder::default()
     }
 
-    pub fn finish(builder: &Builder, root: Node) -> Result<Self, String> {
+    pub fn finish(builder: &Builder, root: Node) -> Result<Self, crate::Diagnostics> {
         let ui = builder.finish(root)?;
         if ui.components().iter().any(|component| {
             !(matches!(
@@ -24,7 +25,7 @@ impl ViewSpec {
                 component["action"]["functionCall"]["call"] == "openUrl" &&
                 component["action"].get("event").is_none()))
         }) {
-            return Err("result views cannot contain input controls or actions".to_owned());
+            return Err(Diagnostic::new("view", "result views cannot contain input controls or actions").into());
         }
         Ok(Self { ui })
     }
@@ -52,8 +53,11 @@ mod tests {
     #[test]
     fn view_rejects_controls() {
         let mut input = InputSpec::builder();
-        let field = input.field("field", "Field", false).toggle();
-        assert!(ViewSpec::finish(input.ui(), field).is_err());
+        let field = input.field::<bool>("field", "Field").toggle();
+        assert!(matches!(
+            ViewSpec::finish(input.ui(), field),
+            Err(crate::Diagnostics { .. })
+        ));
     }
 
     #[test]
@@ -100,7 +104,8 @@ mod tests {
             std::collections::BTreeMap::from([(vec![1, 2], "invalid JSON key")]),
         );
         let error = ViewSpec::finish(&ui, ui.text("Products")).err().unwrap();
-        assert!(error.contains("UI data products"));
-        assert!(error.contains("key must be a string"));
+        assert!(matches!(&error, crate::Diagnostics { diagnostics: errors }
+            if matches!(errors.as_slice(), [diagnostic] if diagnostic.context == "products" && diagnostic.source.as_ref().unwrap().downcast_ref::<serde_json::Error>().unwrap().is_syntax())));
+        assert!(error.to_string().contains("key must be a string"));
     }
 }

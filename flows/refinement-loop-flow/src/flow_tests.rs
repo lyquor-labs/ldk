@@ -4,13 +4,30 @@ use refinement_step::Candidate;
 
 // Keep the real input Step and graph destinations; model behavior is covered by composition tests.
 fn input_flow(config: &RefinementLoopConfig) -> Flow {
+    struct ReturnToChoice;
+
+    impl Step for ReturnToChoice {
+        fn description(&self, _: bool) -> String {
+            "Return to the choices".into()
+        }
+        fn input(&self, _: &Scope) -> Option<InputSpec> {
+            None
+        }
+        fn model_template(&self, _: &Scope) -> TemplateSpec {
+            TemplateSpec::Skip(TurnProposal::Advance {
+                next: Some(CHOICE_STEP.into()),
+                updates: StateUpdates::default(),
+            })
+        }
+        fn finalize(&self, _: &Scope, _: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+            Ok(TraceSummary::Summary("Ready for another choice".into()))
+        }
+    }
+
     let mut builder = Flow::builder("input-contract")
         .entry(CHOICE_STEP)
         .step(CHOICE_STEP, config.choice_step().unwrap())
-        .step(
-            REFINE_STEP,
-            StructuredStepBuilder::new().next(CHOICE_STEP).build().unwrap(),
-        );
+        .step(REFINE_STEP, ReturnToChoice);
     for exit in &config.exits {
         builder = builder.exit(exit.id.as_str());
     }
@@ -131,11 +148,19 @@ fn refine_stays_available() {
     scope.advance().unwrap();
     assert_eq!(scope.current_step().0, REFINE_STEP);
     assert_eq!(
-        scope.state().get::<String>(CHOICE_STATE_FIELD).unwrap(),
+        scope
+            .state()
+            .get(CHOICE_STATE_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .unwrap(),
         CONTINUE_CHOICE
     );
     assert_eq!(
-        scope.state().get::<String>(REFINEMENT_INPUT_FIELD).unwrap(),
+        scope
+            .state()
+            .get(REFINEMENT_INPUT_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .unwrap(),
         "More portable"
     );
     assert!(scope.run_until_input().unwrap().is_some());
@@ -153,8 +178,19 @@ fn default_loop_has_no_choice_step_menu_or_choice_state() {
         let state = config
             .initial_state(DecisionRequest::new("Initial goal", vec![]))
             .unwrap();
-        assert!(state.get::<String>(CHOICE_STATE_FIELD).is_none());
-        assert_eq!(state.get::<String>(REFINEMENT_INPUT_FIELD).unwrap(), "Initial goal");
+        assert!(
+            state
+                .get(CHOICE_STATE_FIELD)
+                .and_then(serde_json::Value::as_str)
+                .is_none()
+        );
+        assert_eq!(
+            state
+                .get(REFINEMENT_INPUT_FIELD)
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            "Initial goal"
+        );
     }
 }
 
@@ -175,7 +211,13 @@ fn configurable_exits_add_continue_then_preserve_caller_menu_order() {
         assert!(config.choice_step().is_some());
         assert_eq!(config.model_turn_schema()["properties"]["next"]["enum"][0], CHOICE_STEP);
         let state = config.initial_state(DecisionRequest::new("", vec![])).unwrap();
-        assert_eq!(state.get::<String>(CHOICE_STATE_FIELD).unwrap(), "");
+        assert_eq!(
+            state
+                .get(CHOICE_STATE_FIELD)
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            ""
+        );
     }
 }
 
@@ -210,13 +252,24 @@ fn state_initialization_reuses_refinement_validation_and_preserves_parent_fields
         );
         let state = config
             .add_state_fields(
-                State::builder().field("parent", "Parent-owned data", 7_u64),
+                State::builder().field(
+                    "parent",
+                    "Parent-owned data",
+                    lyquid_flow::Type::U64,
+                    serde_json::json!(7_u64),
+                ),
                 DecisionRequest::new("Initial goal", vec![Candidate::new("a", "One")]),
             )
             .unwrap()
             .build()
             .unwrap();
-        assert_eq!(state.get::<u64>("parent"), Some(&7));
-        assert_eq!(state.get::<String>(REFINEMENT_INPUT_FIELD).unwrap(), "Initial goal");
+        assert_eq!(state.get("parent").and_then(serde_json::Value::as_u64), Some(7));
+        assert_eq!(
+            state
+                .get(REFINEMENT_INPUT_FIELD)
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            "Initial goal"
+        );
     }
 }

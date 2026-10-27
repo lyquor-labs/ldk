@@ -56,14 +56,16 @@ Flow::builder("payment-app")
 
 The parent Scope must contain `PAYMENT_STATE_FIELD`. Use `initial_state(request)`
 when the payment is its only State field, or add an initialized `PaymentState`
-alongside the application's other fields:
+alongside the application's other fields. Its declaration is Dynamic because each payment phase
+has a different shape; the payment Steps construct native enum values before serializing State updates:
 
 ```rust
 State::builder()
     .field(
         circle_nanopay_flow::PAYMENT_STATE_FIELD,
         "Payment state",
-        PaymentState::Initialized { request },
+        lyquid_flow::Type::Dynamic,
+        serde_json::json!(PaymentState::Initialized { request }),
     )
     .build()?
 ```

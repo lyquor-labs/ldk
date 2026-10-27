@@ -1,17 +1,15 @@
-//! Optional JSON parsing and validation actions for structured Steps.
+//! JSON parsing and validation helpers for native Step finalizers.
 //!
-//! Parse a preceding text result or read the original model response from temporary action context.
-//! Save the parsed value with `StructuredStepBuilder::action_named` to make it available to later actions and bindings.
-//! These actions do not call a model, change its request, select a next Step, or write State.
+//! Parse text or pass `Scope::model_response()` to the response formatter. The caller owns any
+//! proposed State updates, destination and Trace summary; Core validates and commits the turn.
 
-use lyquid_flow::{check_json_schema, validate_json_schema};
-use lyquid_llm::FinishReason;
-use lyquid_structured_step::ActionContext;
+use lyquid_flow::{FlowError, check_json_schema, validate_json_schema};
+use lyquid_llm::{FinishReason, ModelResponse};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Serializable settings owned by the JSON formatter action.
+/// Optional schema used by the JSON formatter.
 /// Omitting `schema` accepts any complete JSON value.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -30,26 +28,15 @@ impl JsonFormatterConfig {
     }
 }
 
-/// Build an ordinary finalization action from JSON text to a validated JSON value.
-/// Static schema errors fail here, before the action is attached or a model is called.
-/// Pass the returned callback to `StructuredStepBuilder::action` or `StructuredStepBuilder::action_named`.
-pub fn json_formatter<C>(
+/// Builds a formatter for the original model response available during native Step finalization.
+/// Pass `scope.model_response()` to the returned function. It borrows the response without
+/// changing its text or metadata. Core's response parser still runs before finalization.
+pub fn model_response_json_formatter(
     config: JsonFormatterConfig,
-) -> Result<impl Fn(&ActionContext<'_, C>, String) -> Result<Value, String> + Clone + Send + Sync, String> {
-    let parse = json_parser(config)?;
-    Ok(move |_: &ActionContext<'_, C>, text: String| parse(&text))
-}
-
-/// Parse the original model response from temporary action context, ignoring the previous result.
-/// The response and all metadata remain available through `context.model_response()` at every position.
-/// Use `action_named` to retain the formatted value independently of subsequent action results.
-/// Flow's `ModelTemplate` response parser still runs before finalization.
-pub fn model_response_json_formatter<C, P>(
-    config: JsonFormatterConfig,
-) -> Result<impl Fn(&ActionContext<'_, C>, P) -> Result<Value, String> + Clone + Send + Sync, String> {
-    let parse = json_parser(config)?;
-    Ok(move |context: &ActionContext<'_, C>, _: P| {
-        let response = context.model_response().ok_or("action context has no model response")?;
+) -> Result<impl Fn(Option<&ModelResponse>) -> Result<Value, FlowError> + Clone + Send + Sync, FlowError> {
+    let parse = json_formatter(config)?;
+    Ok(move |response: Option<&ModelResponse>| {
+        let response = response.ok_or("no model response")?;
         if response.finish_reason == Some(FinishReason::Length) {
             return Err("model response exceeded its output-token budget".into());
         }
@@ -61,11 +48,14 @@ pub fn model_response_json_formatter<C, P>(
     })
 }
 
-fn json_parser(
+/// Builds a formatter from JSON text to a validated JSON value.
+/// Invalid schemas fail when constructing the formatter; malformed text or mismatched values
+/// fail when calling it. The returned function can be used directly in `Step::finalize`.
+pub fn json_formatter(
     config: JsonFormatterConfig,
-) -> Result<impl Fn(&str) -> Result<Value, String> + Clone + Send + Sync, String> {
+) -> Result<impl Fn(&str) -> Result<Value, FlowError> + Clone + Send + Sync, FlowError> {
     if let Some(schema) = &config.schema {
-        check_json_schema(schema).map_err(|error| format!("invalid formatter schema: {error}"))?;
+        check_json_schema(schema).map_err(|error| FlowError::context("invalid formatter schema", error))?;
     }
     Ok(move |text: &str| {
         // Accept a complete JSON document optionally enclosed in one Markdown fence.
@@ -92,7 +82,7 @@ fn json_parser(
         } else {
             text
         };
-        let value = serde_json::from_str(text).map_err(|error| format!("decode JSON result: {error}"))?;
+        let value = serde_json::from_str(text).map_err(|error| FlowError::context("decode JSON result", error))?;
         if let Some(schema) = &config.schema {
             validate_json_schema(schema, &value, "result")?;
         }

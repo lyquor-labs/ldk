@@ -1594,6 +1594,7 @@ pub fn setup_lyquid_state_variables(item: proc_macro::TokenStream) -> proc_macro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lyquor_test::test;
 
     #[test]
     fn guest_test_expansion_uses_test_crate_support_and_releases_input() {

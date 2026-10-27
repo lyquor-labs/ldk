@@ -1,4 +1,3 @@
-use lyquid_flow::Value;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -106,32 +105,8 @@ pub enum PaymentState {
     },
 }
 
-macro_rules! impl_value {
-    ($type:ty) => {
-        impl Value for $type {
-            fn encode(&self) -> String {
-                serde_json::to_string(self).expect(concat!(stringify!($type), " serialization cannot fail"))
-            }
-
-            fn decode(&self, model_output: &str) -> Result<Box<dyn Value>, String> {
-                serde_json::from_str::<Self>(model_output)
-                    .map(|value| Box::new(value) as Box<dyn Value>)
-                    .map_err(|error| error.to_string())
-            }
-
-            fn clone_box(&self) -> Box<dyn Value> {
-                Box::new(self.clone())
-            }
-        }
-    };
-}
-
-impl_value!(Eip3009Authorization);
-impl_value!(PaymentState);
-
 #[cfg(test)]
 mod input_contract_tests {
-    use std::any::Any;
 
     use super::*;
     use lyquid_test::test;
@@ -140,15 +115,14 @@ mod input_contract_tests {
     fn authorization_input() {
         let mut builder = lyquid_flow::InputSpec::builder();
         let field = builder
-            .field("authorization", "Authorization", Eip3009Authorization::default())
+            .field::<Eip3009Authorization>("authorization", "Authorization")
             .json_input();
         let spec = builder.finish(field).unwrap();
         let value = Eip3009Authorization::default();
         let decoded = spec
             .decode_values(&serde_json::json!({"authorization": value}))
             .unwrap();
-        let authorization: &dyn Any = decoded["authorization"].as_ref();
-        assert_eq!(authorization.downcast_ref::<Eip3009Authorization>(), Some(&value));
+        assert_eq!(decoded["authorization"], serde_json::json!(value));
         let mut invalid = serde_json::to_value(value).unwrap();
         invalid.as_object_mut().unwrap().remove("signature");
         assert!(

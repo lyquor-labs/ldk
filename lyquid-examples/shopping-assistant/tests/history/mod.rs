@@ -22,26 +22,37 @@ impl Step for Refine {
     }
     fn model_template(&self, scope: &Scope) -> TemplateSpec {
         self.0.fetch_add(1, Ordering::Relaxed);
-        let message = scope.state().get::<String>(REFINEMENT_INPUT_FIELD).unwrap();
+        let message = scope
+            .state()
+            .get(REFINEMENT_INPUT_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
         let mut decision = scope
             .state()
-            .get::<DecisionState>(DECISION_STATE_FIELD)
+            .get(DECISION_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
             .unwrap()
             .clone();
-        decision.goal.soft_preferences.push(message.clone());
+        decision.goal.soft_preferences.push(message.to_owned());
         decision.question.prompt = format!("Next hint after {message}");
         if message == "none" {
             decision.ranking.candidate_ids.clear();
         }
         let mut updates = StateUpdates::default();
-        updates.set(DECISION_STATE_FIELD.into(), Some(Box::new(decision)));
+        updates.set(DECISION_STATE_FIELD.into(), Some(serde_json::json!(decision)));
         TemplateSpec::Skip(TurnProposal::Advance {
             next: Some("choose".into()),
             updates,
         })
     }
     fn finalize(&self, scope: &Scope, _: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
-        if scope.state().get::<String>(REFINEMENT_INPUT_FIELD).unwrap() == "fail" {
+        if scope
+            .state()
+            .get(REFINEMENT_INPUT_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .unwrap() ==
+            "fail"
+        {
             return Err(FlowError::Execution("scripted failure".into()));
         }
         Ok(TraceSummary::Summary("Refined".into()))
@@ -56,7 +67,7 @@ impl Step for Choose {
     fn input(&self, scope: &Scope) -> Option<InputSpec> {
         let mut builder = InputSpec::builder();
         let choice = builder
-            .field(CHOICE_STATE_FIELD, "Choose", String::new())
+            .field::<String>(CHOICE_STATE_FIELD, "Choose")
             .choices(
                 refinement_config()
                     .choice_options()
@@ -65,7 +76,8 @@ impl Step for Choose {
                         choice.id != FINISH_CHOICE ||
                             scope
                                 .state()
-                                .get::<DecisionState>(DECISION_STATE_FIELD)
+                                .get(DECISION_STATE_FIELD)
+                                .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
                                 .unwrap()
                                 .ranking
                                 .candidate_ids
@@ -77,7 +89,10 @@ impl Step for Choose {
         Some(builder.finish(choice).unwrap())
     }
     fn model_template(&self, scope: &Scope) -> TemplateSpec {
-        let choice = scope.get::<String>(StateNamespace::Input, CHOICE_STATE_FIELD).unwrap();
+        let choice = scope
+            .get(StateNamespace::Input, CHOICE_STATE_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
         TemplateSpec::Skip(TurnProposal::Advance {
             next: Some(if choice == "refine" { "feedback" } else { choice }.into()),
             updates: StateUpdates::default(),
@@ -100,18 +115,19 @@ fn fixture() -> (Scope, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         .step("choose", Choose)
         .step(
             "feedback",
-            StructuredStepBuilder::new()
-                .description("Collect a text message")
-                .with_input(text_input(REFINEMENT_INPUT_FIELD, "Feedback"))
-                .update_from(
-                    REFINEMENT_INPUT_FIELD,
-                    ValueSource::Input {
-                        name: REFINEMENT_INPUT_FIELD.into(),
-                    },
-                )
-                .next("refine")
-                .summary("Received a text message")
+            StructuredSpec::builder()
+                .state_updates(vec![(
+                    REFINEMENT_INPUT_FIELD.into(),
+                    ValueSource::reference(StateNamespace::Input, REFINEMENT_INPUT_FIELD),
+                )])
+                .next(NextStep {
+                    steps: vec![NextCase {
+                        next: Some("refine".into()),
+                        description: "Continue to refinement".into(),
+                    }],
+                })
                 .build()
+                .with(TextInputStep(text_input(REFINEMENT_INPUT_FIELD, "Feedback")))
                 .unwrap(),
         )
         .build()
@@ -407,7 +423,8 @@ fn cooperative_child_input() {
     assert!(
         scope
             .state()
-            .get::<DecisionState>(DECISION_STATE_FIELD)
+            .get(DECISION_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
             .unwrap()
             .goal
             .soft_preferences
@@ -415,7 +432,8 @@ fn cooperative_child_input() {
     );
     assert!(
         !child_state
-            .get::<DecisionState>(DECISION_STATE_FIELD)
+            .get(DECISION_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
             .unwrap()
             .goal
             .soft_preferences
@@ -438,27 +456,35 @@ fn cooperative_child_input() {
 
 #[test]
 fn blocking_input_cancellation() {
+    struct StoppedInput;
+
+    impl Step for StoppedInput {
+        fn description(&self, _: bool) -> String {
+            "Feedback input stopped before submission".into()
+        }
+
+        fn input(&self, scope: &Scope) -> Option<InputSpec> {
+            // Stop after reaching input, so advance() exercises its waiting adapter.
+            scope.input_handle().request_stop();
+            Some(text_input(REFINEMENT_INPUT_FIELD, "Feedback"))
+        }
+
+        fn model_template(&self, _: &Scope) -> TemplateSpec {
+            TemplateSpec::Skip(TurnProposal::Advance {
+                next: Some("done".into()),
+                updates: StateUpdates::default(),
+            })
+        }
+
+        fn finalize(&self, _: &Scope, _: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+            panic!("stopped input must not finalize")
+        }
+    }
+
     let child = Flow::builder("stopped-input")
         .entry("feedback")
         .exit("done")
-        .step(
-            "feedback",
-            StructuredStepBuilder::new()
-                .with_input_factory(|scope| {
-                    // Stop after reaching input, so advance() exercises its waiting adapter.
-                    scope.input_handle().request_stop();
-                    text_input(REFINEMENT_INPUT_FIELD, "Feedback")
-                })
-                .update_from(
-                    REFINEMENT_INPUT_FIELD,
-                    ValueSource::Input {
-                        name: REFINEMENT_INPUT_FIELD.into(),
-                    },
-                )
-                .next("done")
-                .build()
-                .unwrap(),
-        )
+        .step("feedback", StoppedInput)
         .build()
         .unwrap();
     let parent = Flow::builder("parent")
@@ -481,12 +507,13 @@ fn blocking_input_cancellation() {
     scope.set(
         StateNamespace::Default,
         REFINEMENT_INPUT_FIELD.into(),
-        Some(Box::new("Staged parent message".to_owned())),
+        Some(serde_json::json!("Staged parent message")),
     );
     assert!(scope.advance().unwrap_err().to_string().contains("stopped"));
     assert_eq!(
         scope
-            .get::<String>(StateNamespace::Default, REFINEMENT_INPUT_FIELD)
+            .get(StateNamespace::Default, REFINEMENT_INPUT_FIELD)
+            .and_then(serde_json::Value::as_str)
             .unwrap(),
         "Staged parent message"
     );

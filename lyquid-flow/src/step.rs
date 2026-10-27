@@ -8,7 +8,7 @@ use crate::trace::TraceSummary;
 use crate::{InputSpec, TurnProposal, ViewSpec};
 
 /// Stable identifier of a Step.
-#[derive(Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct StepId(pub String);
 
 impl From<&str> for StepId {

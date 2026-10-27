@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use circle_nanopay_flow::{Eip3009Authorization, PaymentConfig, PaymentRequest, PaymentState};
 use lyquid::prelude::*;
-use lyquid_flow::{AutoCheckpointConfig, ExitTransitions, Flow, InputHandle, Scope, TraceMode, Value};
+use lyquid_flow::{AutoCheckpointConfig, ExitTransitions, Flow, InputHandle, Scope, TraceMode};
 
 const PAYMENT_STEP: &str = "payment";
 const SUCCEEDED_EXIT: &str = "succeeded";
@@ -146,7 +146,7 @@ fn get_payment_state(ctx: &_, execution_id: u64) -> LyquidResult<String> {
         .get(&execution_id)
         .cloned()
         .ok_or_else(|| err(format!("unknown payment execution {execution_id}")))?;
-    Ok(state.encode())
+    serde_json::to_string(&state).map_err(|error| err(format!("encode payment state: {error}")))
 }
 
 #[method::instance]
@@ -163,7 +163,7 @@ fn execute_payment(ctx: &mut _, execution_id: u64, request: PaymentRequest) -> L
     ctx.instance.payment_inputs.write().remove(&execution_id);
 
     let state = match execution_result {
-        Ok(()) => circle_nanopay_flow::payment_state(&scope).clone(),
+        Ok(()) => circle_nanopay_flow::payment_state(&scope),
         Err(error) => PaymentState::Failed {
             request,
             reason: error.to_string(),

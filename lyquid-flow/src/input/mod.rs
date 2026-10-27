@@ -1,19 +1,19 @@
 //! Typed, atomic field input contracts.
 //!
 //! A Step declares an input page with `InputSpec::builder()`. Each field declaration creates its
-//! JSON Schema property, retains its `Value` decoder, and emits a native UI component through the
+//! JSON Schema property and emits a native UI component through the
 //! shared `ui` builder.
 //!
 //! ```rust
-//! use lyquid_flow::{InputSpec, List};
+//! use lyquid_flow::{InputSpec};
 //!
 //! let mut builder = InputSpec::builder();
 //! let recipient = builder
-//!     .field("recipient", "Recipient", String::new())
+//!     .field::<String>("recipient", "Recipient")
 //!     .non_blank()
 //!     .text_input();
 //! let preferences = builder
-//!     .field("preferences", "Preferences", List::<String>(vec![]))
+//!     .field::<Vec<String>>("preferences", "Preferences")
 //!     .item_choices([("quiet", "Quiet"), ("portable", "Portable")])
 //!     .unique()
 //!     .min_len(1)
@@ -22,7 +22,7 @@
 //! let submit = builder.submit("Continue");
 //! let layout = builder.ui().column(vec![recipient, preferences, submit]);
 //! let spec = builder.finish(layout)?;
-//! # Ok::<(), String>(())
+//! # Ok::<(), lyquid_flow::Diagnostics>(())
 //! ```
 //!
 //! An input submission is a JSON object mapping field names to values.
@@ -30,8 +30,7 @@
 //! The runtime validates these types without coercion.
 //!
 //! For example: `{"recipient":"Alex","preferences":["portable"]}`.
-//! The framework checks the whole generated schema before invoking any field decoder. It then decodes
-//! every provided field and checks the returned concrete Rust type. Only after all fields succeed does
+//! The framework checks the whole generated schema. Only after all fields succeed does
 //! the runner bind `input.recipient` and `input.preferences`. No partial binding occurs. Temporary input
 //! disappears after the turn, including a failed turn.
 
@@ -43,27 +42,25 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value as JsonValue, json};
 
-use crate::Value;
+use crate::types::json_schema;
 use crate::ui::{self, Choice, Node, UiDocument};
+use crate::{Diagnostic, Diagnostics};
 
-pub(crate) mod schema;
+pub use crate::error::Error as InputError;
 
 /// A submitted JSON object mapping field names to values.
 /// Each value must already have the JSON type required by its field's schema.
 /// The runtime validates these types without coercion.
 pub type Input = JsonValue;
 
-/// A retained input page and its complete validation and decoding contract.
+/// A retained input page and its complete validation contract.
 ///
-/// JSON deserialization validates the UI and schema, then retains `serde_json::Value` decoders for
-/// the declared fields. These fields are read as JSON values; structured-step bindings can decode
-/// them into typed arguments or State replacements. Rust-built specs retain their original codecs.
+/// Rust-built and deserialized specifications deliver validated JSON values. Consumers may use
+/// ordinary Serde conversion when they need native Rust arguments.
 #[derive(Clone, Serialize)]
 pub struct InputSpec {
     ui: UiDocument,
     schema: JsonValue,
-    #[serde(skip)]
-    fields: HashMap<String, Box<dyn Value>>,
 }
 
 impl<'de> Deserialize<'de> for InputSpec {
@@ -76,7 +73,7 @@ impl<'de> Deserialize<'de> for InputSpec {
         }
 
         let Specification { ui, schema } = Specification::deserialize(deserializer)?;
-        schema::check(&schema).map_err(serde::de::Error::custom)?;
+        json_schema::check(&schema).map_err(serde::de::Error::custom)?;
         if schema["type"] != "object" || schema["additionalProperties"] != false {
             return Err(serde::de::Error::custom(
                 "input schema requires type object and additionalProperties false",
@@ -85,36 +82,17 @@ impl<'de> Deserialize<'de> for InputSpec {
         let properties = schema["properties"]
             .as_object()
             .ok_or_else(|| serde::de::Error::custom("input schema requires properties"))?;
-        let mut fields = new_hashmap();
         for name in properties.keys() {
             if name.is_empty() {
                 return Err(serde::de::Error::custom("input field name must not be empty"));
             }
-            fields.insert(name.clone(), Box::new(JsonValue::Null) as Box<dyn Value>);
         }
-        Ok(Self { ui, schema, fields })
-    }
-}
-
-/// A validation or decoding failure at a JSON Pointer in the submitted field object.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, thiserror::Error)]
-#[error("{path}: {message}")]
-pub struct InputError {
-    pub path: String,
-    pub message: String,
-}
-
-impl InputError {
-    pub(crate) fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            path: path.into(),
-            message: message.into(),
-        }
+        Ok(Self { ui, schema })
     }
 }
 
 /// Decoded fields delivered to the runner only after the complete submission succeeds.
-pub(crate) type DecodedInput = HashMap<String, Box<dyn Value>>;
+pub(crate) type DecodedInput = HashMap<String, JsonValue>;
 
 impl InputSpec {
     pub fn builder() -> InputSpecBuilder {
@@ -141,7 +119,7 @@ impl InputSpec {
     }
 
     /// Parses a submitted object, rejecting duplicate top-level field names before validation.
-    pub fn decode(&self, encoded: &str) -> Result<HashMap<String, Box<dyn Value>>, InputError> {
+    pub fn decode(&self, encoded: &str) -> Result<HashMap<String, JsonValue>, InputError> {
         struct ObjectVisitor;
         impl<'de> Visitor<'de> for ObjectVisitor {
             type Value = Map<String, JsonValue>;
@@ -171,30 +149,14 @@ impl InputSpec {
         self.decode_values(&JsonValue::Object(values))
     }
 
-    /// Validates the entire object before invoking any retained decoder. The local map is returned only
-    /// after every decoder succeeds with its declared concrete Rust type. Omission is not a default.
-    pub fn decode_values(&self, values: &JsonValue) -> Result<HashMap<String, Box<dyn Value>>, InputError> {
-        schema::validate(&self.schema, values, "")?;
-        let mut fields = new_hashmap();
-        for (key, encoded) in values
+    /// Validates the complete submission before returning any fields. Omission is not a default.
+    pub fn decode_values(&self, values: &JsonValue) -> Result<DecodedInput, InputError> {
+        json_schema::validate(&self.schema, values, "")?;
+        let object = values
             .as_object()
-            .ok_or_else(|| InputError::new("", "input must be an object"))?
-        {
-            let prototype = self
-                .fields
-                .get(key)
-                .ok_or_else(|| InputError::new(format!("/{}", escape_pointer(key)), "unknown input field"))?;
-            let decoded = prototype
-                .decode(&encoded.to_string())
-                .map_err(|error| InputError::new(format!("/{}", escape_pointer(key)), error))?;
-            if prototype.as_ref().type_id() != decoded.as_ref().type_id() {
-                return Err(InputError::new(
-                    format!("/{}", escape_pointer(key)),
-                    "decoder returned a different concrete value type",
-                ));
-            }
-            fields.insert(key.clone(), decoded);
-        }
+            .ok_or_else(|| InputError::new("", "input must be an object"))?;
+        let mut fields = new_hashmap();
+        fields.extend(object.iter().map(|(key, value)| (key.clone(), value.clone())));
         Ok(fields)
     }
 }
@@ -202,19 +164,17 @@ impl InputSpec {
 pub struct InputSpecBuilder {
     generator: SchemaGenerator,
     ui: ui::Builder,
-    fields: HashMap<String, Box<dyn Value>>,
     properties: Map<String, JsonValue>,
     required: Vec<String>,
     conditions: Vec<(String, Vec<JsonValue>, JsonValue)>,
-    errors: Vec<String>,
+    errors: Vec<Diagnostic>,
 }
 
 impl Default for InputSpecBuilder {
     fn default() -> Self {
         Self {
-            generator: schema::generator(),
+            generator: json_schema::generator(),
             ui: ui::Builder::default(),
-            fields: new_hashmap(),
             properties: Map::new(),
             required: Vec::new(),
             conditions: Vec::new(),
@@ -228,21 +188,18 @@ impl InputSpecBuilder {
         &self.ui
     }
 
-    /// Declares schema, retained decoder, and input UI from one business field declaration.
-    /// The prototype is never exported as draft data or used to infer the field's type.
-    pub fn field<V: Value + JsonSchema>(
-        &mut self, key: impl Into<String>, label: impl Into<String>, prototype: V,
-    ) -> FieldBuilder<'_> {
+    /// Declares input UI and a schema derived from the native Rust type.
+    pub fn field<V: JsonSchema>(&mut self, key: impl Into<String>, label: impl Into<String>) -> FieldBuilder<'_> {
         let key = key.into();
         let label = label.into();
-        if key.is_empty() || self.fields.contains_key(&key) {
-            self.errors.push(format!("empty or duplicate input field {key:?}"));
+        if key.is_empty() || self.properties.contains_key(&key) {
+            self.errors
+                .push(Diagnostic::new(&key, "empty or duplicate input field"));
         }
-        let mut schema = schema::generate::<V>(&mut self.generator);
-        let base_schema = schema::with_definitions(schema.clone(), self.generator.definitions());
+        let mut schema = json_schema::generate::<V>(&mut self.generator);
+        let base_schema = json_schema::with_definitions(schema.clone(), self.generator.definitions());
         schema["title"] = label.clone().into();
         self.properties.insert(key.clone(), schema);
-        self.fields.insert(key.clone(), Box::new(prototype));
         self.required.push(key.clone());
         FieldBuilder {
             owner: self,
@@ -270,40 +227,42 @@ impl InputSpecBuilder {
             .collect::<Map<_, _>>();
         for (key, value) in &values {
             if !self.properties.get(key).is_some_and(|property| {
-                schema::validate(
-                    &schema::with_definitions(property.clone(), self.generator.definitions()),
+                json_schema::validate(
+                    &json_schema::with_definitions(property.clone(), self.generator.definitions()),
                     value,
                     key,
                 )
                 .is_ok()
             }) {
                 self.errors
-                    .push(format!("submit button has an invalid value for {key}"));
+                    .push(Diagnostic::new(key, "submit button has an invalid value"));
             }
         }
         self.ui.submit(label.as_ref(), values)
     }
 
-    pub fn finish(mut self, root: Node) -> Result<InputSpec, String> {
+    pub fn finish(mut self, root: Node) -> Result<InputSpec, Diagnostics> {
         let mut conditional = Vec::new();
         for (field, values, consequence) in &self.conditions {
             let Some(property) = self.properties.get(field) else {
-                self.errors.push(format!("condition refers to unknown field {field}"));
+                self.errors
+                    .push(Diagnostic::new(field, "condition refers to unknown field"));
                 continue;
             };
             if values.is_empty() {
                 self.errors
-                    .push("a field condition must have at least one value".to_owned());
+                    .push(Diagnostic::new(field, "a field condition must have at least one value"));
             }
             for value in values {
-                if schema::validate(
-                    &schema::with_definitions(property.clone(), self.generator.definitions()),
+                if json_schema::validate(
+                    &json_schema::with_definitions(property.clone(), self.generator.definitions()),
                     value,
                     field,
                 )
                 .is_err()
                 {
-                    self.errors.push(format!("condition has an invalid value for {field}"));
+                    self.errors
+                        .push(Diagnostic::new(field, "condition has an invalid value"));
                 }
             }
             conditional.push(json!({
@@ -312,7 +271,9 @@ impl InputSpecBuilder {
             }));
         }
         if !self.errors.is_empty() {
-            return Err(self.errors.join("; "));
+            return Err(Diagnostics {
+                diagnostics: self.errors,
+            });
         }
         let mut schema = json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -322,12 +283,11 @@ impl InputSpecBuilder {
         if !conditional.is_empty() {
             schema["allOf"] = conditional.into();
         }
-        let schema = schema::with_definitions(schema, self.generator.definitions());
-        schema::check(&schema)?;
+        let schema = json_schema::with_definitions(schema, self.generator.definitions());
+        json_schema::check(&schema).map_err(Diagnostics::from)?;
         Ok(InputSpec {
             ui: self.ui.finish(root)?,
             schema,
-            fields: self.fields,
         })
     }
 }
@@ -373,12 +333,12 @@ impl FieldBuilder<'_> {
         self, field: impl Into<String>, values: impl IntoIterator<Item = V>,
     ) -> Self {
         if self.base_schema["type"] != "string" {
-            self.owner.errors.push(format!("{} is not a string", self.key));
+            self.owner.errors.push(Diagnostic::new(&self.key, "is not a string"));
         }
         self.owner.conditions.push((
             field.into(),
             values.into_iter().map(Into::into).collect(),
-            json!({"properties": {&self.key: {"pattern": schema::NON_BLANK}}}),
+            json!({"properties": {&self.key: {"pattern": json_schema::NON_BLANK}}}),
         ));
         self
     }
@@ -397,7 +357,9 @@ impl FieldBuilder<'_> {
             Some("array") => ("minItems", "maxItems"),
             Some("object") => ("minProperties", "maxProperties"),
             _ => {
-                self.owner.errors.push(format!("{} has no length constraint", self.key));
+                self.owner
+                    .errors
+                    .push(Diagnostic::new(&self.key, "has no length constraint"));
                 return self;
             }
         };
@@ -415,17 +377,17 @@ impl FieldBuilder<'_> {
         {
             self.owner
                 .errors
-                .push(format!("{} has inconsistent length bounds", self.key));
+                .push(Diagnostic::new(&self.key, "has inconsistent length bounds"));
         }
         self
     }
 
     fn pattern(mut self, pattern: impl Into<String>) -> Self {
         let pattern = pattern.into();
-        if self.base_schema["type"] != "string" || schema::compile_pattern(&pattern).is_err() {
+        if self.base_schema["type"] != "string" || json_schema::compile_pattern(&pattern).is_err() {
             self.owner
                 .errors
-                .push(format!("{} has an invalid string pattern", self.key));
+                .push(Diagnostic::new(&self.key, "has an invalid string pattern"));
         }
         if let Some(original) = self.base_schema.get("pattern").filter(|original| *original != &pattern) {
             let constraint = json!({"pattern": original});
@@ -446,7 +408,7 @@ impl FieldBuilder<'_> {
     }
 
     pub fn non_blank(self) -> Self {
-        self.pattern(schema::NON_BLANK)
+        self.pattern(json_schema::NON_BLANK)
     }
 
     pub fn min(self, value: impl Into<JsonValue>) -> Self {
@@ -459,20 +421,20 @@ impl FieldBuilder<'_> {
 
     fn bound(mut self, keyword: &str, value: JsonValue) -> Self {
         if !matches!(self.base_schema["type"].as_str(), Some("integer" | "number")) ||
-            schema::validate(&self.base_schema, &value, &self.key).is_err()
+            json_schema::validate(&self.base_schema, &value, &self.key).is_err()
         {
             self.owner
                 .errors
-                .push(format!("{} has an invalid numeric bound", self.key));
+                .push(Diagnostic::new(&self.key, "has an invalid numeric bound"));
         }
         self.schema()[keyword] = value;
         let property = self.schema();
         if let (Some(min), Some(max)) = (property["minimum"].as_number(), property["maximum"].as_number()) &&
-            schema::compare_numbers(min, max).is_gt()
+            json_schema::compare_numbers(min, max).is_gt()
         {
             self.owner
                 .errors
-                .push(format!("{} has inconsistent numeric bounds", self.key));
+                .push(Diagnostic::new(&self.key, "has inconsistent numeric bounds"));
         }
         self
     }
@@ -489,7 +451,7 @@ impl FieldBuilder<'_> {
         mut self, choices: impl IntoIterator<Item = (V, L)>,
     ) -> Self {
         if self.base_schema["type"] != "array" || self.base_schema.get("prefixItems").is_some() {
-            self.owner.errors.push(format!("{} is not a list", self.key));
+            self.owner.errors.push(Diagnostic::new(&self.key, "is not a list"));
             return self;
         }
         let mut items = schemars::Schema::try_from(self.base_schema.get("items").cloned().unwrap_or(json!(true)))
@@ -497,7 +459,7 @@ impl FieldBuilder<'_> {
         items.ensure_object();
         let mut items: JsonValue = items.into();
         self.item_choices = build_choices(
-            &schema::with_definitions(items.clone(), self.owner.generator.definitions()),
+            &json_schema::with_definitions(items.clone(), self.owner.generator.definitions()),
             choices,
             "list item",
             &mut self.owner.errors,
@@ -509,7 +471,7 @@ impl FieldBuilder<'_> {
 
     pub fn unique(mut self) -> Self {
         if self.base_schema["type"] != "array" {
-            self.owner.errors.push(format!("{} is not a list", self.key));
+            self.owner.errors.push(Diagnostic::new(&self.key, "is not a list"));
         }
         self.schema()["uniqueItems"] = true.into();
         self
@@ -548,10 +510,10 @@ impl FieldBuilder<'_> {
     }
 
     fn checked_control(
-        &mut self, compatible: bool, requirement: &str, build: impl FnOnce(&ui::Builder, &str, &str) -> Node,
+        &mut self, compatible: bool, requirement: &'static str, build: impl FnOnce(&ui::Builder, &str, &str) -> Node,
     ) -> Node {
         if !compatible {
-            self.owner.errors.push(format!("{}: {requirement}", self.key));
+            self.owner.errors.push(Diagnostic::new(&self.key, requirement));
         }
         build(&self.owner.ui, &self.key, &self.label)
     }
@@ -562,18 +524,19 @@ impl FieldBuilder<'_> {
             Some("string" | "boolean" | "integer" | "number")
         ) || self.choices.is_empty()
         {
-            self.owner
-                .errors
-                .push(format!("{}: select_one requires a scalar field with choices", self.key));
+            self.owner.errors.push(Diagnostic::new(
+                &self.key,
+                "select_one requires a scalar field with choices",
+            ));
         }
         self.owner.ui.select_one(&self.key, &self.label, &self.choices)
     }
 
     pub fn select_many(self) -> Node {
         if self.base_schema["type"] != "array" || self.item_choices.is_empty() {
-            self.owner.errors.push(format!(
-                "{}: select_many requires a list field with item choices",
-                self.key
+            self.owner.errors.push(Diagnostic::new(
+                &self.key,
+                "select_many requires a list field with item choices",
             ));
         }
         self.owner.ui.select_many(&self.key, &self.label, &self.item_choices)
@@ -585,7 +548,7 @@ impl FieldBuilder<'_> {
 }
 
 fn build_choices<V: Into<JsonValue>, L: Into<String>>(
-    schema: &JsonValue, choices: impl IntoIterator<Item = (V, L)>, context: &str, errors: &mut Vec<String>,
+    schema: &JsonValue, choices: impl IntoIterator<Item = (V, L)>, context: &str, errors: &mut Vec<Diagnostic>,
 ) -> Vec<Choice> {
     let choices: Vec<_> = choices
         .into_iter()
@@ -597,57 +560,34 @@ fn build_choices<V: Into<JsonValue>, L: Into<String>>(
     if choices.is_empty() ||
         choices
             .iter()
-            .any(|choice| schema::validate(schema, &choice.value, context).is_err())
+            .any(|choice| json_schema::validate(schema, &choice.value, context).is_err())
     {
-        errors.push(format!("{context} has invalid choices"));
+        errors.push(Diagnostic::new(context, "has invalid choices"));
     }
     if choices.iter().enumerate().any(|(index, choice)| {
         choices[..index]
             .iter()
-            .any(|previous| schema::equal(&previous.value, &choice.value))
+            .any(|previous| json_schema::equal(&previous.value, &choice.value))
     }) {
-        errors.push(format!("{context} has duplicate choices"));
+        errors.push(Diagnostic::new(context, "has duplicate choices"));
     }
     choices
 }
 
-pub(crate) fn escape_pointer(key: &str) -> String {
-    key.replace('~', "~0").replace('/', "~1")
-}
-
 #[cfg(test)]
 mod tests {
-    use std::any::Any;
+
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
 
-    use lyquid::prelude::new_hashmap;
     use lyquid_test::test;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
     use serde_json::{Value as JsonValue, json};
 
-    use crate::{InputSpec, List, Mapping, Value, ui};
-
-    macro_rules! json_value {
-        ($ty:ty) => {
-            impl Value for $ty {
-                fn encode(&self) -> String {
-                    serde_json::to_string(self).unwrap()
-                }
-                fn decode(&self, encoded: &str) -> Result<Box<dyn Value>, String> {
-                    serde_json::from_str::<Self>(encoded)
-                        .map(|value| Box::new(value) as Box<dyn Value>)
-                        .map_err(|error| error.to_string())
-                }
-                fn clone_box(&self) -> Box<dyn Value> {
-                    Box::new(self.clone())
-                }
-            }
-        };
-    }
+    use crate::{Diagnostics, InputSpec, ui};
 
     #[derive(Clone, Serialize, Deserialize, JsonSchema)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -660,23 +600,13 @@ mod tests {
         retries: u64,
         next: Option<Box<Payload>>,
     }
-    json_value!(Payload);
 
     #[test]
     fn serde_fields_and_references() {
-        let calls = Arc::new(AtomicUsize::new(0));
         let mut builder = InputSpec::builder();
-        let custom = builder
-            .field("custom", "Custom", CheckedText { calls: calls.clone() })
-            .text_input();
-        let prototype = Payload {
-            answer: "prototype".into(),
-            optional_note: None,
-            retries: 0,
-            next: None,
-        };
-        let payload = builder.field("payload", "Payload", prototype.clone()).json_input();
-        let optional = builder.field("optional", "Optional", prototype).optional().json_input();
+        let custom = builder.field::<String>("custom", "Custom").text_input();
+        let payload = builder.field::<Payload>("payload", "Payload").json_input();
+        let optional = builder.field::<Payload>("optional", "Optional").optional().json_input();
         let root = builder.ui().column(vec![custom, payload, optional]);
         let spec = builder.finish(root).unwrap();
         assert!(!spec.schema()["$defs"].as_object().unwrap().is_empty());
@@ -696,26 +626,22 @@ mod tests {
                 spec.decode_values(&json!({"custom": "ok", "payload": payload}))
                     .is_err()
             );
-            assert_eq!(calls.load(Ordering::Relaxed), 0);
         }
         let decoded = spec
             .decode_values(&json!({
                 "custom": "ok", "payload": {"answer": "yes", "optionalNote": null, "next": {"answer": "nested"}}
             }))
             .unwrap();
-        let payload: &dyn Any = decoded["payload"].as_ref();
-        let payload = payload.downcast_ref::<Payload>().unwrap();
+        let payload: Payload = serde_json::from_value(decoded["payload"].clone()).unwrap();
         assert_eq!(payload.answer, "yes");
         assert_eq!(payload.next.as_ref().unwrap().answer, "nested");
         assert_eq!(payload.retries, 0);
         assert!(payload.optional_note.is_none());
         assert!(!decoded.contains_key("optional"));
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[derive(Clone, Serialize, Deserialize, JsonSchema)]
     struct Digits(#[schemars(length(min = 2, max = 4), regex(pattern = "^[0-9]+$"))] String);
-    json_value!(Digits);
 
     #[test]
     fn pattern_semantics() {
@@ -762,7 +688,7 @@ mod tests {
         for case in cases {
             let mut builder = InputSpec::builder();
             let field = builder
-                .field("text", "Text", String::new())
+                .field::<String>("text", "Text")
                 .pattern(&case.pattern)
                 .text_input();
             let spec = builder.finish(field).unwrap();
@@ -779,21 +705,22 @@ mod tests {
 
     #[derive(Clone, Serialize, Deserialize, JsonSchema)]
     struct RustPattern(#[schemars(regex(pattern = r"\Atext\z"))] String);
-    json_value!(RustPattern);
 
     #[test]
     fn rejects_rust_pattern() {
         let mut builder = InputSpec::builder();
-        let field = builder.field("text", "Text", RustPattern(String::new())).text_input();
+        let field = builder.field::<RustPattern>("text", "Text").text_input();
         let error = builder.finish(field).err().unwrap();
-        assert!(error.contains("invalid ECMAScript pattern"));
+        assert!(matches!(error.diagnostics.as_slice(), [diagnostic]
+            if diagnostic.source.as_ref().unwrap().is::<regress::Error>()));
+        assert!(error.to_string().contains("invalid ECMAScript pattern"));
     }
 
     #[test]
     fn preserves_derived_constraints() {
         let mut builder = InputSpec::builder();
         let digits = builder
-            .field("digits", "Digits", Digits("12".into()))
+            .field::<Digits>("digits", "Digits")
             .min_len(1)
             .max_len(8)
             .non_blank()
@@ -830,19 +757,19 @@ mod tests {
         }
 
         fn check<T: JsonSchema>(accepted: &[JsonValue], rejected: &[JsonValue]) {
-            let mut generator = super::schema::generator();
-            let schema = super::schema::generate::<T>(&mut generator);
-            let schema = super::schema::with_definitions(schema, generator.definitions());
-            super::schema::check(&schema).unwrap();
+            let mut generator = super::json_schema::generator();
+            let schema = super::json_schema::generate::<T>(&mut generator);
+            let schema = super::json_schema::with_definitions(schema, generator.definitions());
+            super::json_schema::check(&schema).unwrap();
             for value in accepted {
                 assert!(
-                    super::schema::validate(&schema, value, "input").is_ok(),
+                    super::json_schema::validate(&schema, value, "input").is_ok(),
                     "rejected {value}"
                 );
             }
             for value in rejected {
                 assert!(
-                    super::schema::validate(&schema, value, "input").is_err(),
+                    super::json_schema::validate(&schema, value, "input").is_err(),
                     "accepted {value}"
                 );
             }
@@ -870,25 +797,17 @@ mod tests {
         #[derive(Clone, JsonSchema)]
         #[schemars(with = "String", extend("contentSchema" = false))]
         struct Unsupported;
-        impl Value for Unsupported {
-            fn encode(&self) -> String {
-                panic!("prototype must not be encoded")
-            }
-            fn decode(&self, _: &str) -> Result<Box<dyn Value>, String> {
-                panic!("invalid schema must not reach decoding")
-            }
-            fn clone_box(&self) -> Box<dyn Value> {
-                Box::new(self.clone())
-            }
-        }
+
         let mut builder = InputSpec::builder();
-        let field = builder.field("value", "Value", Unsupported).text_input();
-        assert!(builder.finish(field).err().unwrap().contains("contentSchema"));
+        let field = builder.field::<Unsupported>("value", "Value").text_input();
+        assert!(
+            matches!(builder.finish(field).err().unwrap().diagnostics.as_slice(), [error] if error.context == "contentSchema")
+        );
         for schema in [
             json!({"$ref": "https://example.com/schema"}),
             json!({"$ref": "#/$defs/missing"}),
         ] {
-            assert!(super::schema::check(&schema).is_err());
+            assert!(super::json_schema::check(&schema).is_err());
         }
     }
 
@@ -896,12 +815,12 @@ mod tests {
         let mut builder = InputSpec::builder();
         let heading = builder.ui().text("Send a gift");
         let recipient = builder
-            .field("recipient", "Recipient", "prototype is not a draft".to_owned())
+            .field::<String>("recipient", "Recipient")
             .min_len(1)
             .max_len(50)
             .text_input();
         let preferences = builder
-            .field("preferences", "Preferences", List::<String>(vec![]))
+            .field::<Vec<String>>("preferences", "Preferences")
             .item_choices([("quiet", "Quiet"), ("portable", "Portable")])
             .unique()
             .min_len(1)
@@ -914,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn json_input_rebuilds_schema_checked_json_decoders() {
+    fn json_input_restores_schema_checked_fields() {
         let encoded = serde_json::to_string(&form()).unwrap();
         let spec: InputSpec = serde_json::from_str(&encoded).unwrap();
         assert_eq!(
@@ -924,8 +843,7 @@ mod tests {
         let values = json!({"recipient": "Alex", "preferences": ["portable"]});
         let decoded = spec.decode_values(&values).unwrap();
         for (name, value) in values.as_object().unwrap() {
-            let decoded: &dyn Any = decoded[name].as_ref();
-            assert_eq!(decoded.downcast_ref::<JsonValue>(), Some(value));
+            assert_eq!(&decoded[name], value);
         }
         for values in [
             json!({"recipient": "Alex", "preferences": ["portable", "portable"]}),
@@ -1199,11 +1117,8 @@ mod tests {
         let spec: InputSpec = serde_json::from_value(encoded).unwrap();
         let values = json!({"count": u64::MAX, "payload": {"enabled": true, "note": null}});
         let decoded = spec.decode_values(&values).unwrap();
-        assert_eq!(decoded["count"].encode(), u64::MAX.to_string());
-        assert_eq!(
-            serde_json::from_str::<JsonValue>(&decoded["payload"].encode()).unwrap(),
-            values["payload"]
-        );
+        assert_eq!(decoded["count"].to_string(), u64::MAX.to_string());
+        assert_eq!(decoded["payload"], values["payload"]);
         for invalid in [json!("42"), json!(-1), json!(1.5)] {
             let mut values = values.clone();
             values["count"] = invalid;
@@ -1276,10 +1191,7 @@ mod tests {
             "right": leaf
         });
         let decoded = spec.decode_values(&input).unwrap();
-        assert_eq!(
-            serde_json::from_str::<JsonValue>(&decoded["left"].encode()).unwrap(),
-            input["left"]
-        );
+        assert_eq!(decoded["left"], input["left"]);
         input["left"]["children"][0]["value"] = json!(-1);
         assert_eq!(spec.decode_values(&input).err().unwrap().path, "/left/children/0/value");
 
@@ -1291,10 +1203,7 @@ mod tests {
         }
         input["left"] = deep;
         let decoded = spec.decode_values(&input).unwrap();
-        assert_eq!(
-            serde_json::from_str::<JsonValue>(&decoded["left"].encode()).unwrap(),
-            input["left"]
-        );
+        assert_eq!(decoded["left"], input["left"]);
         let leaf_path = format!("/left{}/value", "/next".repeat(80));
         *input.pointer_mut(&leaf_path).unwrap() = json!(-1);
         let error = spec.decode_values(&input).err().unwrap();
@@ -1313,7 +1222,6 @@ mod tests {
         assert_eq!(spec.schema()["properties"]["preferences"]["uniqueItems"], true);
         let exported = serde_json::to_value(&spec).unwrap();
         assert!(exported.get("fields").is_none());
-        assert!(!exported.to_string().contains("prototype is not a draft"));
         assert!(exported["ui"]["data"].get("fields").is_none());
         assert!(
             spec.ui().components().iter().any(
@@ -1324,8 +1232,7 @@ mod tests {
         let decoded = spec
             .decode_values(&json!({"recipient": "A", "preferences": ["portable"]}))
             .unwrap();
-        let preferences: &dyn Any = decoded["preferences"].as_ref();
-        assert_eq!(preferences.downcast_ref::<List<String>>().unwrap().0, ["portable"]);
+        assert_eq!(decoded["preferences"], json!(["portable"]));
         for values in [
             json!({"recipient": "A", "preferences": []}),
             json!({"recipient": "A", "preferences": ["portable", "portable"]}),
@@ -1342,11 +1249,10 @@ mod tests {
     fn untyped_item_choices() {
         #[derive(Clone, Serialize, Deserialize, JsonSchema)]
         struct Items(Vec<JsonValue>);
-        json_value!(Items);
 
         let mut builder = InputSpec::builder();
         let field = builder
-            .field("values", "Values", Items(vec![]))
+            .field::<Items>("values", "Values")
             .item_choices([(json!(true), "Yes"), (json!(1), "One")])
             .select_many();
         let spec = builder.finish(field).unwrap();
@@ -1356,12 +1262,14 @@ mod tests {
 
     #[test]
     fn nested_types_and_integer_bounds() {
+        use std::hash::{BuildHasher, Hasher};
+
         let mut builder = InputSpec::builder();
         let mapping = builder
-            .field("counts", "Counts", Mapping::<List<u64>>(new_hashmap()))
+            .field::<std::collections::BTreeMap<String, Vec<u64>>>("counts", "Counts")
             .json_input();
-        let signed = builder.field("signed", "Signed", 0_i64).number_input();
-        let enabled = builder.field("enabled", "Enabled", true).optional().toggle();
+        let signed = builder.field::<i64>("signed", "Signed").number_input();
+        let enabled = builder.field::<bool>("enabled", "Enabled").optional().toggle();
         let layout = builder.ui().column(vec![mapping, signed, enabled]);
         let spec = builder.finish(layout).unwrap();
         assert_eq!(
@@ -1370,11 +1278,15 @@ mod tests {
         );
         let valid = json!({"counts": {"a": [u64::MAX]}, "signed": i64::MIN});
         let decoded = spec.decode_values(&valid).unwrap();
-        let counts: &dyn Any = decoded["counts"].as_ref();
-        assert_eq!(
-            counts.downcast_ref::<Mapping<List<u64>>>().unwrap().0["a"].0,
-            [u64::MAX]
-        );
+        let expected_seed = lyquid::prelude::new_hashmap::<String, JsonValue>()
+            .hasher()
+            .build_hasher()
+            .finish();
+        for fields in [&decoded, &spec.decode(&valid.to_string()).unwrap()] {
+            assert_eq!(fields.hasher().build_hasher().finish(), expected_seed);
+            assert_eq!(fields["counts"], valid["counts"]);
+        }
+        assert_eq!(decoded["counts"]["a"], json!([u64::MAX]));
         assert!(!decoded.contains_key("enabled"));
         for values in [
             json!({"counts": {"a": [-1]}, "signed": 0}),
@@ -1392,76 +1304,51 @@ mod tests {
         );
     }
 
-    #[derive(Clone, schemars::JsonSchema)]
-    #[schemars(with = "String")]
-    struct CheckedText {
-        calls: Arc<AtomicUsize>,
-    }
-    impl Value for CheckedText {
-        fn encode(&self) -> String {
-            panic!("the prototype must not be serialized to derive a type or default")
-        }
-        fn decode(&self, encoded: &str) -> Result<Box<dyn Value>, String> {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            if encoded == r#""reject""# {
-                return Err("custom validation".into());
-            }
-            Ok(Box::new(self.clone()))
-        }
-        fn clone_box(&self) -> Box<dyn Value> {
-            Box::new(self.clone())
-        }
-    }
-
     #[test]
-    fn validates_before_decoding() {
-        let calls = Arc::new(AtomicUsize::new(0));
+    fn validates_complete_objects_without_partial_results() {
         let mut builder = InputSpec::builder();
-        let custom = builder
-            .field("a", "Custom", CheckedText { calls: calls.clone() })
+        let a = builder
+            .field::<String>("a", "Text")
+            .choices([("ok", "OK")])
             .text_input();
-        let number = builder.field("b", "Number", 0_u64).min(2).max(5).number_input();
-        let omitted = builder
-            .field("c", "Optional", CheckedText { calls: calls.clone() })
-            .optional()
-            .text_input();
-        let layout = builder.ui().column(vec![custom, number, omitted]);
+        let b = builder.field::<u64>("b", "Number").min(2).max(5).number_input();
+        let c = builder.field::<String>("c", "Optional").optional().text_input();
+        let layout = builder.ui().column(vec![a, b, c]);
         let spec = builder.finish(layout).unwrap();
-        assert!(spec.decode(r#"{"a":"ok","b":7}"#).is_err());
-        assert_eq!(calls.load(Ordering::Relaxed), 0);
-        assert!(spec.decode(r#"{"a":"reject","b":3}"#).is_err());
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
-        let decoded = spec.decode(" {\"a\":\"ok\",\"b\":3} \n").unwrap();
-        let custom: &dyn Any = decoded["a"].as_ref();
-        assert!(custom.downcast_ref::<CheckedText>().is_some());
-        assert!(!decoded.contains_key("c"));
-        assert_eq!(calls.load(Ordering::Relaxed), 2);
         for encoded in [
+            r#"{"a":"ok","b":7}"#,
+            r#"{"a":"reject","b":3}"#,
             r#"{"a":"ok","a":"reject","b":3}"#,
             r#"{"a":"ok","b":3} {}"#,
             r#"{"a":"ok","b":3} trailing"#,
         ] {
             assert!(spec.decode(encoded).is_err());
-            assert_eq!(calls.load(Ordering::Relaxed), 2);
         }
+        let decoded = spec.decode(r#"{"a":"ok","b":3}"#).unwrap();
+        assert_eq!(decoded["a"], json!("ok"));
+        assert_eq!(decoded["b"], json!(3));
+        assert!(!decoded.contains_key("c"));
     }
 
     #[test]
     fn validates_hidden_fields() {
         let mut builder = InputSpec::builder();
         let action = builder
-            .field("action", "Action", String::new())
+            .field::<String>("action", "Action")
             .choices([("refine", "Refine"), ("finish", "Finish")])
             .select_one();
         // Deliberately omit the feedback node from the root. Visibility cannot remove its contract.
         let _hidden = builder
-            .field("feedback", "Feedback", String::new())
+            .field::<String>("feedback", "Feedback")
             .required_when("action", ["refine"])
             .non_blank_when("action", ["refine"])
             .text_area();
         let spec = builder.finish(action).unwrap();
-        assert!(spec.decode(r#"{"action":"refine"}"#).is_err());
-        assert!(spec.decode(r#"{"action":"refine","feedback":" \n\t"}"#).is_err());
+        for encoded in [r#"{"action":"refine"}"#, r#"{"action":"refine","feedback":" \n\t"}"#] {
+            let error = spec.decode(encoded).unwrap_err();
+            assert_eq!(error.path, "/feedback");
+            assert!(!error.message.is_empty());
+        }
         assert!(spec.decode(r#"{"action":"refine","feedback":"  useful  "}"#).is_ok());
         assert!(!spec.decode(r#"{"action":"finish"}"#).unwrap().contains_key("feedback"));
         assert!(spec.decode(r#"{"action":"finish","feedback":""}"#).is_ok());
@@ -1477,11 +1364,11 @@ mod tests {
                 choices.push(("finish", "Finish"));
             }
             let action = builder
-                .field("action", "Action", String::new())
+                .field::<String>("action", "Action")
                 .choices(choices)
                 .select_one();
             let feedback = builder
-                .field("feedback", "Feedback", String::new())
+                .field::<String>("feedback", "Feedback")
                 .required_when("action", ["refine", "restart"])
                 .non_blank_when("action", ["refine", "restart"])
                 .text_area();
@@ -1509,10 +1396,8 @@ mod tests {
             let decoded = spec
                 .decode_values(&json!({"action": action, "feedback": feedback}))
                 .unwrap();
-            let decoded_action: &dyn Any = decoded["action"].as_ref();
-            let decoded_feedback: &dyn Any = decoded["feedback"].as_ref();
-            assert_eq!(decoded_action.downcast_ref::<String>().unwrap(), action);
-            assert_eq!(decoded_feedback.downcast_ref::<String>().unwrap(), feedback);
+            assert_eq!(decoded["action"], json!(action));
+            assert_eq!(decoded["feedback"], json!(feedback));
         }
         assert!(!spec.decode(r#"{"action":"finish"}"#).unwrap().contains_key("feedback"));
         let restricted = build(false);
@@ -1527,60 +1412,88 @@ mod tests {
     #[test]
     fn rejects_invalid_builders() {
         let mut duplicate = InputSpec::builder();
-        let _first = duplicate.field("x", "X", String::new()).text_input();
-        let second = duplicate.field("x", "X again", false).toggle();
-        assert!(duplicate.finish(second).is_err());
+        let _first = duplicate.field::<String>("x", "X").text_input();
+        let second = duplicate.field::<bool>("x", "X again").toggle();
+        assert!(
+            matches!(duplicate.finish(second), Err(Diagnostics { diagnostics: errors })
+            if matches!(errors.as_slice(), [error] if error.context == "x" && error.message.contains("duplicate")))
+        );
         let mut limits = InputSpec::builder();
-        let field = limits.field("x", "X", 0_u64).min(10).max(5).number_input();
-        assert!(limits.finish(field).is_err());
+        let field = limits.field::<u64>("x", "X").min(10).max(5).number_input();
+        assert!(matches!(limits.finish(field), Err(Diagnostics { diagnostics: errors })
+            if matches!(errors.as_slice(), [error] if error.context == "x" && error.message.contains("inconsistent"))));
         let mut condition = InputSpec::builder();
         let field = condition
-            .field("x", "X", String::new())
+            .field::<String>("x", "X")
             .required_when("missing", [true])
             .text_input();
-        assert!(condition.finish(field).is_err());
+        assert!(
+            matches!(condition.finish(field), Err(Diagnostics { diagnostics: errors })
+            if matches!(errors.as_slice(), [error] if error.context == "missing"))
+        );
+        let mut invalid = InputSpec::builder();
+        let first = invalid.field::<bool>("x", "X").text_input();
+        let second = invalid.field::<bool>("x", "X again").toggle();
+        let root = invalid.ui().column(vec![first, second]);
+        assert!(matches!(invalid.finish(root), Err(Diagnostics { diagnostics: errors })
+            if matches!(errors.as_slice(), [control, duplicate] if control.context == "x" && duplicate.context == "x")));
         let invalid_controls: [fn(&mut crate::InputSpecBuilder) -> ui::Node; 8] = [
-            |builder| builder.field("x", "X", false).text_input(),
-            |builder| builder.field("x", "X", 0_u64).text_area(),
-            |builder| builder.field("x", "X", String::new()).number_input(),
-            |builder| builder.field("x", "X", String::new()).toggle(),
-            |builder| builder.field("x", "X", String::new()).select_one(),
+            |builder| builder.field::<bool>("x", "X").text_input(),
+            |builder| builder.field::<u64>("x", "X").text_area(),
+            |builder| builder.field::<String>("x", "X").number_input(),
+            |builder| builder.field::<String>("x", "X").toggle(),
+            |builder| builder.field::<String>("x", "X").select_one(),
             |builder| {
                 builder
-                    .field("x", "X", List::<String>(vec![]))
+                    .field::<Vec<String>>("x", "X")
                     .item_choices([("a", "A")])
                     .select_one()
             },
-            |builder| builder.field("x", "X", List::<String>(vec![])).select_many(),
-            |builder| {
-                builder
-                    .field("x", "X", String::new())
-                    .choices([("a", "A")])
-                    .select_many()
-            },
+            |builder| builder.field::<Vec<String>>("x", "X").select_many(),
+            |builder| builder.field::<String>("x", "X").choices([("a", "A")]).select_many(),
         ];
-        for build in invalid_controls {
+        let expected = [
+            "x: text_input requires a string field",
+            "x: text_area requires a string field",
+            "x: number_input requires a numeric field",
+            "x: toggle requires a boolean field",
+            "x: select_one requires a scalar field with choices",
+            "x: select_one requires a scalar field with choices",
+            "x: select_many requires a list field with item choices",
+            "x: select_many requires a list field with item choices",
+        ];
+        for (build, expected) in invalid_controls.into_iter().zip(expected) {
             let mut builder = InputSpec::builder();
             let field = build(&mut builder);
-            assert!(builder.finish(field).is_err());
+            assert_eq!(builder.finish(field).err().unwrap().to_string(), expected);
         }
         let mut choices = InputSpec::builder();
         let field = choices
-            .field("x", "X", String::new())
+            .field::<String>("x", "X")
             .choices([("same", "One"), ("same", "Two")])
             .select_one();
-        assert!(choices.finish(field).is_err());
-        for values in [vec![], vec![json!("1")], vec![json!(1), json!(1.0)]] {
+        assert_eq!(
+            choices.finish(field).err().unwrap().to_string(),
+            "x: has duplicate choices"
+        );
+        for (values, expected) in [
+            (vec![], "has invalid choices"),
+            (vec![json!("1")], "has invalid choices"),
+            (vec![json!(1), json!(1.0)], "has duplicate choices"),
+        ] {
             let options = || values.iter().cloned().map(|value| (value, "Option"));
             let mut scalar = InputSpec::builder();
-            let field = scalar.field("x", "X", 0_u64).choices(options()).number_input();
-            assert!(scalar.finish(field).is_err());
+            let field = scalar.field::<u64>("x", "X").choices(options()).number_input();
+            assert_eq!(
+                scalar.finish(field).err().unwrap().to_string(),
+                format!("x: {expected}")
+            );
             let mut list = InputSpec::builder();
-            let field = list
-                .field("x", "X", List::<u64>(vec![]))
-                .item_choices(options())
-                .json_input();
-            assert!(list.finish(field).is_err());
+            let field = list.field::<Vec<u64>>("x", "X").item_choices(options()).json_input();
+            assert_eq!(
+                list.finish(field).err().unwrap().to_string(),
+                format!("list item: {expected}")
+            );
         }
         let first = ui::Builder::default();
         let second = ui::Builder::default();
@@ -1595,12 +1508,12 @@ mod tests {
     fn replaces_choices() {
         let mut builder = InputSpec::builder();
         let scalar = builder
-            .field("scalar", "Scalar", String::new())
+            .field::<String>("scalar", "Scalar")
             .choices([("old", "Old")])
             .choices([("new", "New")])
             .select_one();
         let list = builder
-            .field("list", "List", List::<String>(vec![]))
+            .field::<Vec<String>>("list", "List")
             .item_choices([("old", "Old")])
             .item_choices([("new", "New")])
             .select_many();
@@ -1629,14 +1542,14 @@ mod tests {
     fn multiselect_item_choices() {
         let mut builder = InputSpec::builder();
         let field = builder
-            .field("tags", "Tags", List::<String>(vec![]))
+            .field::<Vec<String>>("tags", "Tags")
             .choices([(json!(["quiet"]), "Quiet set")])
             .select_many();
         assert!(builder.finish(field).is_err());
 
         for items_first in [false, true] {
             let mut builder = InputSpec::builder();
-            let field = builder.field("tags", "Tags", List::<String>(vec![]));
+            let field = builder.field::<Vec<String>>("tags", "Tags");
             let field = if items_first {
                 field
                     .item_choices([("quiet", "Quiet")])
@@ -1657,8 +1570,7 @@ mod tests {
             assert_eq!(picker["options"][0]["label"], "Quiet");
             let selected: JsonValue = serde_json::from_str(picker["options"][0]["value"].as_str().unwrap()).unwrap();
             let decoded = spec.decode_values(&json!({"tags": [selected]})).unwrap();
-            let tags: &dyn Any = decoded["tags"].as_ref();
-            assert_eq!(tags.downcast_ref::<List<String>>().unwrap().0, ["quiet"]);
+            assert_eq!(decoded["tags"], json!(["quiet"]));
             assert!(spec.decode_values(&json!({"tags": []})).is_err());
         }
     }
@@ -1666,7 +1578,7 @@ mod tests {
     #[test]
     fn empty_layout_ownership() {
         let mut builder = InputSpec::builder();
-        let field = builder.field("text", "Text", String::new()).text_input();
+        let field = builder.field::<String>("text", "Text").text_input();
         let ui = builder.ui();
         let layout = ui.column(vec![ui.column(vec![]), field, ui.card(ui.row(vec![]))]);
         let spec = builder.finish(layout).unwrap();
@@ -1689,7 +1601,6 @@ mod tests {
 
     struct AtomicStep {
         calls: Arc<AtomicUsize>,
-        decodes: Arc<AtomicUsize>,
     }
     impl crate::Step for AtomicStep {
         fn description(&self, _: bool) -> String {
@@ -1698,22 +1609,25 @@ mod tests {
         fn input(&self, _: &crate::Scope) -> Option<InputSpec> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             let mut builder = InputSpec::builder();
-            let a = builder.field("a", "A", String::new()).text_input();
-            let b = builder
-                .field(
-                    "b",
-                    "B",
-                    CheckedText {
-                        calls: self.decodes.clone(),
-                    },
-                )
-                .text_input();
+            let a = builder.field::<String>("a", "A").text_input();
+            let b = builder.field::<String>("b", "B").choices([("ok", "OK")]).text_input();
             let layout = builder.ui().column(vec![a, b]);
             Some(builder.finish(layout).unwrap())
         }
         fn model_template(&self, scope: &crate::Scope) -> crate::TemplateSpec {
-            assert_eq!(scope.get::<String>(crate::StateNamespace::Input, "a").unwrap(), "value");
-            assert!(scope.get::<CheckedText>(crate::StateNamespace::Input, "b").is_some());
+            assert_eq!(
+                scope
+                    .get(crate::StateNamespace::Input, "a")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap(),
+                "value"
+            );
+            assert!(
+                scope
+                    .get(crate::StateNamespace::Input, "b")
+                    .and_then(JsonValue::as_str)
+                    .is_some()
+            );
             crate::TemplateSpec::Skip(crate::TurnProposal::Advance {
                 next: Some("done".into()),
                 updates: crate::StateUpdates::default(),
@@ -1727,19 +1641,12 @@ mod tests {
     }
 
     #[test]
-    fn cooperative_decode_retry() {
+    fn cooperative_validation_retry() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let decodes = Arc::new(AtomicUsize::new(0));
         let flow = crate::Flow::builder("atomic")
             .entry("input")
             .exit("done")
-            .step(
-                "input",
-                AtomicStep {
-                    calls: calls.clone(),
-                    decodes: decodes.clone(),
-                },
-            )
+            .step("input", AtomicStep { calls: calls.clone() })
             .build()
             .unwrap();
         let mut scope = crate::Scope::new(
@@ -1751,25 +1658,43 @@ mod tests {
         let handle = scope.input_handle();
         let (spec, _) = scope.run_until_input().unwrap().unwrap();
         assert!(handle.submit_input(r#"{"a":"value","b":"reject"}"#).is_err());
-        assert!(scope.get::<String>(crate::StateNamespace::Input, "a").is_none());
+        assert!(
+            scope
+                .get(crate::StateNamespace::Input, "a")
+                .and_then(serde_json::Value::as_str)
+                .is_none()
+        );
         assert!(scope.trace().entries.is_empty());
         let (again, _) = scope.run_until_input().unwrap().unwrap();
         assert_eq!(spec.schema(), again.schema());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
-        assert_eq!(decodes.load(Ordering::Relaxed), 1);
         handle.submit_input(r#"{"a":"value","b":"ok"}"#).unwrap();
-        assert_eq!(decodes.load(Ordering::Relaxed), 2);
         assert!(scope.trace().entries.is_empty());
-        assert!(scope.get::<String>(crate::StateNamespace::Input, "a").is_none());
+        assert!(
+            scope
+                .get(crate::StateNamespace::Input, "a")
+                .and_then(serde_json::Value::as_str)
+                .is_none()
+        );
         assert!(scope.run_until_input().unwrap().is_none());
         assert_eq!(
-            decodes.load(Ordering::Relaxed),
-            2,
-            "execution must not decode accepted input again"
+            calls.load(Ordering::Relaxed),
+            1,
+            "accepted input retains its original contract"
         );
         assert_eq!(scope.trace().entries.len(), 1);
-        assert!(scope.get::<String>(crate::StateNamespace::Input, "a").is_none());
-        assert!(scope.get::<CheckedText>(crate::StateNamespace::Input, "b").is_none());
+        assert!(
+            scope
+                .get(crate::StateNamespace::Input, "a")
+                .and_then(serde_json::Value::as_str)
+                .is_none()
+        );
+        assert!(
+            scope
+                .get(crate::StateNamespace::Input, "b")
+                .and_then(JsonValue::as_str)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1806,7 +1731,7 @@ mod tests {
     fn button_values() {
         let mut builder = InputSpec::builder();
         builder
-            .field("action", "Action", String::new())
+            .field::<String>("action", "Action")
             .choices([("refine", "Refine")]);
         let button = builder.submit_with("Refine", [("action", "refine")]);
         let spec = builder.finish(button).unwrap();
@@ -1826,7 +1751,7 @@ mod tests {
         for (field, value) in [("action", "unknown"), ("missing", "refine")] {
             let mut builder = InputSpec::builder();
             builder
-                .field("action", "Action", String::new())
+                .field::<String>("action", "Action")
                 .choices([("refine", "Refine")]);
             let button = builder.submit_with("Refine", [(field, value)]);
             assert!(builder.finish(button).is_err());

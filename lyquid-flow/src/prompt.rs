@@ -4,19 +4,19 @@ use lyquid_llm::ModelRequest;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tera::{Context, Tera};
 
-use crate::TurnProposal;
 use crate::flow::Flow;
 use crate::scope::Scope;
 use crate::state::{State, StateNamespace, StateUpdates};
 use crate::step::{ModelTemplate, StepId};
 use crate::trace::{Trace, TraceSummary};
+use crate::{FlowError, TurnProposal};
 
 /// Builds the complete model request from a template validated by Scope.
 pub(super) fn build_request(
     model: &str, template: &ModelTemplate, flow: &Flow, scope: &Scope,
-) -> Result<ModelRequest, String> {
+) -> Result<ModelRequest, FlowError> {
     let prompt = render_step_prompt(flow, scope, template)?;
-    let response_contract = response_contract(flow, scope, template)?;
+    let response_contract = response_contract(flow, scope, template);
     let flow_description = match flow.description() {
         "" => "Execute the current Flow.",
         description => description,
@@ -28,8 +28,9 @@ pub(super) fn build_request(
 }
 
 /// Parses a model response into a proposed local Advance or Restore.
-pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &str) -> Result<TurnProposal, String> {
-    let output: JsonValue = serde_json::from_str(output).map_err(|error| format!("invalid model output: {error}"))?;
+pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &str) -> Result<TurnProposal, FlowError> {
+    let output: JsonValue =
+        serde_json::from_str(output).map_err(|error| FlowError::context("invalid model output", error))?;
 
     let proposal_type = output
         .get("type")
@@ -37,10 +38,10 @@ pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &s
         .ok_or_else(|| "model output `type` must be `advance` or `restore`".to_owned())?;
     if proposal_type == "restore" {
         if !template.allow_restore {
-            return Err("model restore is not permitted by this Step".to_owned());
+            return Err("model restore is not permitted by this Step".into());
         }
         if output.get("next").is_some() || output.get("updates").is_some() {
-            return Err("Restore model output must not include `next` or `updates`".to_owned());
+            return Err("Restore model output must not include `next` or `updates`".into());
         }
         let scope = output
             .get("scope")
@@ -49,16 +50,16 @@ pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &s
         return Ok(TurnProposal::Restore { scope: scope.into() });
     }
     if proposal_type != "advance" {
-        return Err("model output `type` must be `advance` or `restore`".to_owned());
+        return Err("model output `type` must be `advance` or `restore`".into());
     }
     if output.get("scope").is_some() {
-        return Err("Advance model output must not include `scope`".to_owned());
+        return Err("Advance model output must not include `scope`".into());
     }
 
     let next = match output.get("next") {
         Some(JsonValue::String(next)) => Some(StepId::from(next.as_str())),
         Some(JsonValue::Null) => None,
-        _ => return Err("model output `next` must be a Step ID or null".to_owned()),
+        _ => return Err("model output `next` must be a Step ID or null".into()),
     };
     if !template
         .next_step_criteria
@@ -68,7 +69,7 @@ pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &s
         let target = next
             .as_ref()
             .map_or_else(|| "Flow completion".to_owned(), |step| format!("Step {step}"));
-        return Err(format!("model output selected undeclared next target {target}"));
+        return Err(format!("model output selected undeclared next target {target}").into());
     }
 
     let proposed_updates = output
@@ -79,15 +80,18 @@ pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &s
     let mut updates = StateUpdates::default();
     for (name, encoded) in proposed_updates {
         if !template.state_update_criteria.iter().any(|(field, _)| field == name) {
-            return Err(format!("model output attempted undeclared State update {name}"));
+            return Err(format!("model output attempted undeclared State update {name}").into());
         }
         let field = state
             .fields
             .get(&StateNamespace::Default)
             .and_then(|fields| fields.get(name))
             .ok_or_else(|| format!("unknown State field {name}"))?;
-        let value = field.value.decode(&encoded.to_string())?;
-        updates.set(name.clone(), Some(value));
+        field
+            .declared_type
+            .validate(encoded)
+            .map_err(|error| FlowError::context(format!("State field {name}"), error))?;
+        updates.set(name.clone(), Some(encoded.clone()));
     }
     Ok(TurnProposal::Advance { next, updates })
 }
@@ -98,18 +102,21 @@ pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &s
 /// Trace entries contain their Step ID, State snapshot, and summary, including nested child Traces.
 /// `step` maps every local Step and exit ID to its raw string, without changing the permitted next destinations.
 /// `context` contains the current Step's prepared model data. All sections render once against these values.
-fn render_step_prompt(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> Result<String, String> {
+fn render_step_prompt(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> Result<String, FlowError> {
     let mut context = Context::new();
     let current = flow
         .step(scope.current_step())
         .ok_or_else(|| format!("unknown Step {} for model context", scope.current_step()))?;
-    let prepared = current
-        .model_context(scope)
-        .map_err(|error| format!("prepare model context for Step {}: {error}", scope.current_step()))?;
+    let prepared = current.model_context(scope).map_err(|error| {
+        FlowError::context(
+            format!("prepare model context for Step {}", scope.current_step()),
+            error,
+        )
+    })?;
     context.insert("context", &prepared);
-    context.insert("state", &scope.state().to_json()?);
-    context.insert("input", &input_json(scope.updates())?);
-    context.insert("trace", &trace_json(scope.trace())?);
+    context.insert("state", &scope.state().to_json());
+    context.insert("input", &input_json(scope.updates()));
+    context.insert("trace", &trace_json(scope.trace()));
     let steps = flow
         .step_ids()
         .chain(flow.exits())
@@ -121,23 +128,23 @@ fn render_step_prompt(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> R
         Tera::one_off(value, &context, false)
             .map(|rendered| rendered.trim().to_owned())
             .map_err(|error| {
-                format!(
-                    "failed to render {section} for Step {}: {error:#}",
-                    scope.current_step()
+                FlowError::context(
+                    format!("failed to render {section} for Step {}", scope.current_step()),
+                    error,
                 )
             })
     };
 
     let step_goal = render("step goal", &template.step_goal)?;
     if step_goal.is_empty() {
-        return Err("a model template must render a non-empty step goal".to_owned());
+        return Err("a model template must render a non-empty step goal".into());
     }
 
     let mut prompt = format!("# Step goal\n{step_goal}\n\n# Next step criteria\n");
     for (next, criterion) in &template.next_step_criteria {
         let condition = render("next-step criterion", criterion)?;
         if condition.is_empty() {
-            return Err("a model template must render non-empty next-step criteria".to_owned());
+            return Err("a model template must render non-empty next-step criteria".into());
         }
         let next = next.as_ref().map_or("null (complete the Flow)", |step| step.0.as_str());
         writeln!(&mut prompt, "- `{next}`: {condition}").expect("writing a Step prompt to String cannot fail");
@@ -151,9 +158,9 @@ fn render_step_prompt(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> R
         for (field, criterion) in &template.state_update_criteria {
             let condition = render("State update criterion", criterion)?;
             if condition.is_empty() {
-                return Err(format!(
-                    "model template must render a non-empty update criterion for State field {field}"
-                ));
+                return Err(
+                    format!("model template must render a non-empty update criterion for State field {field}").into(),
+                );
             }
             writeln!(&mut prompt, "- `{field}`: {condition}")
                 .expect("writing a State update criterion to String cannot fail");
@@ -166,7 +173,7 @@ fn render_step_prompt(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> R
 }
 
 /// Builds the model response contract from valid local transitions and State fields.
-fn response_contract(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> Result<String, String> {
+fn response_contract(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> String {
     let state = scope.state();
     let update_fields = template
         .state_update_criteria
@@ -177,26 +184,27 @@ fn response_contract(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> Re
                 .get(&StateNamespace::Default)
                 .and_then(|fields| fields.get(name))
                 .expect("model template State fields are validated before building the request");
-            Ok((
+            (
                 name.clone(),
                 json!({
                     "description": field.description,
-                    "value": parse_encoded(&field.value.encode(), name)?,
+                    "value": field.value,
+                    "type": field.declared_type,
                 }),
-            ))
+            )
         })
-        .collect::<Result<JsonMap<_, _>, String>>()?;
+        .collect::<JsonMap<_, _>>();
     let next_options = template
         .next_step_criteria
         .iter()
         .map(|(next, _)| {
             let mut option = json!({ "value": next.as_ref().map(|next| &next.0) });
             if let Some(manifest) = next.as_ref().and_then(|id| flow.tool_manifest(id)) {
-                option["tool"] = manifest.prompt_json()?;
+                option["tool"] = manifest.prompt_json();
             }
-            Ok(option)
+            option
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Vec<_>>();
     // TODO: Use provider-native structured output / JSON Schema to enforce the model response format.
     let mut response_contract = json!({
         "advance": {
@@ -212,8 +220,11 @@ fn response_contract(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> Re
                 "description": concat!(
                     "Return `updates` as a JSON object mapping field names to new replacement values. ",
                     "Use only keys from `fields`; omit unchanged fields, and return `{}` if no update criterion applies. ",
-                    "Each value must have the same JSON type ",
-                    "as `fields[key].value`. Return the raw value, not the `{description, value}` descriptor."
+                    "Each value must match `fields[key].type`, a Flow Type declaration with a `kind`. ",
+                    "For list and mapping, `value` declares the type of every element or object value. ",
+                    "For option, accept null or the type declared by `value`; dynamic accepts any JSON value. ",
+                    "u32, u64 and i64 require integers in their native ranges; f64 accepts finite JSON numbers. ",
+                    "Return the raw value, not its field descriptor."
                 ),
                 "fields": update_fields,
             },
@@ -239,46 +250,41 @@ fn response_contract(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> Re
             },
         });
     }
-    Ok(serde_json::to_string_pretty(&response_contract).expect("JSON response contract cannot fail"))
+    serde_json::to_string_pretty(&response_contract).expect("JSON response contract cannot fail")
 }
 
 /// Projects the current Step input into the map exposed to Tera.
-fn input_json(updates: &StateUpdates) -> Result<JsonValue, String> {
-    let fields = updates
+fn input_json(updates: &StateUpdates) -> JsonValue {
+    updates
         .ephemeral
         .get(&StateNamespace::Input)
         .into_iter()
-        .flat_map(|fields| fields.iter())
-        .map(|(name, value)| Ok((name.clone(), parse_encoded(&value.encode(), name)?)))
-        .collect::<Result<JsonMap<_, _>, String>>()?;
-    Ok(JsonValue::Object(fields))
+        .flatten()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect::<JsonMap<_, _>>()
+        .into()
 }
 
-/// Projects Trace entries as their stored Step IDs and State snapshots.
-fn trace_json(trace: &Trace) -> Result<JsonValue, String> {
-    let entries = trace
+fn trace_json(trace: &Trace) -> JsonValue {
+    trace
         .entries
         .iter()
         .map(|entry| {
-            Ok(json!({
+            json!({
                 "step": entry.step.0,
-                "state": entry.state.to_json()?,
-                "summary": trace_summary_json(&entry.summary)?,
-            }))
+                "state": entry.state.to_json(),
+                "summary": trace_summary_json(&entry.summary),
+            })
         })
-        .collect::<Result<Vec<_>, String>>()?;
-    Ok(JsonValue::Array(entries))
+        .collect::<Vec<_>>()
+        .into()
 }
 
-fn trace_summary_json(summary: &TraceSummary) -> Result<JsonValue, String> {
+fn trace_summary_json(summary: &TraceSummary) -> JsonValue {
     match summary {
-        TraceSummary::Summary(summary) => Ok(JsonValue::String(summary.clone())),
+        TraceSummary::Summary(summary) => JsonValue::String(summary.clone()),
         TraceSummary::SubFlow(trace) => trace_json(trace),
     }
-}
-
-fn parse_encoded(encoded: &str, field_name: &str) -> Result<JsonValue, String> {
-    serde_json::from_str(encoded).map_err(|error| format!("State field {field_name} encoded invalid JSON: {error}"))
 }
 
 #[cfg(test)]
@@ -292,9 +298,8 @@ mod tests {
 
     use super::{build_request, parse_response};
     use crate::{
-        AutoCheckpointConfig, ExitTransitions, Flow, FlowError, InputSpec, List, Mapping, ModelTemplate, Scope, State,
-        StateNamespace, StateUpdates, Step, StepId, TemplateSpec, Trace, TraceEntry, TraceMode, TraceSummary,
-        TurnProposal,
+        AutoCheckpointConfig, ExitTransitions, Flow, FlowError, InputSpec, ModelTemplate, Scope, State, StateNamespace,
+        StateUpdates, Step, StepId, TemplateSpec, Trace, TraceEntry, TraceMode, TraceSummary, TurnProposal,
     };
 
     const RESPONSE_CONTRACT_MARKER: &str =
@@ -334,18 +339,29 @@ mod tests {
         let mut scores = new_hashmap();
         scores.insert("quality".to_owned(), 9_u64);
         let state = State::builder()
-            .field("title", "Current release title", "Draft".to_owned())
+            .field(
+                "title",
+                "Current release title",
+                crate::Type::String,
+                serde_json::json!("Draft"),
+            )
             .field(
                 "tasks",
                 "Ordered release tasks",
-                List(vec!["write".to_owned(), "review".to_owned()]),
+                crate::Type::List(Box::new(crate::Type::String)),
+                serde_json::json!(vec!["write".to_owned(), "review".to_owned()]),
             )
-            .field("scores", "Release quality scores", Mapping(scores))
+            .field(
+                "scores",
+                "Release quality scores",
+                crate::Type::Mapping(Box::new(crate::Type::U64)),
+                serde_json::json!(scores),
+            )
             .build()
             .expect("the prompt fixture State should be valid");
 
         let mut prepare_updates = StateUpdates::default();
-        prepare_updates.set("title".to_owned(), Some(Box::new("Ready".to_owned())));
+        prepare_updates.set("title".to_owned(), Some(serde_json::json!("Ready")));
         let flow = Arc::new(
             Flow::builder("release")
                 .description(description)
@@ -376,7 +392,11 @@ mod tests {
         scope
             .advance()
             .expect("the fixture Step should commit its State and Trace");
-        scope.set(StateNamespace::Input, "approved".to_owned(), Some(Box::new(true)));
+        scope.set(
+            StateNamespace::Input,
+            "approved".to_owned(),
+            Some(serde_json::json!(true)),
+        );
 
         (flow, scope)
     }
@@ -398,7 +418,7 @@ mod tests {
         scope.set(
             StateNamespace::Input,
             "literal".to_owned(),
-            Some(Box::new("{{ state.title }}".to_owned())),
+            Some(serde_json::json!("{{ state.title }}")),
         );
         let template = ModelTemplate::new(
             concat!(
@@ -511,8 +531,11 @@ mod tests {
         let scope = Scope::new(flow.clone(), State::default(), AutoCheckpointConfig::Disabled, None);
         let template = ModelTemplate::new("{{ context.request }}", vec![(None, "Done".into())], vec![]);
         let error = build_request("test-model", &template, &flow, &scope).unwrap_err();
-        assert!(error.contains("prepare model context for Step start"), "{error}");
-        assert!(error.contains("request data is unavailable"), "{error}");
+        assert!(
+            error.to_string().contains("prepare model context for Step start"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("request data is unavailable"), "{error}");
         assert!(scope.trace().entries.is_empty());
     }
 
@@ -560,8 +583,8 @@ mod tests {
             let mut template = template.clone();
             template.step_goal = format!("{{{{ step[\"{missing}\"] }}}}");
             let error = super::render_step_prompt(flow, scope, &template).unwrap_err();
-            assert!(error.contains("failed to render step goal"), "{error}");
-            assert!(error.contains(missing), "{error}");
+            assert!(error.to_string().contains("failed to render step goal"), "{error}");
+            assert!(error.to_string().contains(missing), "{error}");
         }
     }
 
@@ -582,10 +605,12 @@ mod tests {
             *text = "Continue to {{ step.missing }}".to_owned();
             let error = build_request("test-model", &template, &flow, &scope).unwrap_err();
             assert!(
-                error.contains(&format!("failed to render {section} for Step review")),
+                error
+                    .to_string()
+                    .contains(&format!("failed to render {section} for Step review")),
                 "{error}"
             );
-            assert!(error.contains("step.missing"), "{error}");
+            assert!(error.to_string().contains("step.missing"), "{error}");
         }
     }
 
@@ -618,6 +643,7 @@ mod tests {
             json!({
                 "description": "Current release title",
                 "value": "Ready",
+                "type": {"kind": "string"},
             })
         );
         assert_eq!(
@@ -625,6 +651,7 @@ mod tests {
             json!({
                 "description": "Ordered release tasks",
                 "value": ["write", "review"],
+                "type": {"kind": "list", "value": {"kind": "string"}},
             })
         );
         assert_eq!(
@@ -632,6 +659,7 @@ mod tests {
             json!({
                 "description": "Release quality scores",
                 "value": {"quality": 9},
+                "type": {"kind": "mapping", "value": {"kind": "u64"}},
             })
         );
 
@@ -669,13 +697,23 @@ mod tests {
         // Build one child Trace with two Steps: `child-plan` followed by `child-finish`.
         let child_planned_state = Arc::new(
             State::builder()
-                .field("status", "Child status", "planned".to_owned())
+                .field(
+                    "status",
+                    "Child status",
+                    crate::Type::String,
+                    serde_json::json!("planned"),
+                )
                 .build()
                 .expect("the planned child State should be valid"),
         );
         let child_finished_state = Arc::new(
             State::builder()
-                .field("status", "Child status", "finished".to_owned())
+                .field(
+                    "status",
+                    "Child status",
+                    crate::Type::String,
+                    serde_json::json!("finished"),
+                )
                 .build()
                 .expect("the finished child State should be valid"),
         );
@@ -695,13 +733,18 @@ mod tests {
         };
 
         let parent_state = State::builder()
-            .field("status", "Parent status", "not-started".to_owned())
+            .field(
+                "status",
+                "Parent status",
+                crate::Type::String,
+                serde_json::json!("not-started"),
+            )
             .build()
             .expect("the parent State should be valid");
         let mut first_updates = StateUpdates::default();
-        first_updates.set("status".to_owned(), Some(Box::new("first-complete".to_owned())));
+        first_updates.set("status".to_owned(), Some(serde_json::json!("first-complete")));
         let mut second_updates = StateUpdates::default();
-        second_updates.set("status".to_owned(), Some(Box::new("second-complete".to_owned())));
+        second_updates.set("status".to_owned(), Some(serde_json::json!("second-complete")));
 
         // The parent Flow records two entries. The first has a normal text summary; the second
         // embeds the child Trace above as a SubFlow summary.
@@ -790,11 +833,39 @@ mod tests {
             if allowed {
                 assert!(matches!(proposal, Ok(TurnProposal::Restore { scope }) if scope == checkpoint));
             } else {
-                assert_eq!(proposal.err().unwrap(), "model restore is not permitted by this Step");
+                assert_eq!(
+                    proposal.err().unwrap().to_string(),
+                    "model restore is not permitted by this Step"
+                );
             }
         }
         // The model restriction does not disable explicit application recovery.
         scope.restore(&checkpoint).unwrap();
+    }
+
+    #[test]
+    fn model_updates_preserve_unsigned_integer_storage_and_range() {
+        let (_, scope) = prompt_fixture("");
+        let template = ModelTemplate::new(
+            "Review scores",
+            vec![(Some("review".into()), "Review again".into())],
+            vec![("scores".into(), "Update scores".into())],
+        );
+        for score in [json!(-1), json!(1.0), json!(18446744073709551616.0)] {
+            let output = json!({"type": "advance", "next": "review", "updates": {"scores": {"quality": score}}});
+            let error = parse_response(scope.state(), &template, &output.to_string())
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("expected u64"));
+        }
+        let output = json!({"type": "advance", "next": "review", "updates": {"scores": {"quality": u64::MAX}}});
+        let TurnProposal::Advance { updates, .. } =
+            parse_response(scope.state(), &template, &output.to_string()).unwrap()
+        else {
+            panic!("expected advance");
+        };
+        assert_eq!(updates.get("scores").unwrap()["quality"].as_u64(), Some(u64::MAX));
+        assert_eq!(scope.state().get("scores").unwrap()["quality"], json!(9));
     }
 
     #[test]
@@ -816,7 +887,10 @@ mod tests {
             unreachable!()
         };
         assert_eq!(next.map(|next| next.0).as_deref(), Some("review"));
-        assert_eq!(updates.get::<String>("title").map(String::as_str), Some("Approved"));
+        assert_eq!(
+            updates.get("title").and_then(serde_json::Value::as_str),
+            Some("Approved")
+        );
 
         let undeclared_next = parse_response(
             scope.state(),
@@ -826,7 +900,7 @@ mod tests {
         .err()
         .expect("an undeclared destination should be rejected");
         assert_eq!(
-            undeclared_next,
+            undeclared_next.to_string(),
             "model output selected undeclared next target Step done"
         );
 
@@ -838,7 +912,7 @@ mod tests {
         .err()
         .expect("an undeclared State field should be rejected");
         assert_eq!(
-            undeclared_update,
+            undeclared_update.to_string(),
             "model output attempted undeclared State update tasks"
         );
 
@@ -849,6 +923,6 @@ mod tests {
         )
         .err()
         .expect("a State update with the wrong type should be rejected");
-        assert!(invalid_type.contains("expected a string"));
+        assert!(invalid_type.to_string().contains("expected string"));
     }
 }

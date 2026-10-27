@@ -7,7 +7,7 @@ use lyquid_flow::{
     AutoCheckpointConfig, ExitTransitions, Flow, FlowError, InputSpec, Scope, State, StateNamespace, StateUpdates,
     Step, TemplateSpec, TraceMode, TraceSummary, TurnProposal,
 };
-use lyquid_structured_step::{StructuredStepBuilder, ValueSource};
+use lyquid_structured_builder::{NextCase, NextStep, StructuredSpec, ValueSource};
 use lyquid_test::test;
 
 // Replace only input transport and model calls. Actual library finalizers, commits and child joins run unchanged.
@@ -47,14 +47,16 @@ impl Step for Submitted {
         received.set(
             StateNamespace::Input,
             self.field.to_owned(),
-            Some(Box::new(self.values.get(index).expect("unexpected input wait").clone())),
+            Some(serde_json::json!(
+                self.values.get(index).expect("unexpected input wait").clone()
+            )),
         );
         if self.field == CHOICE_STATE_FIELD && self.values[index] == CONTINUE_CHOICE {
             let feedback_index = self.values[..index].iter().filter(|id| *id == CONTINUE_CHOICE).count();
             received.set(
                 StateNamespace::Input,
                 REFINEMENT_INPUT_FIELD.into(),
-                Some(Box::new(self.feedback[feedback_index].clone())),
+                Some(serde_json::json!(self.feedback[feedback_index].clone())),
             );
         }
         self.step.finalize(&received, proposal)
@@ -76,14 +78,23 @@ impl<S: Step> Step for ModelTurn<S> {
     fn model_template(&self, scope: &Scope) -> TemplateSpec {
         assert!(
             scope
-                .get::<String>(StateNamespace::Input, REFINEMENT_INPUT_FIELD)
+                .get(StateNamespace::Input, REFINEMENT_INPUT_FIELD)
+                .and_then(serde_json::Value::as_str)
                 .is_none()
         );
-        let message = scope.state().get::<String>(REFINEMENT_INPUT_FIELD).unwrap();
-        let (color, hint) = match message.as_str() {
+        let message = scope
+            .state()
+            .get(REFINEMENT_INPUT_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let (color, hint) = match message {
             "Blue is required" => ("blue", "What size?"),
             "Red is required instead" => {
-                let previous = scope.state().get::<DecisionState>(DECISION_STATE_FIELD).unwrap();
+                let previous = scope
+                    .state()
+                    .get(DECISION_STATE_FIELD)
+                    .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
+                    .unwrap();
                 assert_eq!(previous.goal.hard_constraints, ["blue"]);
                 assert_eq!(previous.ranking.candidate_ids, [CandidateId::from("blue")]);
                 ("red", "Any other requirements?")
@@ -95,7 +106,7 @@ impl<S: Step> Step for ModelTurn<S> {
         if !self.reject_first || attempt > 0 {
             updates.set(
                 DECISION_STATE_FIELD.to_owned(),
-                Some(Box::new(DecisionState {
+                Some(serde_json::json!(DecisionState {
                     goal: GoalFrame {
                         hard_constraints: vec![color.to_owned()],
                         soft_preferences: vec![],
@@ -215,14 +226,28 @@ fn default_loop_collects_refinement_text_directly_without_a_choice_round() {
     assert!(!prompt.contains("Red option"));
     scope.advance().unwrap();
     assert_eq!(
-        scope.state().get::<String>(REFINEMENT_INPUT_FIELD).unwrap(),
+        scope
+            .state()
+            .get(REFINEMENT_INPUT_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .unwrap(),
         "Red is required instead"
     );
     scope.advance().unwrap();
     assert_eq!(scope.current_step().0, INPUT_STEP);
     assert!(!scope.is_finished());
-    assert!(scope.state().get::<String>(CHOICE_STATE_FIELD).is_none());
-    let decision = scope.state().get::<DecisionState>(DECISION_STATE_FIELD).unwrap();
+    assert!(
+        scope
+            .state()
+            .get(CHOICE_STATE_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    );
+    let decision = scope
+        .state()
+        .get(DECISION_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
+        .unwrap();
     assert_eq!(decision.ranking.candidate_ids, [CandidateId::from("red")]);
     assert_eq!(decision.question.prompt, "Any other requirements?");
     assert_eq!(trace_steps(&scope), [INPUT_STEP, REFINE_STEP, INPUT_STEP, REFINE_STEP]);
@@ -247,26 +272,44 @@ fn configured_loop_continues_refinement_then_leaves_through_a_custom_exit() {
     assert_eq!(scope.current_step().0, CHOICE_STEP);
     let before = scope
         .state()
-        .get::<DecisionState>(DECISION_STATE_FIELD)
+        .get(DECISION_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
         .unwrap()
         .clone();
     scope.advance().unwrap();
     assert_eq!(scope.current_step().0, REFINE_STEP);
-    assert_eq!(scope.state().get::<DecisionState>(DECISION_STATE_FIELD), Some(&before));
+    assert_eq!(
+        scope
+            .state()
+            .get(DECISION_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok()),
+        Some(before.clone())
+    );
     scope.advance().unwrap();
     assert_eq!(scope.current_step().0, CHOICE_STEP);
     scope.advance().unwrap();
     assert!(scope.is_finished());
     assert_eq!(scope.current_step().0, "compare");
-    assert_eq!(scope.state().get::<String>(CHOICE_STATE_FIELD).unwrap(), "compare");
     assert_eq!(
-        scope.state().get::<DecisionRequest>(DECISION_REQUEST_STATE_FIELD),
-        Some(&request(""))
+        scope
+            .state()
+            .get(CHOICE_STATE_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .unwrap(),
+        "compare"
     );
     assert_eq!(
         scope
             .state()
-            .get::<DecisionState>(DECISION_STATE_FIELD)
+            .get(DECISION_REQUEST_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<DecisionRequest>(value.clone()).ok()),
+        Some(request(""))
+    );
+    assert_eq!(
+        scope
+            .state()
+            .get(DECISION_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
             .unwrap()
             .ranking
             .candidate_ids,
@@ -289,15 +332,26 @@ fn failed_model_turn_retries_committed_feedback_without_another_input() {
         scope.advance().unwrap();
         let before = scope
             .state()
-            .get::<DecisionState>(DECISION_STATE_FIELD)
+            .get(DECISION_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
             .unwrap()
             .clone();
         assert!(scope.advance().is_err());
         assert_eq!(scope.current_step().0, REFINE_STEP);
         assert_eq!(trace_steps(&scope), [INPUT_STEP]);
-        assert_eq!(scope.state().get::<DecisionState>(DECISION_STATE_FIELD), Some(&before));
         assert_eq!(
-            scope.state().get::<String>(REFINEMENT_INPUT_FIELD).unwrap(),
+            scope
+                .state()
+                .get(DECISION_STATE_FIELD)
+                .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok()),
+            Some(before.clone())
+        );
+        assert_eq!(
+            scope
+                .state()
+                .get(REFINEMENT_INPUT_FIELD)
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
             "Blue is required"
         );
         scope.advance().unwrap();
@@ -318,7 +372,14 @@ fn public_graph_entries_and_model_schema_agree_for_both_configurations() {
     ] {
         let supplied = scope(&config, config.flow(), request("A bag"));
         assert_eq!(supplied.current_step().0, REFINE_STEP);
-        assert_eq!(supplied.state().get::<String>(REFINEMENT_INPUT_FIELD).unwrap(), "A bag");
+        assert_eq!(
+            supplied
+                .state()
+                .get(REFINEMENT_INPUT_FIELD)
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            "A bag"
+        );
         assert_eq!(
             scope(&config, config.flow_from_input(), request("")).current_step().0,
             INPUT_STEP
@@ -343,14 +404,28 @@ fn every_configured_exit_returns_immediately_without_model_calls_or_feedback() {
         );
         let before = scope
             .state()
-            .get::<DecisionState>(DECISION_STATE_FIELD)
+            .get(DECISION_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
             .unwrap()
             .clone();
         scope.advance().unwrap();
         assert!(scope.is_finished());
         assert_eq!(scope.current_step().0, choice);
-        assert_eq!(scope.state().get::<String>(CHOICE_STATE_FIELD).unwrap(), choice);
-        assert_eq!(scope.state().get::<DecisionState>(DECISION_STATE_FIELD), Some(&before));
+        assert_eq!(
+            scope
+                .state()
+                .get(CHOICE_STATE_FIELD)
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            choice
+        );
+        assert_eq!(
+            scope
+                .state()
+                .get(DECISION_STATE_FIELD)
+                .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok()),
+            Some(before.clone())
+        );
         assert_eq!(trace_steps(&scope), [CHOICE_STEP]);
     }
 }
@@ -367,7 +442,14 @@ fn unconfigured_choices_fail_without_committing_choice_cursor_or_trace() {
         assert!(scope.advance().is_err());
         assert_eq!(scope.current_step().0, CHOICE_STEP);
         assert!(scope.trace().entries.is_empty());
-        assert_eq!(scope.state().get::<String>(CHOICE_STATE_FIELD).unwrap(), "");
+        assert_eq!(
+            scope
+                .state()
+                .get(CHOICE_STATE_FIELD)
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            ""
+        );
         assert!(!scope.is_finished());
     }
 }
@@ -423,6 +505,30 @@ fn mounting_requires_exactly_the_configured_exits_and_rejects_the_exit_free_defa
 #[test]
 fn parent_routes_custom_exits_and_collects_restart_feedback_outside_the_child() {
     const APP_FEEDBACK: &str = "application_restart_feedback";
+    struct FeedbackInput;
+
+    impl Step for FeedbackInput {
+        fn description(&self, _: bool) -> String {
+            "Collect a text message".into()
+        }
+        fn input(&self, _: &Scope) -> Option<InputSpec> {
+            let mut input = InputSpec::builder();
+            let field = input.field::<String>(APP_FEEDBACK, "What should change?").text_input();
+            let submit = input.submit("Send");
+            let layout = input.ui().column(vec![field, submit]);
+            Some(input.finish(layout).unwrap())
+        }
+        fn model_template(&self, _: &Scope) -> TemplateSpec {
+            TemplateSpec::Skip(TurnProposal::Advance {
+                next: None,
+                updates: StateUpdates::default(),
+            })
+        }
+        fn finalize(&self, _: &Scope, _: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+            Ok(TraceSummary::Summary("Received a text message".into()))
+        }
+    }
+
     let config = exit_config();
     for (choice, goal, feedback, target) in [
         ("compare", "Blue is required", "", "compare_products"),
@@ -451,26 +557,19 @@ fn parent_routes_custom_exits_and_collects_restart_feedback_outside_the_child() 
             .step(
                 "collect_feedback",
                 Submitted::new(
-                    StructuredStepBuilder::new()
-                        .description("Collect a text message")
-                        .with_input({
-                            let mut input = InputSpec::builder();
-                            let field = input
-                                .field(APP_FEEDBACK, "What should change?", String::new())
-                                .text_input();
-                            let submit = input.submit("Send");
-                            let layout = input.ui().column(vec![field, submit]);
-                            input.finish(layout).unwrap()
+                    StructuredSpec::builder()
+                        .state_updates(vec![(
+                            APP_FEEDBACK.into(),
+                            ValueSource::reference(StateNamespace::Input, APP_FEEDBACK),
+                        )])
+                        .next(NextStep {
+                            steps: vec![NextCase {
+                                next: Some("retrieve_candidates".into()),
+                                description: "Retrieve new candidates".into(),
+                            }],
                         })
-                        .update_from(
-                            APP_FEEDBACK,
-                            ValueSource::Input {
-                                name: APP_FEEDBACK.into(),
-                            },
-                        )
-                        .next("retrieve_candidates")
-                        .summary("Received a text message")
                         .build()
+                        .with(FeedbackInput)
                         .unwrap(),
                     APP_FEEDBACK,
                     &[feedback],
@@ -480,11 +579,19 @@ fn parent_routes_custom_exits_and_collects_restart_feedback_outside_the_child() 
             .unwrap();
         let state = config
             .add_state_fields(
-                State::builder().field("parent", "Unrelated parent data", 7_u64).field(
-                    APP_FEEDBACK,
-                    "Application-owned feedback",
-                    String::new(),
-                ),
+                State::builder()
+                    .field(
+                        "parent",
+                        "Unrelated parent data",
+                        lyquid_flow::Type::U64,
+                        serde_json::json!(7_u64),
+                    )
+                    .field(
+                        APP_FEEDBACK,
+                        "Application-owned feedback",
+                        lyquid_flow::Type::String,
+                        serde_json::json!(""),
+                    ),
                 request(goal),
             )
             .unwrap()
@@ -493,12 +600,29 @@ fn parent_routes_custom_exits_and_collects_restart_feedback_outside_the_child() 
         let mut scope = Scope::new(Arc::new(parent), state, AutoCheckpointConfig::Disabled, None);
         scope.advance().unwrap();
         assert_eq!(scope.current_step().0, target);
-        assert_eq!(scope.state().get::<u64>("parent"), Some(&7));
-        assert_eq!(scope.state().get::<String>(APP_FEEDBACK).unwrap(), "");
-        assert_eq!(scope.state().get::<String>(CHOICE_STATE_FIELD).unwrap(), choice);
+        assert_eq!(scope.state().get("parent").and_then(serde_json::Value::as_u64), Some(7));
         assert_eq!(
-            scope.state().get::<DecisionRequest>(DECISION_REQUEST_STATE_FIELD),
-            Some(&request(goal))
+            scope
+                .state()
+                .get(APP_FEEDBACK)
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            ""
+        );
+        assert_eq!(
+            scope
+                .state()
+                .get(CHOICE_STATE_FIELD)
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            choice
+        );
+        assert_eq!(
+            scope
+                .state()
+                .get(DECISION_REQUEST_STATE_FIELD)
+                .and_then(|value| serde_json::from_value::<DecisionRequest>(value.clone()).ok()),
+            Some(request(goal))
         );
         let expected_ids = if goal == "Nothing matches" {
             vec![]
@@ -508,7 +632,8 @@ fn parent_routes_custom_exits_and_collects_restart_feedback_outside_the_child() 
         assert_eq!(
             scope
                 .state()
-                .get::<DecisionState>(DECISION_STATE_FIELD)
+                .get(DECISION_STATE_FIELD)
+                .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
                 .unwrap()
                 .ranking
                 .candidate_ids,
@@ -529,7 +654,14 @@ fn parent_routes_custom_exits_and_collects_restart_feedback_outside_the_child() 
             assert!(!scope.is_finished());
             scope.advance().unwrap();
             assert_eq!(scope.current_step().0, "retrieve_candidates");
-            assert_eq!(scope.state().get::<String>(APP_FEEDBACK).unwrap(), feedback);
+            assert_eq!(
+                scope
+                    .state()
+                    .get(APP_FEEDBACK)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap(),
+                feedback
+            );
             assert_eq!(trace_steps(&scope), ["narrow", "collect_feedback"]);
         }
         assert!(scope.is_finished());
@@ -553,7 +685,8 @@ fn empty_ranking_can_be_refined_again_in_either_graph() {
         assert!(
             scope
                 .state()
-                .get::<DecisionState>(DECISION_STATE_FIELD)
+                .get(DECISION_STATE_FIELD)
+                .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
                 .unwrap()
                 .ranking
                 .candidate_ids
@@ -569,7 +702,8 @@ fn empty_ranking_can_be_refined_again_in_either_graph() {
         assert_eq!(
             scope
                 .state()
-                .get::<DecisionState>(DECISION_STATE_FIELD)
+                .get(DECISION_STATE_FIELD)
+                .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
                 .unwrap()
                 .ranking
                 .candidate_ids,

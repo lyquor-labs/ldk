@@ -1,7 +1,6 @@
 use lyquid_llm::FinishReason;
-use lyquid_structured_step::ActionContext;
 use lyquid_test::test;
-use serde_json::{Map, Value, json};
+use serde_json::json;
 
 use crate::composition_tests::response;
 use crate::{JsonFormatterConfig, json_formatter, model_response_json_formatter};
@@ -33,10 +32,7 @@ fn complete_json_values_and_fences_are_supported() {
             format!("```json\r\n{text}\r\n```"),
             format!("```\r\n{text}\r\n```"),
         ] {
-            assert_eq!(
-                format(&ActionContext::new(&(), None, &Map::new()), wrapped).unwrap(),
-                expected
-            );
+            assert_eq!(format(&wrapped).unwrap(), expected);
         }
     }
     for invalid in [
@@ -47,10 +43,7 @@ fn complete_json_values_and_fences_are_supported() {
         "```json\n{}",
         "```json\n{}\n``` trailing",
     ] {
-        assert!(
-            format(&ActionContext::new(&(), None, &Map::new()), invalid.to_owned()).is_err(),
-            "{invalid}"
-        );
+        assert!(format(invalid).is_err(), "{invalid}");
     }
 }
 
@@ -66,18 +59,13 @@ fn fence_opening_requires_a_line_boundary_and_an_exact_json_tag() {
         "```json5\n42\n```",
         "```javascript\n42\n```",
     ] {
-        assert!(
-            format(&ActionContext::new(&(), None, &Map::new()), invalid.to_owned()).is_err(),
-            "{invalid}"
-        );
+        assert!(format(invalid).is_err(), "{invalid}");
     }
 }
 
 #[test]
 fn closing_fences_require_their_own_line_and_match_the_opening_length() {
     let format = json_formatter(JsonFormatterConfig::new()).unwrap();
-    let results = Map::new();
-    let context = ActionContext::new(&(), None, &results);
     for invalid in [
         "```json\n42```",
         "```\n42 ```",
@@ -89,15 +77,13 @@ fn closing_fences_require_their_own_line_and_match_the_opening_length() {
         "```json\n42\n    ```",
         "```json\n42\n\t```",
     ] {
-        assert!(format(&context, invalid.into()).is_err(), "{invalid}");
+        assert!(format(invalid).is_err(), "{invalid}");
     }
 }
 
 #[test]
 fn longer_backtick_fences_allow_matching_or_longer_closing_lines() {
     let format = json_formatter(JsonFormatterConfig::new()).unwrap();
-    let results = Map::new();
-    let context = ActionContext::new(&(), None, &results);
     for opening in [3, 4, 5] {
         for closing in [opening, opening + 1] {
             for tag in ["", "json"] {
@@ -107,7 +93,7 @@ fn longer_backtick_fences_allow_matching_or_longer_closing_lines() {
                         "`".repeat(opening),
                         "`".repeat(closing),
                     );
-                    assert_eq!(format(&context, text).unwrap(), 42);
+                    assert_eq!(format(&text).unwrap(), 42);
                 }
             }
         }
@@ -128,11 +114,7 @@ fn schema_checks_structure_and_nested_constraints() {
     })))
     .unwrap();
     assert_eq!(
-        format(
-            &ActionContext::new(&(), None, &Map::new()),
-            r#"{"items":[2],"route":"done"}"#.into()
-        )
-        .unwrap(),
+        format(r#"{"items":[2],"route":"done"}"#).unwrap(),
         json!({"items":[2],"route":"done"})
     );
     for invalid in [
@@ -142,20 +124,20 @@ fn schema_checks_structure_and_nested_constraints() {
         json!({"items": [1]}),
         json!({"items": [1], "route": "done", "extra": true}),
     ] {
-        assert!(format(&ActionContext::new(&(), None, &Map::new()), invalid.to_string()).is_err());
+        assert!(format(&invalid.to_string()).is_err());
     }
 }
 
 #[test]
-fn unsupported_schemas_fail_when_constructing_either_action() {
+fn unsupported_schemas_fail_when_constructing_either_formatter() {
     for schema in [
         json!({"unsupported":true}),
         json!({"$ref":"https://example.com/schema"}),
         json!({"type":"unknown"}),
         json!({"$ref":"#"}),
     ] {
-        assert!(json_formatter::<()>(JsonFormatterConfig::json_schema(schema.clone())).is_err());
-        assert!(model_response_json_formatter::<(), ()>(JsonFormatterConfig::json_schema(schema)).is_err());
+        assert!(json_formatter(JsonFormatterConfig::json_schema(schema.clone())).is_err());
+        assert!(model_response_json_formatter(JsonFormatterConfig::json_schema(schema)).is_err());
     }
 }
 
@@ -165,18 +147,18 @@ fn recursive_schema_validation_keeps_the_formatter_evaluation_limit() {
         "type": "object", "properties": {"next": {"$ref": "#"}}
     })))
     .unwrap();
-    let results = Map::new();
-    let context = ActionContext::new(&(), None, &results);
     let mut value = json!({});
     // Each property and $ref contributes one evaluation; 64 links reach the limit.
     for _ in 0..64 {
         value = json!({"next": value});
     }
-    assert_eq!(format(&context, value.to_string()).unwrap(), value);
+    assert_eq!(format(&value.to_string()).unwrap(), value);
     value = json!({"next": value});
-    let error = format(&context, value.to_string()).unwrap_err();
+    let error = format(&value.to_string()).unwrap_err();
     assert!(
-        error.contains("schema validation exceeded 128 nested evaluations"),
+        error
+            .to_string()
+            .contains("schema validation exceeded 128 nested evaluations"),
         "{error}"
     );
 }
@@ -189,8 +171,6 @@ fn schema_composition_cannot_hide_the_formatter_evaluation_limit() {
     for _ in 0..65 {
         value = json!({"next": value});
     }
-    let results = Map::new();
-    let context = ActionContext::new(&(), None, &results);
     for (mut schema, accepts_shallow) in [
         (json!({"not": recursive}), false),
         (json!({"if": recursive, "then": false, "else": true}), false),
@@ -200,10 +180,12 @@ fn schema_composition_cannot_hide_the_formatter_evaluation_limit() {
     ] {
         schema["$defs"] = definitions.clone();
         let format = json_formatter(JsonFormatterConfig::json_schema(schema.clone())).unwrap();
-        assert_eq!(format(&context, "{}".into()).is_ok(), accepts_shallow, "{schema}");
-        let error = format(&context, value.to_string()).unwrap_err();
+        assert_eq!(format("{}").is_ok(), accepts_shallow, "{schema}");
+        let error = format(&value.to_string()).unwrap_err();
         assert!(
-            error.contains("schema validation exceeded 128 nested evaluations"),
+            error
+                .to_string()
+                .contains("schema validation exceeded 128 nested evaluations"),
             "{schema}: {error}"
         );
     }
@@ -212,88 +194,43 @@ fn schema_composition_cannot_hide_the_formatter_evaluation_limit() {
 #[test]
 fn model_response_formatter_checks_presence_and_completion_before_parsing() {
     let format = model_response_json_formatter(JsonFormatterConfig::json_schema(json!({"type":"integer"}))).unwrap();
-    let results = Map::new();
     let valid = response("42");
     let mut truncated = valid.clone();
     truncated.finish_reason = Some(FinishReason::Length);
     let mut missing = valid.clone();
     missing.text = None;
-    assert_eq!(
-        format(&ActionContext::new(&(), Some(&valid), &results), ()).unwrap(),
-        42
-    );
+    assert_eq!(format(Some(&valid)).unwrap(), 42);
     for (raw, message) in [
         (None, "no model response"),
         (Some(&truncated), "output-token budget"),
         (Some(&missing), "no text"),
     ] {
-        assert!(
-            format(&ActionContext::new(&(), raw, &results), ())
-                .unwrap_err()
-                .contains(message)
-        );
+        assert!(format(raw).unwrap_err().to_string().contains(message));
     }
     let wrong_type = response("\"wrong type\"");
-    assert!(format(&ActionContext::new(&(), Some(&wrong_type), &results), ()).is_err());
+    assert!(format(Some(&wrong_type)).is_err());
 }
 
 #[test]
-fn model_response_formatter_ignores_previous_results_and_preserves_all_metadata() {
+fn model_response_formatter_preserves_the_response_and_all_metadata() {
     let format = model_response_json_formatter(JsonFormatterConfig::new()).unwrap();
     let original = response("  ```json\n{\"answer\":42}\n```  ");
     let expected = original.clone();
-    let prepared = json!({"argument": 7});
-    let mut results = Map::new();
-    let context = ActionContext::new(&prepared, Some(&original), &results);
-    let output = format(&context, "unrelated preceding result").unwrap();
+    let output = format(Some(&original)).unwrap();
     assert_eq!(output, json!({"answer": 42}));
-    assert_eq!(context.model_response(), Some(&expected));
-    assert_eq!(context.prepared(), &prepared);
-
-    // The builder records named output after success. Later callbacks can read both values,
-    // even when the immediately preceding result has changed type.
-    results.insert("formatted".into(), output);
-    let later = |context: &ActionContext<'_, Value>, previous: bool| {
-        assert!(!previous);
-        assert_eq!(context.model_response(), Some(&expected));
-        assert_eq!(context.result("formatted"), Some(&json!({"answer": 42})));
-    };
-    later(&ActionContext::new(&prepared, Some(&original), &results), false);
+    assert_eq!(original, expected);
 }
 
 #[test]
-fn formatter_shares_ecmascript_rules_and_preserves_input_error_paths() {
+fn formatter_preserves_ecmascript_rules_and_error_paths() {
     let format = json_formatter(JsonFormatterConfig::json_schema(json!({
         "type": "object",
         "properties": {"answer": {"type": "string", "pattern": "^(?=A)[A-Z]+$"}},
         "required": ["answer"]
     })))
     .unwrap();
-    assert_eq!(
-        format(
-            &ActionContext::new(&(), None, &Map::new()),
-            r#"{"answer":"ABC"}"#.into()
-        )
-        .unwrap(),
-        json!({"answer":"ABC"})
-    );
+    assert_eq!(format(r#"{"answer":"ABC"}"#).unwrap(), json!({"answer":"ABC"}));
     for invalid in [r#"{"answer":"BCD"}"#, "{}"] {
-        assert!(
-            format(&ActionContext::new(&(), None, &Map::new()), invalid.into())
-                .unwrap_err()
-                .contains("result/answer")
-        );
-    }
-
-    let mut builder = lyquid_flow::InputSpec::builder();
-    let field = builder
-        .field("answer", "Answer", String::new())
-        .non_blank()
-        .text_input();
-    let spec = builder.finish(field).unwrap();
-    for value in [json!({}), json!({"answer":" "})] {
-        let error = spec.decode_values(&value).err().unwrap();
-        assert_eq!(error.path, "/answer");
-        assert!(!error.message.is_empty());
+        assert!(format(invalid).unwrap_err().to_string().contains("result/answer"));
     }
 }

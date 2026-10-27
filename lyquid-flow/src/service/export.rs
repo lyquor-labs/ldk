@@ -23,7 +23,7 @@ macro_rules! serve_flow {
                 (|| -> lyquid::LyquidResult<()> {
                     lyquid::trigger!(flow_service_run(), lyquid::prelude::TriggerMode::Once(0));
                     Ok(())
-                })().map_err(|error| error.to_string())
+                })().map_err(|error| $crate::Diagnostic::with_source("schedule Flow", error).into())
             }))
         }
 

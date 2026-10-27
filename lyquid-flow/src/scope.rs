@@ -58,7 +58,7 @@ pub enum AutoCheckpointConfig {
 /// Errors produced while submitting input or advancing a Scope.
 #[derive(Debug, thiserror::Error)]
 pub enum FlowError {
-    /// Input failed schema validation or field decoding.
+    /// Input failed JSON parsing or schema validation.
     #[error("invalid input: {0}")]
     InputInvalid(crate::InputError),
     /// No Step is currently waiting for input.
@@ -70,14 +70,45 @@ pub enum FlowError {
     /// The configured model backend failed.
     #[error("model call failed: {0}")]
     Model(#[from] lyquid_llm::LlmError),
-    /// Flow validation or Step execution failed.
-    #[error("{0}")]
-    Execution(String),
+    /// Application callbacks or other runtime execution failed.
+    #[error(transparent)]
+    Execution(#[from] crate::Diagnostics),
+}
+
+impl FlowError {
+    /// Attach operation context while keeping the original error available through `source()`.
+    pub fn context(context: impl Into<String>, source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        crate::Diagnostic::with_source(context, source).into()
+    }
+}
+
+impl From<crate::Diagnostic> for FlowError {
+    fn from(diagnostic: crate::Diagnostic) -> Self {
+        Self::Execution(diagnostic.into())
+    }
+}
+
+impl From<crate::InputError> for FlowError {
+    fn from(error: crate::InputError) -> Self {
+        Self::context("validation", error)
+    }
 }
 
 impl From<String> for FlowError {
     fn from(error: String) -> Self {
-        Self::Execution(error)
+        Self::Execution(error.into())
+    }
+}
+
+impl From<&str> for FlowError {
+    fn from(error: &str) -> Self {
+        Self::Execution(error.into())
+    }
+}
+
+impl From<serde_json::Error> for FlowError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::context("JSON", error)
     }
 }
 
@@ -169,7 +200,7 @@ impl InputHandle {
         true
     }
 
-    /// Validates the complete field object against the waiting Step's retained schema and decoders.
+    /// Validates the complete field object against the waiting Step's retained schema.
     ///
     /// Invalid input leaves the contract available for correction. Decoding runs outside the
     /// endpoint lock; delivery uses the captured one-shot sender and cannot move to another Step.
@@ -193,22 +224,24 @@ impl InputHandle {
             let sender = sender.lock().take().ok_or(FlowError::InputClosed)?;
             pending = shared.pending.take();
             // Sending never waits. Once the cooperative runner observes no pending input,
-            // its receiver is ready; decoded values and custom prototypes are dropped outside the lock.
+            // its receiver is ready; validated JSON values are dropped outside the lock.
             sender.send(input)
         };
         drop(pending);
         delivered.map_err(|_| FlowError::InputClosed)
     }
 
-    fn request(&self, spec: InputSpec, state: Arc<State>) -> Result<lyquid::oneshot::Receiver<DecodedInput>, String> {
+    fn request(
+        &self, spec: InputSpec, state: Arc<State>,
+    ) -> Result<lyquid::oneshot::Receiver<DecodedInput>, FlowError> {
         let (sender, receiver) = lyquid::oneshot::channel();
         {
             let mut shared = self.shared.lock();
             if shared.stop_requested {
-                return Err("the Flow execution was stopped".to_owned());
+                return Err("the Flow execution was stopped".into());
             }
             if shared.pending.is_some() {
-                return Err("the Flow execution already has a pending input request".to_owned());
+                return Err("the Flow execution already has a pending input request".into());
             }
             shared.state_snapshot = Some(state);
             shared.pending = Some(PendingInput {
@@ -265,7 +298,7 @@ pub struct Scope {
     trace: Arc<Trace>,
     /// Selected result of the last completed child, retained after its execution is dropped.
     /// A projection error is retained too; it must not undo a successful child commit.
-    completed_child_view: Option<Result<crate::ViewSpec, String>>,
+    completed_child_view: Option<Result<crate::ViewSpec, crate::Diagnostic>>,
     /// Uncommitted values owned by the active Step.
     updates: StateUpdates,
     /// Raw response visible only while the current Step's finalization runs.
@@ -426,19 +459,13 @@ impl Scope {
         self.trace.as_ref()
     }
 
-    /// Returns one Step-scoped value from the requested namespace.
-    pub fn get<V: crate::Value>(&self, namespace: StateNamespace, name: &str) -> Option<&V> {
+    /// Returns one Step-scoped JSON value from the requested namespace.
+    pub fn get(&self, namespace: StateNamespace, name: &str) -> Option<&serde_json::Value> {
         self.updates.get_in(namespace, name)
     }
 
-    /// Reads a Step-scoped value without requiring its concrete type.
-    /// Committed values are available through [`Self::state`].
-    pub fn get_value(&self, namespace: StateNamespace, name: &str) -> Option<&dyn crate::Value> {
-        self.updates.get_value_in(namespace, name)
-    }
-
-    /// Adds, replaces, or removes one Step-scoped value in the requested namespace.
-    pub fn set(&mut self, namespace: StateNamespace, name: String, value: Option<Box<dyn crate::Value>>) {
+    /// Adds, replaces, or removes one Step-scoped JSON value in the requested namespace.
+    pub fn set(&mut self, namespace: StateNamespace, name: String, value: Option<serde_json::Value>) {
         self.updates.set_in(namespace, name, value);
     }
 
@@ -477,7 +504,7 @@ impl Scope {
             return child.view();
         }
         if let Some(view) = &self.completed_child_view {
-            return view.clone().map_err(FlowError::Execution);
+            return view.clone().map_err(FlowError::from);
         }
         // Results belong to their producing Step. A subsequent failing Step must not replace
         // the last committed result with its own (possibly empty) presentation.
@@ -488,7 +515,7 @@ impl Scope {
             .map_or(&self.current_step, |entry| &entry.step);
         self.flow
             .step(id)
-            .ok_or_else(|| FlowError::Execution(format!("unknown presentation Step {id}")))?
+            .ok_or_else(|| FlowError::Execution(format!("unknown presentation Step {id}").into()))?
             .view(self)
     }
 
@@ -520,7 +547,7 @@ impl Scope {
         let step = self
             .flow
             .step(id)
-            .ok_or_else(|| FlowError::Execution(format!("unknown presentation Step {id}")))?;
+            .ok_or_else(|| FlowError::Execution(format!("unknown presentation Step {id}").into()))?;
         Ok((self, id.clone(), step))
     }
 
@@ -576,7 +603,7 @@ impl Scope {
     /// Waits for input only when called by the blocking adapter.
     fn advance_step(&mut self, wait_for_input: bool) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
         if self.input_handle.shared.lock().stop_requested {
-            return Err(FlowError::Execution("the Flow execution was stopped".to_owned()));
+            return Err(FlowError::Execution("the Flow execution was stopped".into()));
         }
         let previous_updates = self.updates.clone();
         let result = if self.running_child().is_some() {
@@ -602,7 +629,7 @@ impl Scope {
         let spec = self.pending_input_spec.clone();
         // Input construction may request a stop through the shared handle.
         if self.input_handle.shared.lock().stop_requested {
-            return Err(FlowError::Execution("the Flow execution was stopped".to_owned()));
+            return Err(FlowError::Execution("the Flow execution was stopped".into()));
         }
         if let Some(spec) = spec {
             if self.input_receiver.is_none() {
@@ -611,7 +638,7 @@ impl Scope {
             if !wait_for_input {
                 let shared = self.input_handle.shared.lock();
                 if shared.stop_requested {
-                    return Err(FlowError::Execution("the Flow execution was stopped".to_owned()));
+                    return Err(FlowError::Execution("the Flow execution was stopped".into()));
                 }
                 if let Some(pending) = &shared.pending {
                     return Ok(Some((pending.spec.clone(), Arc::clone(&self.state))));
@@ -673,10 +700,10 @@ impl Scope {
             Some(Some(exit)) => exit.clone(),
             Some(None) => {
                 return Err(FlowError::Execution(
-                    "a child Flow cannot complete without a declared exit transition".to_owned(),
+                    "a child Flow cannot complete without a declared exit transition".into(),
                 ))
             }
-            None => return Err(FlowError::Execution("cannot join an unfinished child Scope".to_owned())),
+            None => return Err(FlowError::Execution("cannot join an unfinished child Scope".into())),
         };
         let mut proposal = TurnProposal::Advance {
             next: Some(exit),
@@ -689,9 +716,9 @@ impl Scope {
     }
 
     /// Validates declared model destinations and State fields against this Scope.
-    fn validate_model_template(&self, template: &ModelTemplate) -> Result<(), String> {
+    fn validate_model_template(&self, template: &ModelTemplate) -> Result<(), FlowError> {
         if template.next_step_criteria.is_empty() {
-            return Err("a model template must declare at least one next-step criterion".to_owned());
+            return Err("a model template must declare at least one next-step criterion".into());
         }
 
         let mut seen = new_hashset();
@@ -700,26 +727,26 @@ impl Scope {
                 let target = next
                     .as_ref()
                     .map_or_else(|| "Flow completion".to_owned(), |step| format!("Step {step}"));
-                return Err(format!("duplicate next-step criterion for {target}"));
+                return Err(format!("duplicate next-step criterion for {target}").into());
             }
             let Some(next) = next else {
                 if self.requires_exit {
-                    return Err("a mounted Flow model template cannot declare root Flow completion".to_owned());
+                    return Err("a mounted Flow model template cannot declare root Flow completion".into());
                 }
                 continue;
             };
             if self.flow.step(next).is_none() && !self.flow.exits().contains(next) {
-                return Err(format!("model template declares unknown next Step {next}"));
+                return Err(format!("model template declares unknown next Step {next}").into());
             }
         }
 
         let mut seen_fields = new_hashset();
         for (field, _) in &template.state_update_criteria {
             if !seen_fields.insert(field) {
-                return Err(format!("duplicate State update criterion for field {field}"));
+                return Err(format!("duplicate State update criterion for field {field}").into());
             }
-            if self.state().get_value(field).is_none() {
-                return Err(format!("model template declares unknown State field {field}"));
+            if self.state().get(field).is_none() {
+                return Err(format!("model template declares unknown State field {field}").into());
             }
         }
         Ok(())
@@ -748,7 +775,7 @@ impl Scope {
 
     /// Checks a proposed local Step/exit or root completion before performing external work.
     /// The runtime still validates the final destination when committing the turn.
-    pub fn validate_next(&self, next: &Option<StepId>) -> Result<(), String> {
+    pub fn validate_next(&self, next: &Option<StepId>) -> Result<(), FlowError> {
         self.resolve_next(next).map(|_| ())
     }
 
@@ -759,16 +786,15 @@ impl Scope {
         if let Some(child_flow) = self.flow.child_flow(self.current_step()) {
             let TurnProposal::Advance { next, mut updates } = proposal else {
                 return Err(FlowError::Execution(
-                    "a child Flow Step must advance to its entry Step before it can run".to_owned(),
+                    "a child Flow Step must advance to its entry Step before it can run".into(),
                 ));
             };
             updates.merge(std::mem::take(&mut self.updates));
             self.state().validate_updates(&updates)?;
             if next.as_ref() != Some(child_flow.entry()) {
-                return Err(FlowError::Execution(format!(
-                    "child Flow Step must start at its entry Step {}",
-                    child_flow.entry()
-                )));
+                return Err(FlowError::Execution(
+                    format!("child Flow Step must start at its entry Step {}", child_flow.entry()).into(),
+                ));
             }
             self.updates = updates;
             return self.start_child(child_flow, wait_for_input);
@@ -798,10 +824,12 @@ impl Scope {
         }
     }
 
-    fn resolve_next(&self, next: &Option<StepId>) -> Result<ResolvedTarget, String> {
+    fn resolve_next(&self, next: &Option<StepId>) -> Result<ResolvedTarget, FlowError> {
         let Some(next) = next else {
             if self.requires_exit {
-                return Err("a child Flow must complete through a declared exit transition".to_owned());
+                return Err(
+                    crate::Diagnostic::new("child Flow", "must complete through a declared exit transition").into(),
+                );
             }
             return Ok(ResolvedTarget::Finished(None));
         };
@@ -810,14 +838,14 @@ impl Scope {
         } else if self.flow.step(next).is_some() {
             Ok(ResolvedTarget::Step(next.clone()))
         } else {
-            Err(format!("unknown next Step {next}"))
+            Err(crate::Diagnostic::new(format!("next Step {next}"), "unknown destination").into())
         }
     }
 
-    fn current_step_cloned(&self) -> Result<Arc<dyn Step>, String> {
+    fn current_step_cloned(&self) -> Result<Arc<dyn Step>, FlowError> {
         self.flow
             .step_cloned(&self.current_step)
-            .ok_or_else(|| format!("unknown current Step {}", self.current_step))
+            .ok_or_else(|| format!("unknown current Step {}", self.current_step).into())
     }
 
     /// Saves the current execution point as a Flow-local checkpoint and returns its ID.
@@ -873,7 +901,7 @@ impl Scope {
         let checkpoint = self
             .checkpoints
             .get(id)
-            .ok_or_else(|| FlowError::Execution(format!("unknown Scope checkpoint {id}")))?;
+            .ok_or_else(|| FlowError::Execution(format!("unknown Scope checkpoint {id}").into()))?;
         let mut restored = checkpoint.clone();
         let pending = {
             let mut shared = input_handle.shared.lock();
@@ -973,13 +1001,13 @@ impl Scope {
 
     fn model(&self) -> Result<&str, FlowError> {
         self.model_config.as_ref().map(ModelConfig::model).ok_or_else(|| {
-            FlowError::Execution("Scope model configuration is missing for a template-backed Step".to_owned())
+            FlowError::Execution("Scope model configuration is missing for a template-backed Step".into())
         })
     }
 
     fn call_model(&self, request: ModelRequest) -> Result<ModelResponse, FlowError> {
         let model_config = self.model_config.as_ref().ok_or_else(|| {
-            FlowError::Execution("Scope model configuration is missing for a template-backed Step".to_owned())
+            FlowError::Execution("Scope model configuration is missing for a template-backed Step".into())
         })?;
         self.handle_model_response(lyquid_llm::call_model(model_config, &request))
     }
@@ -996,11 +1024,11 @@ impl Scope {
         let response = response.map_err(FlowError::Model)?;
         if response.finish_reason == Some(FinishReason::Length) {
             return Err(FlowError::Execution(
-                "model output exceeded the configured output-token budget".to_owned(),
+                "model output exceeded the configured output-token budget".into(),
             ));
         }
         if response.text.is_none() {
-            return Err(FlowError::Execution("model returned no text".to_owned()));
+            return Err(FlowError::Execution("model returned no text".into()));
         }
         Ok(response)
     }
@@ -1023,8 +1051,11 @@ impl Scope {
         // Capture the child's own final State/Trace before replacing RunningChild. TraceMode may
         // collapse its trace, so reconstructing a child presentation from the parent is not valid.
         let completed_child_view = if self.flow.view.is_none() {
-            self.running_child()
-                .map(|child| child.view().map_err(|error| error.to_string()))
+            self.running_child().map(|child| {
+                child
+                    .view()
+                    .map_err(|error| crate::Diagnostic::with_source("child view", error))
+            })
         } else {
             None
         };
@@ -1065,16 +1096,14 @@ enum RunPhase {
 
 #[cfg(test)]
 mod input_tests {
-    use std::any::Any;
 
     use lyquid_test::test;
 
     use super::*;
-    use crate::Value;
 
     fn text_spec() -> InputSpec {
         let mut builder = InputSpec::builder();
-        let field = builder.field("feedback", "Feedback", String::new()).text_input();
+        let field = builder.field::<String>("feedback", "Feedback").text_input();
         builder.finish(field).unwrap()
     }
 
@@ -1087,8 +1116,7 @@ mod input_tests {
         assert_eq!(spec.schema(), handle.input_spec().unwrap().schema());
         handle.submit_input(r#"{"feedback":"more portable"}"#).unwrap();
         let decoded = receiver.recv().unwrap();
-        let feedback: &dyn Any = decoded["feedback"].as_ref();
-        assert_eq!(feedback.downcast_ref::<String>().unwrap(), "more portable");
+        assert_eq!(decoded["feedback"], serde_json::json!("more portable"));
         assert!(handle.input_spec().is_none());
         assert!(matches!(
             handle.submit_input(r#"{"feedback":"no waiting Step"}"#),
@@ -1096,29 +1124,13 @@ mod input_tests {
         ));
     }
 
-    #[derive(Clone, schemars::JsonSchema)]
+    #[derive(Clone, serde::Deserialize, schemars::JsonSchema)]
     struct Digits(#[schemars(regex(pattern = r"^\d+$"))] String);
-
-    impl Value for Digits {
-        fn encode(&self) -> String {
-            serde_json::to_string(&self.0).unwrap()
-        }
-
-        fn decode(&self, encoded: &str) -> Result<Box<dyn Value>, String> {
-            serde_json::from_str::<String>(encoded)
-                .map(|value| Box::new(Self(value)) as Box<dyn Value>)
-                .map_err(|error| error.to_string())
-        }
-
-        fn clone_box(&self) -> Box<dyn Value> {
-            Box::new(self.clone())
-        }
-    }
 
     #[test]
     fn pattern_submission() {
         let mut builder = InputSpec::builder();
-        let field = builder.field("digits", "Digits", Digits(String::new())).text_input();
+        let field = builder.field::<Digits>("digits", "Digits").text_input();
         let spec = builder.finish(field).unwrap();
         assert_eq!(spec.field_schema("digits").unwrap()["pattern"], r"^\d+$");
         let handle = InputHandle::new();
@@ -1132,89 +1144,11 @@ mod input_tests {
         }
         handle.submit_input(r#"{"digits":"123"}"#).unwrap();
         let decoded = receiver.recv().unwrap();
-        let value: &dyn Any = decoded["digits"].as_ref();
-        assert_eq!(value.downcast_ref::<Digits>().unwrap().0, "123");
+        assert_eq!(
+            serde_json::from_value::<Digits>(decoded["digits"].clone()).unwrap().0,
+            "123"
+        );
         assert!(handle.input_spec().is_none());
-    }
-
-    #[derive(Clone, schemars::JsonSchema)]
-    #[schemars(with = "bool")]
-    struct CustomValue {
-        before_return: Arc<dyn Fn() + Send + Sync>,
-        wrong_type: bool,
-    }
-
-    impl Value for CustomValue {
-        fn encode(&self) -> String {
-            "null".to_owned()
-        }
-
-        fn decode(&self, encoded: &str) -> Result<Box<dyn Value>, String> {
-            if encoded != "true" && encoded != "false" {
-                return Err("custom decoder rejected the response".to_owned());
-            }
-            if encoded == "true" {
-                (self.before_return)();
-            }
-            if self.wrong_type {
-                Ok(Box::new(true))
-            } else {
-                Ok(Box::new(self.clone()))
-            }
-        }
-
-        fn clone_box(&self) -> Box<dyn Value> {
-            Box::new(self.clone())
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_decoders() {
-        let handle = InputHandle::new();
-        let receiver = handle
-            .request(
-                custom_spec(CustomValue {
-                    before_return: Arc::new(|| {}),
-                    wrong_type: true,
-                }),
-                Arc::new(State::default()),
-            )
-            .unwrap();
-        for encoded in [r#"{"feedback":42}"#, r#"{"feedback":true}"#] {
-            assert!(matches!(handle.submit_input(encoded), Err(FlowError::InputInvalid(_))));
-            assert!(handle.input_spec().is_some());
-        }
-        drop(receiver);
-    }
-
-    #[test]
-    fn isolates_concurrent_input() {
-        let handle = InputHandle::new();
-        let next_receiver = Arc::new(Mutex::new(None));
-        let other_handle = handle.clone();
-        let other_receiver = Arc::clone(&next_receiver);
-        let prototype = CustomValue {
-            wrong_type: false,
-            before_return: Arc::new(move || {
-                // Another caller delivers input while this decoder is running. The captured sender
-                // must be consumed, even if the next Step starts waiting before decoding finishes.
-                other_handle.submit_input(r#"{"feedback":false}"#).unwrap();
-                *other_receiver.lock() = Some(other_handle.request(text_spec(), Arc::new(State::default())).unwrap());
-            }),
-        };
-        let receiver = handle
-            .request(custom_spec(prototype), Arc::new(State::default()))
-            .unwrap();
-        assert!(matches!(
-            handle.submit_input(r#"{"feedback":true}"#),
-            Err(FlowError::InputClosed)
-        ));
-        assert!(receiver.recv().is_ok());
-        assert!(handle.input_spec().is_some());
-        handle.submit_input(r#"{"feedback":"next"}"#).unwrap();
-        let decoded = next_receiver.lock().take().unwrap().recv().unwrap();
-        let feedback: &dyn Any = decoded["feedback"].as_ref();
-        assert_eq!(feedback.downcast_ref::<String>().unwrap(), "next");
     }
 
     #[test]
@@ -1230,24 +1164,13 @@ mod input_tests {
     }
 
     #[test]
-    fn stop_during_decode() {
+    fn stop_rejects_pending_input_and_retains_snapshot() {
         let handle = InputHandle::new();
-        let stopping_handle = handle.clone();
         let state = Arc::new(State::default());
-        let receiver = handle
-            .request(
-                custom_spec(CustomValue {
-                    before_return: Arc::new(move || {
-                        assert!(stopping_handle.request_stop());
-                    }),
-                    wrong_type: false,
-                }),
-                Arc::clone(&state),
-            )
-            .unwrap();
-        assert!(Arc::ptr_eq(&handle.state_snapshot().unwrap(), &state));
+        let receiver = handle.request(text_spec(), Arc::clone(&state)).unwrap();
+        assert!(handle.request_stop());
         assert!(matches!(
-            handle.submit_input(r#"{"feedback":true}"#),
+            handle.submit_input(r#"{"feedback":"text"}"#),
             Err(FlowError::NoPendingInput)
         ));
         assert!(receiver.recv().is_err());
@@ -1255,12 +1178,6 @@ mod input_tests {
         assert!(Arc::ptr_eq(&handle.state_snapshot().unwrap(), &state));
         assert!(!handle.request_stop());
         assert!(handle.request(text_spec(), Arc::new(State::default())).is_err());
-    }
-
-    fn custom_spec(value: CustomValue) -> InputSpec {
-        let mut builder = InputSpec::builder();
-        let field = builder.field("feedback", "Feedback", value).toggle();
-        builder.finish(field).unwrap()
     }
 
     struct FeedbackStep;
@@ -1278,8 +1195,11 @@ mod input_tests {
             let mut updates = StateUpdates::default();
             updates.set(
                 "feedback".to_owned(),
-                Some(Box::new(
-                    scope.get::<String>(StateNamespace::Input, "feedback").unwrap().clone(),
+                Some(serde_json::json!(
+                    scope
+                        .get(StateNamespace::Input, "feedback")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap()
                 )),
             );
             TemplateSpec::Skip(TurnProposal::Advance { next: None, updates })
@@ -1300,7 +1220,7 @@ mod input_tests {
                     .unwrap(),
             ),
             State::builder()
-                .field("feedback", "Feedback", String::new())
+                .field("feedback", "Feedback", crate::Type::String, serde_json::json!(""))
                 .build()
                 .unwrap(),
             AutoCheckpointConfig::Disabled,
@@ -1326,11 +1246,25 @@ mod input_tests {
         scope.restore(&checkpoint).unwrap();
         scope.run_until_input().unwrap().unwrap();
         assert!(scope.trace().entries.is_empty());
-        assert_eq!(scope.state().get::<String>("feedback").unwrap(), "");
+        assert_eq!(
+            scope
+                .state()
+                .get("feedback")
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            ""
+        );
         handle.submit_input(r#"{"feedback":"after restore"}"#).unwrap();
         scope.advance().unwrap();
         assert!(scope.is_finished());
-        assert_eq!(scope.state().get::<String>("feedback").unwrap(), "after restore");
+        assert_eq!(
+            scope
+                .state()
+                .get("feedback")
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            "after restore"
+        );
         assert_eq!(scope.trace().entries.len(), 1);
     }
 
@@ -1345,8 +1279,22 @@ mod input_tests {
         cloned.input_handle().submit_input(r#"{"feedback":"clone"}"#).unwrap();
         assert!(cloned.run_until_input().unwrap().is_none());
         original.advance().unwrap();
-        assert_eq!(original.state().get::<String>("feedback").unwrap(), "original");
-        assert_eq!(cloned.state().get::<String>("feedback").unwrap(), "clone");
+        assert_eq!(
+            original
+                .state()
+                .get("feedback")
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            "original"
+        );
+        assert_eq!(
+            cloned
+                .state()
+                .get("feedback")
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+            "clone"
+        );
         assert_eq!(original.trace().entries.len(), 1);
         assert_eq!(cloned.trace().entries.len(), 1);
     }
@@ -1402,6 +1350,80 @@ mod tests {
             assert!(scope.model_response().is_none());
             Ok(TraceSummary::Summary("tested".to_owned()))
         }
+    }
+
+    #[test]
+    fn finalized_json_updates_commit_atomically_and_restore_their_declarations() {
+        use crate::Type;
+        use serde_json::json;
+
+        let names = Type::Option(Box::new(Type::List(Box::new(Type::String))));
+        let state = State::builder()
+            .field("names", "", names.clone(), json!(null))
+            .field("count", "", Type::U64, json!(0))
+            .build()
+            .unwrap();
+        let flow = Flow::builder("checked-updates")
+            .entry("start")
+            .step("start", TestStep)
+            .build()
+            .unwrap();
+        let mut scope = Scope::new(Arc::new(flow), state, AutoCheckpointConfig::Unbounded, None);
+        let checkpoint = scope.checkpoint();
+        let checkpoints = scope.checkpoint_ids().count();
+        let mut updates = StateUpdates::default();
+        updates.set("count".into(), Some(json!(1)));
+        updates.set("names".into(), Some(json!([42])));
+        assert!(
+            scope
+                .run_finalize(
+                    &TestStep,
+                    TurnProposal::Advance {
+                        next: None,
+                        updates: updates.clone(),
+                    },
+                    None,
+                    false
+                )
+                .is_err()
+        );
+        assert_eq!(scope.state().to_json(), json!({"count":0,"names":null}));
+        assert_eq!(scope.current_step().0, "start");
+        assert!(scope.trace().entries.is_empty());
+        assert_eq!(scope.checkpoint_ids().count(), checkpoints);
+
+        updates.set("names".into(), Some(json!(["accepted"])));
+        for invalid_count in [json!(-1), json!(1.0), json!(18446744073709551616.0)] {
+            updates.set("count".into(), Some(invalid_count));
+            assert!(
+                scope
+                    .run_finalize(
+                        &TestStep,
+                        TurnProposal::Advance {
+                            next: None,
+                            updates: updates.clone()
+                        },
+                        None,
+                        false,
+                    )
+                    .is_err()
+            );
+            assert_eq!(scope.state().to_json(), json!({"count":0,"names":null}));
+            assert_eq!(scope.state().declared_type("count"), Some(&Type::U64));
+            assert_eq!(scope.current_step().0, "start");
+            assert!(scope.trace().entries.is_empty());
+            assert_eq!(scope.checkpoint_ids().count(), checkpoints);
+        }
+        updates.set("count".into(), Some(json!(1)));
+        scope
+            .run_finalize(&TestStep, TurnProposal::Advance { next: None, updates }, None, false)
+            .unwrap();
+        assert_eq!(scope.state().to_json(), json!({"count":1,"names":["accepted"]}));
+        assert_eq!(scope.state().declared_type("names"), Some(&names));
+        scope.restore(&checkpoint).unwrap();
+        assert_eq!(scope.state().to_json(), json!({"count":0,"names":null}));
+        assert_eq!(scope.state().declared_type("names"), Some(&names));
+        assert_eq!(scope.state().declared_type("count"), Some(&Type::U64));
     }
 
     type Observations = Arc<Mutex<Vec<(String, String, Option<Usage>)>>>;
@@ -1483,7 +1505,7 @@ mod tests {
             assert_eq!(scope.model_response(), Some(&self.response));
             assert!(scope.clone().model_response().is_none());
             if self.fail {
-                return Err("finalization failed".to_owned().into());
+                return Err("finalization failed".into());
             }
             Ok(TraceSummary::Summary("observed".into()))
         }
@@ -1634,7 +1656,12 @@ mod tests {
                 .expect("test Flow should be valid"),
         );
         let state = State::builder()
-            .field("title", "Current release title", "Draft".to_owned())
+            .field(
+                "title",
+                "Current release title",
+                crate::Type::String,
+                serde_json::json!("Draft"),
+            )
             .build()
             .expect("test State should be valid");
         let scope = Scope::new(Arc::clone(&flow), state, AutoCheckpointConfig::Disabled, None);
@@ -1649,11 +1676,15 @@ mod tests {
             Vec::new(),
         );
         assert!(scope.validate_model_template(&valid).is_ok());
+        assert!(scope.validate_next(&None).is_ok());
+        assert!(scope.validate_next(&Some("review".into())).is_ok());
+        assert!(matches!(scope.validate_next(&Some("missing".into())),
+            Err(FlowError::Execution(diagnostics)) if diagnostics.diagnostics[0].context == "next Step missing" && diagnostics.diagnostics[0].message == "unknown destination"));
 
         let empty = ModelTemplate::new("Review the work", Vec::new(), Vec::new());
         assert_eq!(
-            scope.validate_model_template(&empty).err().as_deref(),
-            Some("a model template must declare at least one next-step criterion")
+            scope.validate_model_template(&empty).unwrap_err().to_string(),
+            "a model template must declare at least one next-step criterion"
         );
 
         let duplicate = ModelTemplate::new(
@@ -1665,8 +1696,8 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(
-            scope.validate_model_template(&duplicate).err().as_deref(),
-            Some("duplicate next-step criterion for Step review")
+            scope.validate_model_template(&duplicate).unwrap_err().to_string(),
+            "duplicate next-step criterion for Step review"
         );
 
         let unknown = ModelTemplate::new(
@@ -1675,19 +1706,27 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(
-            scope.validate_model_template(&unknown).err().as_deref(),
-            Some("model template declares unknown next Step missing")
+            scope.validate_model_template(&unknown).unwrap_err().to_string(),
+            "model template declares unknown next Step missing"
         );
 
         let mounted = scope.fork_child(flow, StateUpdates::default());
+        assert!(matches!(
+            mounted.validate_next(&None),
+            Err(FlowError::Execution(diagnostics)) if diagnostics.diagnostics[0].context == "child Flow" && diagnostics.diagnostics[0].message == "must complete through a declared exit transition"
+        ));
+        assert!(mounted.validate_next(&Some("done".into())).is_ok());
         let mounted_completion = ModelTemplate::new(
             "Review the work",
             vec![(None, "Complete the parent Flow".to_owned())],
             Vec::new(),
         );
         assert_eq!(
-            mounted.validate_model_template(&mounted_completion).err().as_deref(),
-            Some("a mounted Flow model template cannot declare root Flow completion")
+            mounted
+                .validate_model_template(&mounted_completion)
+                .unwrap_err()
+                .to_string(),
+            "a mounted Flow model template cannot declare root Flow completion"
         );
         valid.next_step_criteria.pop();
         assert!(mounted.validate_model_template(&valid).is_ok());
@@ -1700,8 +1739,8 @@ mod tests {
         let mut unknown_field = valid.clone();
         unknown_field.state_update_criteria[0].0 = "missing".to_owned();
         assert_eq!(
-            scope.validate_model_template(&unknown_field).err().as_deref(),
-            Some("model template declares unknown State field missing")
+            scope.validate_model_template(&unknown_field).unwrap_err().to_string(),
+            "model template declares unknown State field missing"
         );
 
         let mut duplicate_field = valid;
@@ -1709,8 +1748,8 @@ mod tests {
             .state_update_criteria
             .push(("title".to_owned(), "Replace when the editor changes it".to_owned()));
         assert_eq!(
-            scope.validate_model_template(&duplicate_field).err().as_deref(),
-            Some("duplicate State update criterion for field title")
+            scope.validate_model_template(&duplicate_field).unwrap_err().to_string(),
+            "duplicate State update criterion for field title"
         );
     }
 }

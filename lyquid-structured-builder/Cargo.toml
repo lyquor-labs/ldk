@@ -1,5 +1,5 @@
 [package]
-name = "lyquid-structured-flow"
+name = "lyquid-structured-builder"
 workspace = ".."
 publish = false
 version.workspace = true
@@ -7,14 +7,14 @@ edition.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Native Flow composition from typed Step builders, with JSON configuration export."
+description = "Wrap existing Steps with structured State updates and next-Step selection."
 
 [dependencies]
 lyquid-flow.workspace = true
-lyquid-structured-step.workspace = true
-schemars.workspace = true
-serde = { workspace = true, features = ["std"] }
+serde.workspace = true
 serde_json.workspace = true
+tera.workspace = true
+typed-builder.workspace = true
 
 [lints]
 workspace = true

@@ -11,7 +11,7 @@ description = "Example refinement loop over caller-provided candidates for Lyqui
 
 [dependencies]
 lyquid-flow.workspace = true
-lyquid-structured-step.workspace = true
+lyquid-structured-builder.workspace = true
 refinement-step.workspace = true
 serde_json.workspace = true
 

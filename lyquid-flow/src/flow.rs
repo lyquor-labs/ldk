@@ -5,11 +5,11 @@ use std::sync::Arc;
 use lyquid::prelude::{HashMap, HashSet, hashbrown::hash_map::Entry, new_hashmap, new_hashset};
 use serde::{Deserialize, Serialize};
 
-use crate::TurnProposal;
 use crate::scope::{FlowError, Scope};
 use crate::state::StateUpdates;
 use crate::step::{Step, StepId, TemplateSpec};
 use crate::trace::TraceSummary;
+use crate::{BuildError, Diagnostic, TurnProposal};
 use crate::{InputSpec, ToolManifest, ToolStep};
 
 type ViewFn = fn(&Scope) -> Result<crate::ViewSpec, FlowError>;
@@ -58,9 +58,11 @@ impl ExitTransitions {
     /// Connects one child exit transition to a target in the parent Flow.
     ///
     /// Returns an error if that exit already has a parent target.
-    pub fn transition(mut self, exit: impl Into<StepId>, next: impl Into<StepId>) -> Result<Self, String> {
+    pub fn transition(mut self, exit: impl Into<StepId>, next: impl Into<StepId>) -> Result<Self, BuildError> {
         match self.transitions.entry(exit.into()) {
-            Entry::Occupied(entry) => Err(format!("duplicate target for exit transition {}", entry.key())),
+            Entry::Occupied(entry) => {
+                Err(Diagnostic::new(format!("exit {}", entry.key()), "duplicate parent target").into())
+            }
             Entry::Vacant(entry) => {
                 entry.insert(next.into());
                 Ok(self)
@@ -173,15 +175,19 @@ impl FlowBuilder {
     }
 
     /// Validates and freezes this reusable Flow graph.
-    pub fn build(self) -> Result<Flow, String> {
+    pub fn build(self) -> Result<Flow, BuildError> {
         let [entry] = self.entries.as_slice() else {
-            return Err("Flow requires exactly one entry Step".into());
+            return Err(Diagnostic::new(
+                "Flow entry",
+                format!("expected exactly one entry Step, got {}", self.entries.len()),
+            )
+            .into());
         };
 
         let mut steps = new_hashmap();
         for (id, node) in self.steps {
             if steps.insert(id.clone(), node).is_some() {
-                return Err(format!("duplicate Step {id}"));
+                return Err(Diagnostic::new(format!("Step {id}"), "duplicate Step").into());
             }
         }
         validate_entry(entry, &steps)?;
@@ -290,15 +296,19 @@ impl Flow {
         &self.exits
     }
 
-    fn validate_exit_transition_targets(&self) -> Result<(), String> {
-        for flow in self
-            .steps
-            .values()
-            .filter_map(|step| (step.as_ref() as &dyn Any).downcast_ref::<Self>())
-        {
-            for next in flow.exit_transitions.transitions.values() {
+    fn validate_exit_transition_targets(&self) -> Result<(), BuildError> {
+        for (child, flow) in self.steps.iter().filter_map(|(id, step)| {
+            (step.as_ref() as &dyn Any)
+                .downcast_ref::<Self>()
+                .map(|flow| (id, flow))
+        }) {
+            for (exit, next) in &flow.exit_transitions.transitions {
                 if !self.steps.contains_key(next) && !self.exits.contains(next) {
-                    return Err(format!("unknown next Step {next}"));
+                    return Err(Diagnostic::new(
+                        format!("child {child} exit {exit}"),
+                        format!("unknown next Step {next}"),
+                    )
+                    .into());
                 }
             }
         }
@@ -351,22 +361,22 @@ impl Step for Flow {
     }
 }
 
-fn validate_entry(entry: &StepId, steps: &HashMap<StepId, Arc<dyn Step>>) -> Result<(), String> {
+fn validate_entry(entry: &StepId, steps: &HashMap<StepId, Arc<dyn Step>>) -> Result<(), BuildError> {
     if steps.contains_key(entry) {
         Ok(())
     } else {
-        Err(format!("unknown Flow entry Step {entry}"))
+        Err(Diagnostic::new(format!("entry {entry}"), "unknown Flow entry Step").into())
     }
 }
 
-fn validate_exit_boundaries(exits: &HashSet<StepId>, steps: &HashMap<StepId, Arc<dyn Step>>) -> Result<(), String> {
+fn validate_exit_boundaries(exits: &HashSet<StepId>, steps: &HashMap<StepId, Arc<dyn Step>>) -> Result<(), BuildError> {
     if let Some(exit) = exits.iter().find(|exit| steps.contains_key(*exit)) {
-        return Err(format!("Flow exit {exit} conflicts with a registered Step"));
+        return Err(Diagnostic::new(format!("exit {exit}"), "conflicts with a registered Step").into());
     }
     Ok(())
 }
 
-fn validate_child_exit_transitions(steps: &HashMap<StepId, Arc<dyn Step>>) -> Result<(), String> {
+fn validate_child_exit_transitions(steps: &HashMap<StepId, Arc<dyn Step>>) -> Result<(), BuildError> {
     for (id, flow) in steps.iter().filter_map(|(id, step)| {
         (step.as_ref() as &dyn Any)
             .downcast_ref::<Flow>()
@@ -377,21 +387,17 @@ fn validate_child_exit_transitions(steps: &HashMap<StepId, Arc<dyn Step>>) -> Re
     Ok(())
 }
 
-fn validate_exit_transitions(id: &StepId, flow: &Flow, exit_transitions: &ExitTransitions) -> Result<(), String> {
+fn validate_exit_transitions(id: &StepId, flow: &Flow, exit_transitions: &ExitTransitions) -> Result<(), BuildError> {
     if flow.exits.is_empty() {
-        return Err(format!(
-            "child Flow Step {id} must declare at least one exit transition"
-        ));
+        return Err(Diagnostic::new(format!("child {id}"), "must declare at least one exit transition").into());
     }
 
     let declared = &exit_transitions.transitions;
     if let Some(exit) = declared.keys().find(|exit| !flow.exits.contains(*exit)) {
-        return Err(format!("{exit} is not an exit transition of child Flow Step {id}"));
+        return Err(Diagnostic::new(format!("child {id} exit {exit}"), "not a declared exit transition").into());
     }
     if let Some(exit) = flow.exits.iter().find(|exit| !declared.contains_key(*exit)) {
-        return Err(format!(
-            "exit transition {exit} of child Flow Step {id} has no parent target"
-        ));
+        return Err(Diagnostic::new(format!("child {id} exit {exit}"), "has no parent target").into());
     }
     Ok(())
 }
@@ -499,7 +505,10 @@ mod tests {
 
         let missing = Flow::builder("test-flow").step("start", TestStep).build();
 
-        assert_eq!(missing.err().as_deref(), Some("Flow requires exactly one entry Step"));
+        assert_eq!(
+            missing.err().unwrap().to_string(),
+            "Flow entry: expected exactly one entry Step, got 0"
+        );
 
         let multiple = Flow::builder("test-flow")
             .entry("start")
@@ -508,14 +517,20 @@ mod tests {
             .step("other", TestStep)
             .build();
 
-        assert_eq!(multiple.err().as_deref(), Some("Flow requires exactly one entry Step"));
+        assert_eq!(
+            multiple.err().unwrap().to_string(),
+            "Flow entry: expected exactly one entry Step, got 2"
+        );
 
         let unknown = Flow::builder("test-flow")
             .entry("missing")
             .step("start", TestStep)
             .build();
 
-        assert_eq!(unknown.err().as_deref(), Some("unknown Flow entry Step missing"));
+        assert_eq!(
+            unknown.err().unwrap().to_string(),
+            "entry missing: unknown Flow entry Step"
+        );
     }
 
     #[test]
@@ -526,7 +541,7 @@ mod tests {
             .step("start", TestStep)
             .build();
 
-        assert_eq!(duplicate_steps.err().as_deref(), Some("duplicate Step start"));
+        assert_eq!(duplicate_steps.err().unwrap().to_string(), "Step start: duplicate Step");
 
         let child = child_with_exits("child", &["done"]);
         let transitions = ExitTransitions::new()
@@ -539,7 +554,10 @@ mod tests {
             .flow("shared", child, transitions, TraceMode::Expanded)
             .build();
 
-        assert_eq!(duplicate_step_and_flow.err().as_deref(), Some("duplicate Step shared"));
+        assert_eq!(
+            duplicate_step_and_flow.err().unwrap().to_string(),
+            "Step shared: duplicate Step"
+        );
 
         let step_and_exit = Flow::builder("test-flow")
             .entry("start")
@@ -549,8 +567,8 @@ mod tests {
             .build();
 
         assert_eq!(
-            step_and_exit.err().as_deref(),
-            Some("Flow exit shared conflicts with a registered Step")
+            step_and_exit.err().unwrap().to_string(),
+            "exit shared: conflicts with a registered Step"
         );
     }
 
@@ -595,7 +613,7 @@ mod tests {
             .err()
             .expect("a child exit must have only one parent target");
 
-        assert_eq!(duplicate, "duplicate target for exit transition done");
+        assert_eq!(duplicate.to_string(), "exit done: duplicate parent target");
 
         let child_without_exits = child_with_exits("child", &[]);
         let no_exits = Flow::builder("parent")
@@ -610,8 +628,8 @@ mod tests {
             .build();
 
         assert_eq!(
-            no_exits.err().as_deref(),
-            Some("child Flow Step child must declare at least one exit transition")
+            no_exits.err().unwrap().to_string(),
+            "child child: must declare at least one exit transition"
         );
 
         let child = child_with_exits("child", &["done"]);
@@ -627,8 +645,8 @@ mod tests {
             .build();
 
         assert_eq!(
-            undeclared.err().as_deref(),
-            Some("cancelled is not an exit transition of child Flow Step child")
+            undeclared.err().unwrap().to_string(),
+            "child child exit cancelled: not a declared exit transition"
         );
 
         let child = child_with_exits("child", &["done", "cancelled"]);
@@ -642,8 +660,8 @@ mod tests {
             .build();
 
         assert_eq!(
-            missing.err().as_deref(),
-            Some("exit transition cancelled of child Flow Step child has no parent target")
+            missing.err().unwrap().to_string(),
+            "child child exit cancelled: has no parent target"
         );
 
         let child = child_with_exits("child", &["done"]);
@@ -656,6 +674,9 @@ mod tests {
             .flow("child", child, transitions, TraceMode::Expanded)
             .build();
 
-        assert_eq!(unknown_target.err().as_deref(), Some("unknown next Step missing"));
+        assert_eq!(
+            unknown_target.err().unwrap().to_string(),
+            "child child exit done: unknown next Step missing"
+        );
     }
 }

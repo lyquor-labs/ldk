@@ -15,7 +15,7 @@ pub use flow::{
 use std::sync::Arc;
 
 use lyquid::prelude::*;
-use lyquid_flow::{AutoCheckpointConfig, Scope, Value};
+use lyquid_flow::{AutoCheckpointConfig, Scope};
 use lyquid_llm::{
     ModelConfig, OutputFormat, Usage, UsageTotals, UsageTracker,
     backend::{
@@ -32,22 +32,6 @@ use serde_json::json;
 pub struct ShoppingSearchState {
     pub aggregation_round: u64,
     pub restart_feedback: Vec<String>,
-}
-
-impl Value for ShoppingSearchState {
-    fn encode(&self) -> String {
-        serde_json::to_string(self).expect("ShoppingSearchState serialization cannot fail")
-    }
-
-    fn decode(&self, model_output: &str) -> Result<Box<dyn Value>, String> {
-        serde_json::from_str::<Self>(model_output)
-            .map(|value| Box::new(value) as Box<dyn Value>)
-            .map_err(|error| error.to_string())
-    }
-
-    fn clone_box(&self) -> Box<dyn Value> {
-        Box::new(self.clone())
-    }
 }
 
 lyquid_flow::serve_flow! {
@@ -82,9 +66,13 @@ fn set_model_api_key(ctx: &mut _, provider: String, api_key: String) -> LyquidRe
     Ok(true)
 }
 
-fn create_scope(settings: &Settings) -> Result<Scope, String> {
+fn create_scope(settings: &Settings) -> Result<Scope, lyquid_flow::BuildError> {
     if settings.provider.is_empty() {
-        return Err("no model provider is configured; start the example with OPENAI_API_KEY or GEMINI_API_KEY".into());
+        return Err(lyquid_flow::Diagnostic::new(
+            "model setup",
+            "no model provider is configured; start the example with OPENAI_API_KEY or GEMINI_API_KEY",
+        )
+        .into());
     }
     let usage = UsageTracker::<SessionUsage>::default();
     let (config, search) = model_setup(
@@ -104,7 +92,7 @@ fn create_scope(settings: &Settings) -> Result<Scope, String> {
 
 fn model_setup(
     provider: &str, api_key: &str, observe_search: impl Fn(Option<&Usage>) + Send + Sync + 'static,
-) -> Result<(ModelConfig, ProductSearch), String> {
+) -> Result<(ModelConfig, ProductSearch), lyquid_flow::Diagnostics> {
     const OPENAI_MODEL: &str = "gpt-5.4";
     const GEMINI_MODEL: &str = "gemini-2.5-flash";
     let (refinement, search) = match provider {
@@ -116,7 +104,8 @@ fn model_setup(
             ProductSearch::new(
                 OPENAI_MODEL,
                 lyquid_llm::with_usage_observer(
-                    OpenAiCompatBackend::openai(api_key)?
+                    OpenAiCompatBackend::openai(api_key)
+                        .map_err(|error| lyquid_flow::Diagnostic::with_source("OpenAI configuration", error))?
                         .reasoning_effort(ReasoningEffort::Low)
                         .verbosity(Verbosity::Low)
                         .output_format(OutputFormat::json_schema(
@@ -138,7 +127,8 @@ fn model_setup(
             ProductSearch::new(
                 GEMINI_MODEL,
                 lyquid_llm::with_usage_observer(
-                    GeminiBackend::google_ai(api_key)?
+                    GeminiBackend::google_ai(api_key)
+                        .map_err(|error| lyquid_flow::Diagnostic::with_source("Gemini configuration", error))?
                         .output_format(OutputFormat::Text)
                         .web_search(),
                     observe_search,
@@ -146,9 +136,15 @@ fn model_setup(
             )
             .temperature(0.0),
         ),
-        _ => return Err(format!("unsupported model provider {provider:?}; use openai or gemini")),
+        _ => return Err(format!("unsupported model provider {provider:?}; use openai or gemini").into()),
     };
-    Ok((refinement.build()?.max_output_tokens(8192), search))
+    Ok((
+        refinement
+            .build()
+            .map_err(|error| lyquid_flow::Diagnostic::with_source("refinement model", error))?
+            .max_output_tokens(8192),
+        search,
+    ))
 }
 
 #[derive(Clone, Copy, Serialize)]

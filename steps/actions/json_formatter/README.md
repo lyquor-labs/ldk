@@ -1,16 +1,15 @@
-# JSON formatter action
+# JSON formatter
 
 `lyquid-json-formatter` parses JSON text and optionally validates it against a JSON Schema.
-Use `json_formatter` for a preceding action's String result, or `model_response_json_formatter`
-to read the original model response from temporary action context. Both return `serde_json::Value`.
-Formatting is optional: attach the action only when parsed JSON is needed.
+Use the function returned by `json_formatter` to parse text, or pass `Scope::model_response()`
+to the function returned by `model_response_json_formatter`. Both produce `serde_json::Value`
+and can be called from a native Step's `finalize` method.
 
 ## Quick start
 
 ```rust
-use lyquid_structured_step::StructuredStepBuilder;
 use lyquid_json_formatter::{JsonFormatterConfig, json_formatter};
-use serde_json::{Value, json};
+use serde_json::json;
 
 let config = JsonFormatterConfig::json_schema(json!({
     "type": "object",
@@ -19,72 +18,39 @@ let config = JsonFormatterConfig::json_schema(json!({
     "additionalProperties": false
 }));
 
-let step = StructuredStepBuilder::operation(|_: &Value| Ok(r#"{"count":8}"#.to_owned()))
-    .action(json_formatter(config)?)
-    .update("count", "/count")
-    .next("done")
-    .summary("Count {{ result.count }}")
-    .build()?;
+let format = json_formatter(config)?;
+let value = format(r#"{"count":8}"#)?;
+assert_eq!(value["count"], 8);
 ```
 
-Declare `done` and a compatible `count` State field in the Flow. The operation returns a JSON
-string, the formatter validates it, and the `/count` binding saves `8` to State. Use your own
-text-producing operation in place of the example. To accept JSON without a schema, use
-`json_formatter(JsonFormatterConfig::new())?`. To keep plain text, omit the formatter.
+To accept JSON without a schema, use `json_formatter(JsonFormatterConfig::new())?`.
+The containing Step chooses which parsed values to write into its `TurnProposal`, along with
+the destination and Trace summary. Core validates and commits that proposal.
+The [composition tests](tests/composition/mod.rs) show this in a native Step finalizer.
 
 ## Format the shared model response
 
-`model_response_json_formatter` reads `context.model_response()`, so it can appear anywhere in
-finalization. It ignores the previous action's result. The original response, including text, usage,
-sources, provider JSON, HTTP response, web-search flag, and finish reason, remains available unchanged.
-
-Save the formatted value with `action_named` so later actions can read it after intervening results:
+During `Step::finalize`, pass the original response from the Scope:
 
 ```rust
-use lyquid_structured_step::{StructuredStepBuilder, ValueSource};
-use lyquid_flow::ModelTemplate;
+use lyquid_flow::{FlowError, Scope};
 use lyquid_json_formatter::{JsonFormatterConfig, model_response_json_formatter};
+use serde_json::Value;
 
-let template = ModelTemplate::new(
-    "Produce an answer",
-    vec![(Some("done".into()), "When complete".into())],
-    vec![("answer".into(), "The numeric answer".into())],
-);
-let step = StructuredStepBuilder::new()
-    .with_model(template)
-    .action(|_, _| Ok("an unrelated first result"))
-    .action_named("formatted", model_response_json_formatter(JsonFormatterConfig::new())?)
-    .action(|_, _| Ok(()))
-    .action(|context, _| {
-        let raw = context.model_response().ok_or("missing model response")?;
-        let formatted = context.result("formatted").ok_or("missing formatted result")?;
-        // Both remain readable regardless of the immediately preceding result.
-        Ok((raw.sources.clone(), formatted.clone()))
-    })
-    .update_from("answer", ValueSource::ActionResult {
-        action: "formatted".into(), pointer: "/updates/answer".into(),
-    })
-    .update_from("raw_reply", ValueSource::ModelResponse { pointer: "/text".into() })
-    .next("done")
-    .summary("Answer {{ actions.formatted.updates.answer }}")
-    .build()?;
+fn read_model_result(scope: &Scope) -> Result<Value, FlowError> {
+    let format = model_response_json_formatter(JsonFormatterConfig::new())?;
+    format(scope.model_response())
+}
 ```
 
-Declare compatible `answer` and `raw_reply` State fields and the `done` destination. Flow still
-parses its `advance`/`restore` envelope before finalization; the raw text and any formatter schema
-cover that complete envelope. For example, an advance response contains
-`{"type":"advance","next":"done","updates":{"answer":42}}`. This action does not change the model
-request or replace Flow's parser. Structured Steps skip forward actions for restore proposals.
+The formatter borrows the response, preserving its text and metadata. Core parses its
+`advance`/`restore` envelope before finalization, so the formatter sees that complete envelope.
+For example, an advance response contains
+`{"type":"advance","next":"done","updates":{"answer":42}}`.
 
-For domain JSON stored as a String inside a model-proposed field, start with
-`StructuredStepBuilder::<serde_json::Value, String>::proposed("reply")`, attach a template declaring that
-String field, and use `.action_named("formatted", json_formatter(config)?)` instead.
-
-Raw responses and saved outputs last only for the current finalization. State bindings and trace
-templates persist only the selected values. Model-response binding paths include `/text`,
-`/usage/total_tokens`, `/sources`, `/raw_json`, and `/http/status`. Saved formatted output uses
-`ValueSource::ActionResult { action, pointer }`. See the
-[temporary context guide](../../../lyquid-structured-step/GUIDE.md#temporary-model-response-and-named-outputs).
+For domain JSON stored as a String inside a model-proposed State update, read that String
+from the proposal and pass it to `json_formatter(config)?`. Keep parsed values in ordinary
+Rust variables while finalizing, and write the values that should persist into the proposal.
 
 ## Configuration
 
@@ -98,7 +64,7 @@ The configuration supports Serde, so applications can save and load it:
 
 ```rust
 let config: JsonFormatterConfig = serde_json::from_str(saved_config)?;
-let formatter = json_formatter::<serde_json::Value>(config)?;
+let formatter = json_formatter(config)?;
 ```
 
 Example saved configuration for JSON text containing domain data:
@@ -118,30 +84,24 @@ Example saved configuration for JSON text containing domain data:
 ```
 
 An empty configuration `{}` accepts any JSON value. Unsupported schema keywords and invalid
-references fail when constructing the action. Supported constraints include types, object properties,
+references fail when constructing the formatter. Supported constraints include types, object properties,
 required fields, arrays, enums/constants, numeric and string bounds, patterns, document-local
 references, and schema composition. Formatter schema validation stops with an error after 128 nested
 evaluations, including within alternatives, negation, and conditions. This limit does not apply to
 Flow input validation.
 
 For an editor, `schemars::schema_for!(JsonFormatterConfig)` describes the configuration fields.
-The configured schema describes the parsed JSON and can guide binding paths such as `/products`
-and `/summary`. Applications resolve the saved configuration to an action; this crate supplies no
-JSON action registry or input/output binding layer.
+The configured schema describes the parsed JSON, such as its `products` and `summary` fields.
 
-## Action inputs and outputs
+## Function signatures
 
-Both factories return a cloneable callback with the ordinary action signature
-`Fn(&ActionContext<'_, Context>, PreviousResult) -> Result<serde_json::Value, String>`.
+Both factories return a function that is `Clone + Send + Sync`. Construction and calls can
+return `FlowError`; successful calls return `serde_json::Value`.
 
-| Factory | Data source | Output |
+| Factory | Function argument | Output |
 | --- | --- | --- |
-| `json_formatter(config)?` | The previous result, a `String` containing JSON. | Parsed JSON value. |
-| `model_response_json_formatter(config)?` | The original response in `context.model_response()`; ignores the previous result. | Parsed JSON value. |
-
-Attach either with `.action(...)` or `.action_named(name, ...)`. A named output remains readable
-through `context.result(name)` and named-result bindings even when later actions return other values.
-Ordinary Result bindings and result-based routing use the last action's output.
+| `json_formatter(config)?` | `&str` containing JSON. | Parsed JSON value. |
+| `model_response_json_formatter(config)?` | `Option<&ModelResponse>`, usually from `scope.model_response()`. | Parsed JSON value. |
 
 ## Accepted input and errors
 
@@ -153,8 +113,8 @@ and optional trailing whitespace. LF and CRLF line endings are supported. Object
 strings, numbers, booleans, and `null` are supported when allowed by the configured schema.
 
 Unsupported schemas and reference cycles that never descend into a child value fail when constructing
-the action.
+the formatter.
 Malformed JSON, extra prose, incomplete fences, and schema mismatches return an error. The
 model-response formatter also rejects absent responses, missing text, and `FinishReason::Length`.
-It does not repair or retry invalid output. A failed action stops the chain and prevents the turn's
-State, routing, Trace, and checkpoint commit; earlier external effects cannot be rolled back.
+It does not repair or retry invalid output. Propagating an error with `?` from `Step::finalize`
+rejects the turn before Core commits it.

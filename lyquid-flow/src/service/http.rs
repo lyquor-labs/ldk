@@ -17,7 +17,7 @@ struct Submission<'a> {
 /// `schedule` must enqueue an instance task; it must not execute a model inline.
 pub fn handle_http(
     request: http::Request, resolve: impl FnOnce(&FlowClientId) -> Option<FlowClient>,
-    schedule: impl FnOnce(FlowClientId) -> Result<(), String>,
+    schedule: impl FnOnce(FlowClientId) -> Result<(), crate::FlowError>,
 ) -> http::Response {
     let result = (|| {
         let path = request_path(&request.url);
@@ -94,8 +94,9 @@ impl FlowService {
     /// Full service entry point used by serve_flow!: creation plus reads, input and restore.
     /// Business initialization runs only for POST /api/flows, before replacing any execution.
     pub fn serve(
-        &self, request: http::Request, replace_existing: bool, create: impl FnOnce() -> Result<Scope, String>,
-        schedule: impl FnOnce(FlowClientId) -> Result<(), String>,
+        &self, request: http::Request, replace_existing: bool,
+        create: impl FnOnce() -> Result<Scope, crate::BuildError>,
+        schedule: impl FnOnce(FlowClientId) -> Result<(), crate::FlowError>,
     ) -> http::Response {
         if request_path(&request.url) != "/api/flows" || request.method != http::Method::Post {
             return self.handle_http(request, schedule);
@@ -106,7 +107,9 @@ impl FlowService {
                     message: "Creation takes no body; submit business input to the first Step.".into(),
                 });
             }
-            let scope = create().map_err(|message| ClientError::Malformed { message })?;
+            let scope = create().map_err(|error| ClientError::Malformed {
+                message: error.to_string(),
+            })?;
             let client = self.insert(scope, replace_existing)?;
             let id = client.id.clone();
             if let Err(error) = schedule(id.clone()) {

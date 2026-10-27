@@ -95,20 +95,32 @@ mod tests {
 
     #[test]
     fn capture_long_body_truncates_with_marker() {
-        let body = vec![b'x'; UNEXPECTED_STATUS_BODY_CAP + 100];
-        let captured = capture_status_body(&body);
-        assert!(captured.starts_with("xxxx"));
-        assert!(
-            captured.contains("[truncated, 100 more bytes]"),
-            "must report how many bytes were dropped, got: {}",
-            &captured[captured.len().saturating_sub(80)..]
-        );
+        for extra in [0, 1, 100] {
+            let body = vec![b'x'; UNEXPECTED_STATUS_BODY_CAP + extra];
+            let expected = if extra == 0 {
+                "x".repeat(UNEXPECTED_STATUS_BODY_CAP)
+            } else {
+                format!(
+                    "{}[truncated, {extra} more bytes]",
+                    "x".repeat(UNEXPECTED_STATUS_BODY_CAP)
+                )
+            };
+            assert_eq!(capture_status_body(&body), expected);
+        }
     }
 
     #[test]
     fn capture_handles_non_utf8() {
         // 0xff is invalid UTF-8 — must not panic; comes through as the replacement char.
         let captured = capture_status_body(&[0xff, b'h', b'i']);
-        assert!(captured.ends_with("hi"));
+        assert_eq!(captured, "�hi");
+        let body = format!("{}é", "x".repeat(UNEXPECTED_STATUS_BODY_CAP - 1));
+        assert_eq!(
+            capture_status_body(body.as_bytes()),
+            format!(
+                "{}�[truncated, 1 more bytes]",
+                "x".repeat(UNEXPECTED_STATUS_BODY_CAP - 1)
+            )
+        );
     }
 }

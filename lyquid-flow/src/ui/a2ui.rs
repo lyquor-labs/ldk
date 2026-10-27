@@ -4,17 +4,20 @@
 
 use serde_json::{Value as JsonValue, json};
 
+use crate::Diagnostic;
+
 use super::{Builder, Choice, Node, UiDocument};
 
 impl UiDocument {
     /// A complete A2UI v0.9.1 surface snapshot. Recreate an existing surface before replaying it.
     /// Only an input surface may supply a request ID; submit events capture it as a literal.
-    pub(crate) fn surface(&self, surface_id: &str, request_id: Option<&str>) -> Result<Vec<JsonValue>, String> {
+    pub(crate) fn surface(&self, surface_id: &str, request_id: Option<&str>) -> Result<Vec<JsonValue>, Diagnostic> {
         validate(self)?;
         let mut components = self.components.clone();
         for component in &mut components {
             if component["component"] == "Button" && component["action"].get("event").is_some() {
-                let request_id = request_id.ok_or("result surfaces cannot submit input")?;
+                let request_id =
+                    request_id.ok_or_else(|| Diagnostic::new("UI", "result surfaces cannot submit input"))?;
                 component["action"]["event"]["context"]["request_id"] = json!(request_id);
             }
         }
@@ -33,46 +36,53 @@ pub(super) fn root(id: &str, child: &str) -> JsonValue {
     json!({"id": id, "component": "Column", "children": [child]})
 }
 
-pub(super) fn validate(document: &UiDocument) -> Result<(), String> {
+pub(super) fn validate(document: &UiDocument) -> Result<(), Diagnostic> {
     let mut ids = std::collections::BTreeMap::new();
     for (index, component) in document.components.iter().enumerate() {
-        let id = component["id"].as_str().ok_or("component has no ID")?;
+        let id = component["id"]
+            .as_str()
+            .ok_or_else(|| Diagnostic::new(format!("component {index}"), "component has no ID"))?;
         if ids.insert(id, index).is_some() {
-            return Err(format!("duplicate component ID {id}"));
+            return Err(Diagnostic::new(id, "duplicate component ID"));
         }
         match component["component"].as_str() {
             Some("Column" | "Row") => {
                 if !component["children"].is_array() {
-                    return Err("Column and Row require an array of child IDs".to_owned());
+                    return Err(Diagnostic::new(id, "Column and Row require an array of child IDs"));
                 }
             }
             Some("Card" | "Button") => {
                 if !component["child"].is_string() {
-                    return Err("Card and Button require a child ID string".to_owned());
+                    return Err(Diagnostic::new(id, "Card and Button require a child ID string"));
                 }
             }
             Some("Text" | "TextField" | "CheckBox" | "ChoicePicker") => (),
-            _ => return Err("component is not in the supported catalog".to_owned()),
+            _ => return Err(Diagnostic::new(id, "component is not in the supported catalog")),
         }
         if component["component"] == "Button" {
-            validate_button_action(&component["action"])?;
+            validate_button_action(id, &component["action"])?;
         }
     }
     if document.root != "root" {
-        return Err("the UI root ID must be \"root\"".to_owned());
+        return Err(Diagnostic::new(
+            document.root.clone(),
+            "the UI root ID must be \"root\"",
+        ));
     }
     if !ids.contains_key(document.root.as_str()) {
-        return Err("the UI root is missing".to_owned());
+        return Err(Diagnostic::new("UI", "the UI root is missing"));
     }
     let mut edges = vec![Vec::new(); document.components.len()];
     let mut incoming = vec![0usize; document.components.len()];
     for (index, component) in document.components.iter().enumerate() {
         let children = component["children"].as_array().into_iter().flatten();
         for child in children.chain(component.get("child")) {
-            let &child = child
-                .as_str()
-                .and_then(|child| ids.get(child))
-                .ok_or("component references an unknown child")?;
+            let &child = child.as_str().and_then(|child| ids.get(child)).ok_or_else(|| {
+                Diagnostic::new(
+                    component["id"].as_str().unwrap(),
+                    format!("component references unknown child {child}"),
+                )
+            })?;
             edges[index].push(child);
             incoming[child] += 1;
         }
@@ -95,32 +105,39 @@ pub(super) fn validate(document: &UiDocument) -> Result<(), String> {
         }
     }
     if visited != document.components.len() {
-        return Err("cyclic UI component references".to_owned());
+        return Err(Diagnostic::new("UI", "cyclic UI component references"));
     }
     Ok(())
 }
 
-fn validate_button_action(action: &JsonValue) -> Result<(), String> {
-    let action = action.as_object().ok_or("Button actions require an object")?;
+fn validate_button_action(id: &str, action: &JsonValue) -> Result<(), Diagnostic> {
+    let action = action
+        .as_object()
+        .ok_or_else(|| Diagnostic::new(id, "Button actions require an object"))?;
     match (action.get("event"), action.get("functionCall")) {
         (Some(event), None) => {
             if event.get("name").and_then(JsonValue::as_str) != Some("submit") {
-                return Err("Button events require the name \"submit\"".to_owned());
+                return Err(Diagnostic::new(id, "Button events require the name \"submit\""));
             }
             if !event.get("context").is_some_and(JsonValue::is_object) {
-                return Err("submit events require an object context".to_owned());
+                return Err(Diagnostic::new(id, "submit events require an object context"));
             }
         }
         (None, Some(call)) => {
             if call.get("call").and_then(JsonValue::as_str) != Some("openUrl") {
-                return Err("Button function calls must use openUrl".to_owned());
+                return Err(Diagnostic::new(id, "Button function calls must use openUrl"));
             }
             let url = call.get("args").and_then(|args| args.get("url"));
             if !url.is_some_and(|url| url.is_string() || url.get("path").is_some_and(JsonValue::is_string)) {
-                return Err("openUrl requires a URL string or data path".to_owned());
+                return Err(Diagnostic::new(id, "openUrl requires a URL string or data path"));
             }
         }
-        _ => return Err("Button actions require exactly one event or functionCall".to_owned()),
+        _ => {
+            return Err(Diagnostic::new(
+                id,
+                "Button actions require exactly one event or functionCall",
+            ))
+        }
     }
     Ok(())
 }
@@ -141,7 +158,7 @@ impl Builder {
             self.state
                 .lock()
                 .errors
-                .push("UI links require an HTTP(S) URL".to_owned());
+                .push(Diagnostic::new(&url, "UI links require an HTTP(S) URL"));
         }
         let text = self.text(label);
         self.emit(|id, _| {
@@ -196,7 +213,7 @@ impl Builder {
     }
 
     fn text_field(&self, field: &str, label: &str, variant: &str) -> Node {
-        let path = format!("/fields/{}", crate::input::escape_pointer(field));
+        let path = format!("/fields/{}", crate::types::escape_pointer(field));
         self.emit(|id, _| {
             json!({
                 "id": id, "component": "TextField", "label": label, "value": {"path": path},
@@ -206,7 +223,7 @@ impl Builder {
     }
 
     pub(crate) fn toggle(&self, field: &str, label: &str) -> Node {
-        let path = format!("/fields/{}", crate::input::escape_pointer(field));
+        let path = format!("/fields/{}", crate::types::escape_pointer(field));
         self.emit(|id, _| json!({"id": id, "component": "CheckBox", "label": label, "value": {"path": path}}))
     }
 
@@ -221,7 +238,7 @@ impl Builder {
     // Encode JSON inside each native option string to preserve distinctions such as true vs "true".
     // Frontend adapters decode selected options before normalizing scalar versus list selection.
     fn choice_picker(&self, field: &str, label: &str, choices: &[Choice], variant: &str) -> Node {
-        let path = format!("/fields/{}", crate::input::escape_pointer(field));
+        let path = format!("/fields/{}", crate::types::escape_pointer(field));
         self.emit(|id, _| {
             json!({
                 "id": id, "component": "ChoicePicker", "label": label, "value": {"path": path},

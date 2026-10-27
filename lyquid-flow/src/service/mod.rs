@@ -43,7 +43,7 @@ pub struct StepInfo {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct PendingInput {
     pub request_id: String,
-    /// InputSpec's serializable fields only; no Value prototypes or decoders.
+    /// InputSpec's serializable UI and schema.
     pub spec: JsonValue,
     pub a2ui: Vec<JsonValue>,
 }
@@ -285,7 +285,7 @@ impl FlowClient {
         Ok(())
     }
 
-    fn scheduling_failed(&self, error: String) -> ClientError {
+    fn scheduling_failed(&self, error: FlowError) -> ClientError {
         let message = format!("request accepted but scheduling failed: {error}");
         let mut execution = self.execution.lock();
         execution.published.status = Status::Failed;
@@ -440,7 +440,7 @@ impl FlowService {
     }
 
     pub fn handle_http(
-        &self, request: http::Request, schedule: impl FnOnce(FlowClientId) -> Result<(), String>,
+        &self, request: http::Request, schedule: impl FnOnce(FlowClientId) -> Result<(), FlowError>,
     ) -> http::Response {
         handle_http(request, |id| self.resolve(id), schedule)
     }
@@ -470,13 +470,17 @@ mod tests {
             let mut flow = counter_flow(Arc::new(AtomicUsize::new(0)), false, false);
             flow.history = Some(if broken {
                 |scope, _| {
-                    if *scope.state().get::<u64>("count").unwrap() > 0 {
+                    if scope.state().get("count").and_then(serde_json::Value::as_u64).unwrap() > 0 {
                         return Err(FlowError::Execution("history projection failed".into()));
                     }
                     Ok(Some(json!({"count": 0})))
                 }
             } else {
-                |scope, _| Ok(Some(json!({"count": scope.state().get::<u64>("count").unwrap()})))
+                |scope, _| {
+                    Ok(Some(
+                        json!({"count": scope.state().get("count").and_then(serde_json::Value::as_u64).unwrap()}),
+                    ))
+                }
             });
             scope(flow)
         }
@@ -503,7 +507,7 @@ mod tests {
                     || {
                         initialized.set(initialized.get() + 1);
                         if reject.get() {
-                            return Err("backend initialization failed".into());
+                            return Err(crate::Diagnostic::new("backend", "initialization failed").into());
                         }
                         Ok(history_scope(false))
                     },
@@ -595,7 +599,14 @@ mod tests {
                 assert_eq!(execution.published.history.revisions.len(), 1);
                 assert_eq!(execution.scope.as_ref().unwrap().checkpoint_ids().count(), 1);
                 assert_eq!(
-                    *execution.scope.as_ref().unwrap().state().get::<u64>("count").unwrap(),
+                    execution
+                        .scope
+                        .as_ref()
+                        .unwrap()
+                        .state()
+                        .get("count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap(),
                     1
                 );
             }
@@ -717,7 +728,7 @@ mod tests {
                                 &ui,
                                 ui.text(format!(
                                     "{}:{}",
-                                    scope.state().get::<u64>("count").unwrap(),
+                                    scope.state().get("count").and_then(serde_json::Value::as_u64).unwrap(),
                                     scope.trace().entries.len(),
                                 )),
                             )?)
@@ -864,9 +875,16 @@ mod tests {
             let execution = client.execution.lock();
             let scope = execution.scope.as_ref().unwrap();
             assert!(scope.is_finished());
-            assert_eq!(scope.state().get::<u64>("count"), Some(&1));
+            assert_eq!(scope.state().get("count").and_then(serde_json::Value::as_u64), Some(1));
             assert_eq!(scope.trace().entries.len(), 1);
             assert_eq!(execution.published.view.spec["ui"]["data"]["content"]["c0"], "0");
+            let snapshot = scope.clone();
+            for scope in [scope, &snapshot] {
+                let error = scope.view().err().unwrap();
+                assert!(matches!(error, FlowError::Execution(diagnostics)
+                    if matches!(diagnostics.diagnostics[0].source.as_ref().unwrap().downcast_ref::<FlowError>(),
+                        Some(FlowError::Execution(message)) if message.to_string().contains("count"))));
+            }
         }
     }
 
@@ -883,14 +901,14 @@ mod tests {
         fn input(&self, _: &Scope) -> Option<InputSpec> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             let mut builder = InputSpec::builder();
-            let field = builder.field("finish", "Finish", false).toggle();
+            let field = builder.field::<bool>("finish", "Finish").toggle();
             let submit = builder.submit("Submit");
             let root = builder.ui().column(vec![field, submit]);
             Some(builder.finish(root).unwrap())
         }
         fn view(&self, scope: &Scope) -> Result<ViewSpec, FlowError> {
-            let count = scope.state().get::<u64>("count").unwrap();
-            if self.broken_view && *count > 0 {
+            let count = scope.state().get("count").and_then(serde_json::Value::as_u64).unwrap();
+            if self.broken_view && count > 0 {
                 return Err(FlowError::Execution("count: cannot render value".into()));
             }
             let builder = ViewSpec::builder();
@@ -903,16 +921,20 @@ mod tests {
             })
         }
         fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
-            let count = scope.state().get::<u64>("count").unwrap();
-            if self.fail && *count == 1 {
+            let count = scope.state().get("count").and_then(serde_json::Value::as_u64).unwrap();
+            if self.fail && count == 1 {
                 return Err(FlowError::Execution("intentional failure".into()));
             }
             let TurnProposal::Advance { next, updates } = proposal else {
                 unreachable!()
             };
-            updates.set("count".into(), Some(Box::new(count + 1)));
+            updates.set("count".into(), Some(serde_json::json!(count + 1)));
             *next = Some(
-                if *scope.get::<bool>(StateNamespace::Input, "finish").unwrap() {
+                if scope
+                    .get(StateNamespace::Input, "finish")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap()
+                {
                     "done"
                 } else {
                     "counter"
@@ -953,8 +975,13 @@ mod tests {
         Scope::new(
             Arc::new(flow),
             State::builder()
-                .field("count", "Count", 0_u64)
-                .field("secret", "Never selected", "private".to_owned())
+                .field("count", "Count", crate::Type::U64, serde_json::json!(0_u64))
+                .field(
+                    "secret",
+                    "Never selected",
+                    crate::Type::String,
+                    serde_json::json!("private"),
+                )
                 .build()
                 .unwrap(),
             AutoCheckpointConfig::Disabled,
@@ -1098,7 +1125,14 @@ mod tests {
         {
             let execution = client.execution.lock();
             assert_eq!(
-                *execution.scope.as_ref().unwrap().state().get::<u64>("count").unwrap(),
+                execution
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .state()
+                    .get("count")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap(),
                 1
             );
             assert_eq!(execution.published.view.spec["ui"]["data"]["content"]["c0"], "0");
@@ -1275,58 +1309,46 @@ mod tests {
         assert_eq!(count(&client), "1");
     }
 
-    #[derive(Clone, schemars::JsonSchema)]
-    #[schemars(with = "bool")]
-    struct CheckedFlag(Arc<AtomicUsize>);
-    impl crate::Value for CheckedFlag {
-        fn encode(&self) -> String {
-            "false".into()
-        }
-        fn decode(&self, value: &str) -> Result<Box<dyn crate::Value>, String> {
-            self.0.fetch_add(1, Ordering::Relaxed);
-            if value != "true" {
-                return Err("choose true".into());
-            }
-            Ok(Box::new(self.clone()))
-        }
-        fn clone_box(&self) -> Box<dyn crate::Value> {
-            Box::new(self.clone())
-        }
-    }
-
     struct Custom(Arc<AtomicUsize>);
     impl Step for Custom {
         fn description(&self, _: bool) -> String {
-            "Custom decoder".into()
+            "Constrained input".into()
         }
         fn input(&self, _: &Scope) -> Option<InputSpec> {
             let mut builder = InputSpec::builder();
             let field = builder
-                .field("checked", "Checked", CheckedFlag(self.0.clone()))
+                .field::<bool>("checked", "Checked")
+                .choices([(true, "Accept")])
                 .toggle();
             Some(builder.finish(field).unwrap())
         }
         fn model_template(&self, scope: &Scope) -> TemplateSpec {
-            assert!(scope.get::<CheckedFlag>(StateNamespace::Input, "checked").is_some());
+            self.0.fetch_add(1, Ordering::Relaxed);
+            assert!(
+                scope
+                    .get(StateNamespace::Input, "checked")
+                    .and_then(JsonValue::as_bool)
+                    .is_some()
+            );
             TemplateSpec::Skip(TurnProposal::Advance {
                 next: None,
                 updates: StateUpdates::default(),
             })
         }
         fn finalize(&self, _: &Scope, _: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
-            Ok(TraceSummary::Summary("decoded".into()))
+            Ok(TraceSummary::Summary("accepted".into()))
         }
     }
 
     #[test]
-    fn http_decodes_once() {
-        let decodes = Arc::new(AtomicUsize::new(0));
+    fn http_validates_before_running_step() {
+        let executions = Arc::new(AtomicUsize::new(0));
         let service = FlowService::new();
         let id = service
             .register(scope(
                 Flow::builder("custom")
                     .entry("custom")
-                    .step("custom", Custom(decodes.clone()))
+                    .step("custom", Custom(executions.clone()))
                     .build()
                     .unwrap(),
             ))
@@ -1334,11 +1356,11 @@ mod tests {
         let client = service.resolve(&id).unwrap();
         client.run().unwrap();
         let before = read(&client);
-        for (value, status, count) in [(json!(42), 422, 0), (json!(false), 422, 1), (json!(true), 202, 2)] {
+        for (value, status, count) in [(json!(42), 422, 0), (json!(false), 422, 0), (json!(true), 202, 0)] {
             let body = json!({"request_id": token(&client), "values":{"checked":value}}).to_string();
             let response = service.handle_http(request(http::Method::Post, &id, "/input", &body), |_| Ok(()));
             assert_eq!(response.status, status);
-            assert_eq!(decodes.load(Ordering::Relaxed), count);
+            assert_eq!(executions.load(Ordering::Relaxed), count);
             if status == 422 {
                 assert_eq!(read(&client), before);
                 assert_eq!(
@@ -1348,7 +1370,7 @@ mod tests {
             }
         }
         client.run().unwrap();
-        assert_eq!(decodes.load(Ordering::Relaxed), 2);
+        assert_eq!(executions.load(Ordering::Relaxed), 1);
         assert_eq!(read(&client)["status"], "completed");
     }
 

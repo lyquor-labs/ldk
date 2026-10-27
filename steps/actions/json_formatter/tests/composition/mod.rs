@@ -2,12 +2,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use lyquid_flow::{
-    AutoCheckpointConfig, Flow, ModelTemplate, Scope, State, StateUpdates, Step, TraceSummary, TurnProposal,
+    AutoCheckpointConfig, Flow, FlowError, InputSpec, Scope, State, StateUpdates, Step, TemplateSpec, TraceSummary,
+    TurnProposal,
 };
 use lyquid_llm::{FinishReason, ModelResponse, Usage};
-use lyquid_structured_step::{ActionContext, StructuredStepBuilder, ValueSource};
 use lyquid_test::test;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::{JsonFormatterConfig, json_formatter, model_response_json_formatter};
 
@@ -34,6 +34,39 @@ pub(super) fn response(text: &str) -> ModelResponse {
     }
 }
 
+struct NativeStep<F> {
+    proposal: TurnProposal,
+    finalize: F,
+}
+
+impl<F> Step for NativeStep<F>
+where
+    F: Fn(&Scope, &mut TurnProposal) -> Result<TraceSummary, FlowError> + Send + Sync + 'static,
+{
+    fn description(&self, _: bool) -> String {
+        "Format JSON".into()
+    }
+
+    fn input(&self, _: &Scope) -> Option<InputSpec> {
+        None
+    }
+
+    fn model_template(&self, _: &Scope) -> TemplateSpec {
+        TemplateSpec::Skip(self.proposal.clone())
+    }
+
+    fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+        (self.finalize)(scope, proposal)
+    }
+}
+
+fn proposal(updates: StateUpdates) -> TurnProposal {
+    TurnProposal::Advance {
+        next: Some("done".into()),
+        updates,
+    }
+}
+
 fn scope(step: impl Step) -> Scope {
     let flow = Flow::builder("formatter")
         .entry("start")
@@ -42,8 +75,8 @@ fn scope(step: impl Step) -> Scope {
         .build()
         .unwrap();
     let state = State::builder()
-        .field("count", "Count", 7_u64)
-        .field("text", "Text", "before".to_owned())
+        .field("count", "Count", lyquid_flow::Type::U64, json!(7_u64))
+        .field("text", "Text", lyquid_flow::Type::String, json!("before".to_owned()))
         .build()
         .unwrap();
     Scope::new(Arc::new(flow), state, AutoCheckpointConfig::Unbounded, None)
@@ -59,53 +92,67 @@ fn config() -> JsonFormatterConfig {
 }
 
 #[test]
-fn formatter_runs_between_actions_before_bindings_routing_and_trace() {
-    let step = StructuredStepBuilder::new()
-        .bind_state("count", "count")
-        .action(|context: &ActionContext<'_, Value>, previous: Value| {
-            assert_eq!(context.prepared(), &previous);
-            Ok(json!({"count": context["count"].as_u64().unwrap() + 1, "route": "finish"}).to_string())
-        })
-        .action(json_formatter(config()).unwrap())
-        .action(|context, mut parsed| {
-            assert_eq!(context["count"], 7);
-            parsed["count"] = json!(parsed["count"].as_u64().unwrap() * 2);
-            Ok(parsed)
-        })
-        .update("count", "/count")
-        .route_by("/route", [("finish", "done")])
-        .summary("Count {{ result.count }}")
-        .build()
-        .unwrap();
+fn native_finalizer_uses_formatted_values_before_core_commits_the_turn() {
+    let format = json_formatter(config()).unwrap();
+    let step = NativeStep {
+        proposal: proposal(StateUpdates::default()),
+        finalize: move |scope: &Scope, proposal: &mut TurnProposal| {
+            let text = json!({"count": scope.state().get("count").and_then(serde_json::Value::as_u64).unwrap() + 1, "route": "finish"});
+            let parsed = format(&text.to_string())?;
+            let count = parsed["count"].as_u64().unwrap() * 2;
+            let TurnProposal::Advance { next, updates } = proposal else {
+                return Err("expected an advancing proposal".to_owned().into());
+            };
+            updates.set("count".into(), Some(json!(count)));
+            if parsed["route"] == "finish" {
+                *next = Some("done".into());
+            }
+            Ok(TraceSummary::Summary(format!("Count {count}")))
+        },
+    };
     let mut scope = scope(step);
     scope.advance().unwrap();
-    assert_eq!(scope.state().get::<u64>("count"), Some(&16));
+    assert_eq!(scope.state().get("count").and_then(serde_json::Value::as_u64), Some(16));
     assert!(scope.is_finished());
+    assert_eq!(scope.trace().entries.len(), 1);
+    assert_eq!(
+        scope.trace().entries[0]
+            .state
+            .get("count")
+            .and_then(serde_json::Value::as_u64),
+        Some(16)
+    );
     assert!(matches!(&scope.trace().entries[0].summary, TraceSummary::Summary(text) if text == "Count 16"));
 }
 
 #[test]
-fn invalid_json_or_schema_stops_later_actions_and_preserves_the_turn() {
+fn invalid_json_or_schema_rejects_partial_proposals_without_committing() {
     for text in ["not JSON", r#"{"count":0,"route":"finish"}"#] {
         let called = Arc::new(AtomicUsize::new(0));
         let count_calls = called.clone();
-        let step = StructuredStepBuilder::operation(move |_: &Value| Ok(text.to_owned()))
-            .action(json_formatter(config()).unwrap())
-            .action(move |_, value| {
+        let format = json_formatter(config()).unwrap();
+        let step = NativeStep {
+            proposal: proposal(StateUpdates::default()),
+            finalize: move |_: &Scope, proposal: &mut TurnProposal| {
+                let TurnProposal::Advance { updates, .. } = proposal else {
+                    return Err("expected an advancing proposal".to_owned().into());
+                };
+                updates.set("text".into(), Some(json!("changed".to_owned())));
+                let parsed = format(text)?;
                 count_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(value)
-            })
-            .constant("text", "changed")
-            .update("count", "/count")
-            .next("done")
-            .build()
-            .unwrap();
+                updates.set("count".into(), Some(json!(parsed["count"].as_u64().unwrap())));
+                Ok(TraceSummary::Summary("Formatted".into()))
+            },
+        };
         let mut scope = scope(step);
         let checkpoints = scope.checkpoint_ids().cloned().collect::<Vec<_>>();
         assert!(scope.advance().is_err());
         assert_eq!(called.load(Ordering::SeqCst), 0);
-        assert_eq!(scope.state().get::<u64>("count"), Some(&7));
-        assert_eq!(scope.state().get::<String>("text").unwrap(), "before");
+        assert_eq!(scope.state().get("count").and_then(serde_json::Value::as_u64), Some(7));
+        assert_eq!(
+            scope.state().get("text").and_then(serde_json::Value::as_str).unwrap(),
+            "before"
+        );
         assert_eq!(scope.current_step().0, "start");
         assert!(scope.trace().entries.is_empty());
         assert!(scope.checkpoint_ids().cloned().collect::<Vec<_>>() == checkpoints);
@@ -113,104 +160,55 @@ fn invalid_json_or_schema_stops_later_actions_and_preserves_the_turn() {
 }
 
 #[test]
-fn named_formatter_output_survives_intervening_actions_and_supplies_bindings() {
-    let step = StructuredStepBuilder::operation(|_: &Value| Ok(r#"{"count":8,"route":"finish"}"#.to_owned()))
-        .action_named("formatted", json_formatter(config()).unwrap())
-        .action(|_, _| Ok(false))
-        .action(|context, previous| {
-            assert!(!previous);
-            assert_eq!(
-                context.result("formatted"),
-                Some(&json!({"count": 8, "route": "finish"}))
-            );
-            Ok(())
-        })
-        .update_from(
-            "count",
-            ValueSource::ActionResult {
-                action: "formatted".into(),
-                pointer: "/count".into(),
-            },
-        )
-        .next("done")
-        .summary("Count {{ actions.formatted.count }}")
-        .build()
-        .unwrap();
-    let mut scope = scope(step);
-    scope.advance().unwrap();
-    assert_eq!(scope.state().get::<u64>("count"), Some(&8));
-    assert!(scope.is_finished());
-    assert!(matches!(&scope.trace().entries[0].summary, TraceSummary::Summary(text) if text == "Count 8"));
-}
-
-#[test]
-fn model_response_formatter_rejects_missing_context_without_running_later_actions() {
-    let step = StructuredStepBuilder::new()
-        .action(|_, _| Ok("unrelated result"))
-        .action_named("formatted", model_response_json_formatter(config()).unwrap())
-        .action(|_, _| -> Result<Value, String> { panic!("later action must not run") })
-        .constant("count", 99)
-        .next("done")
-        .build()
-        .unwrap();
+fn native_finalizer_rejects_a_missing_model_response_without_committing() {
+    let format = model_response_json_formatter(config()).unwrap();
+    let step = NativeStep {
+        proposal: proposal(StateUpdates::default()),
+        finalize: move |scope: &Scope, proposal: &mut TurnProposal| {
+            let TurnProposal::Advance { updates, .. } = proposal else {
+                return Err("expected an advancing proposal".to_owned().into());
+            };
+            updates.set("count".into(), Some(json!(99_u64)));
+            format(scope.model_response())?;
+            Ok(TraceSummary::Summary("Formatted".into()))
+        },
+    };
     let mut scope = scope(step);
     let checkpoints = scope.checkpoint_ids().cloned().collect::<Vec<_>>();
     assert!(scope.advance().unwrap_err().to_string().contains("no model response"));
-    assert_eq!(scope.state().get::<u64>("count"), Some(&7));
+    assert_eq!(scope.state().get("count").and_then(serde_json::Value::as_u64), Some(7));
     assert_eq!(scope.current_step().0, "start");
     assert!(scope.trace().entries.is_empty());
     assert!(scope.checkpoint_ids().cloned().collect::<Vec<_>>() == checkpoints);
 }
 
 #[test]
-fn omitting_the_formatter_keeps_plain_text_usable() {
-    let step = StructuredStepBuilder::operation(|_: &Value| Ok("Plain text { without JSON".to_owned()))
-        .update("text", "")
-        .next("done")
-        .build()
-        .unwrap();
+fn model_proposed_text_can_be_formatted_and_committed_by_a_native_step() {
+    let format = json_formatter(config()).unwrap();
+    let text = r#"{"count":8,"route":"finish"}"#;
+    let mut updates = StateUpdates::default();
+    updates.set("text".into(), Some(json!(text.to_owned())));
+    let step = NativeStep {
+        // Inject at the already-parsed TurnProposal boundary; no model or transport is involved.
+        proposal: proposal(updates),
+        finalize: move |_: &Scope, proposal: &mut TurnProposal| {
+            let TurnProposal::Advance { updates, .. } = proposal else {
+                return Err("expected an advancing proposal".to_owned().into());
+            };
+            let parsed = format(updates.get("text").and_then(serde_json::Value::as_str).unwrap())?;
+            let count = parsed["count"].as_u64().unwrap();
+            updates.set("count".into(), Some(json!(count)));
+            Ok(TraceSummary::Summary(format!("Count {count}")))
+        },
+    };
     let mut scope = scope(step);
     scope.advance().unwrap();
+    assert_eq!(scope.state().get("count").and_then(serde_json::Value::as_u64), Some(8));
     assert_eq!(
-        scope.state().get::<String>("text").unwrap(),
-        "Plain text { without JSON"
+        scope.state().get("text").and_then(serde_json::Value::as_str).unwrap(),
+        text
     );
-}
-
-#[test]
-fn model_proposed_text_can_feed_the_formatter_without_replacing_flows_parser() {
-    let step = StructuredStepBuilder::<Value, String>::proposed("text")
-        .with_model(ModelTemplate::new(
-            "Produce JSON text in the text field",
-            vec![(Some("done".into()), "When complete".into())],
-            vec![("text".into(), "JSON text with count and route".into())],
-        ))
-        .action(json_formatter(config()).unwrap())
-        .update("count", "/count")
-        .proposed_next()
-        .summary("Count {{ result.count }}")
-        .build()
-        .unwrap();
-    let scope = scope(step.clone());
-    let mut updates = StateUpdates::default();
-    updates.set(
-        "text".into(),
-        Some(Box::new(r#"{"count":8,"route":"finish"}"#.to_owned())),
-    );
-    // Fixture at the already-parsed TurnProposal boundary; no model or transport is involved.
-    let mut proposal = TurnProposal::Advance {
-        next: Some("done".into()),
-        updates,
-    };
-    step.finalize(&scope, &mut proposal).unwrap();
-    let TurnProposal::Advance { next, updates } = proposal else {
-        unreachable!()
-    };
-    assert_eq!(next.unwrap().0, "done");
-    assert_eq!(updates.get::<u64>("count"), Some(&8));
-    assert_eq!(
-        updates.get::<String>("text").unwrap(),
-        r#"{"count":8,"route":"finish"}"#
-    );
-    assert_eq!(scope.state().get::<u64>("count"), Some(&7));
+    assert!(scope.is_finished());
+    assert_eq!(scope.trace().entries.len(), 1);
+    assert!(matches!(&scope.trace().entries[0].summary, TraceSummary::Summary(text) if text == "Count 8"));
 }

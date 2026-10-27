@@ -104,26 +104,30 @@ pub mod __private {
 #[cfg(test)]
 mod tests {
     use super::__private::{GuestTestTermination, test_info_encode, test_info_len};
+    use lyquor_test::test;
 
     #[test]
     fn encodes_guest_test_metadata() {
-        const NAME: &str = "fixture::builds_a_value";
-        const EXPORT: &str = "__lyquid_test_1234";
+        const NAME: &str = "case";
+        const EXPORT: &str = "run";
         const FILE: &str = "src/lib.rs";
         const LEN: usize = test_info_len(NAME, EXPORT, FILE);
         const ENCODED: [u8; LEN] = test_info_encode::<LEN>(NAME, EXPORT, true, FILE, 42, 7);
 
-        assert_eq!(ENCODED[0], 1);
-        assert_eq!(ENCODED[1], 1);
-        assert_eq!(u16::from_be_bytes([ENCODED[2], ENCODED[3]]) as usize, NAME.len());
-        assert_eq!(u32::from_be_bytes(ENCODED[8..12].try_into().unwrap()), 42);
-        assert_eq!(u32::from_be_bytes(ENCODED[12..16].try_into().unwrap()), 7);
-        assert!(ENCODED.ends_with(FILE.as_bytes()));
+        assert_eq!(
+            &ENCODED,
+            b"\x01\x01\x00\x04\x00\x03\x00\x0a\x00\x00\x00\x2a\x00\x00\x00\x07caserunsrc/lib.rs"
+        );
+        let enabled = test_info_encode::<LEN>(NAME, EXPORT, false, FILE, 42, 7);
+        assert_eq!(enabled[1], 0);
+        assert_eq!(enabled[0], ENCODED[0]);
+        assert_eq!(enabled[2..], ENCODED[2..]);
     }
 
     #[test]
     fn converts_supported_test_returns() {
         assert!(GuestTestTermination::into_result(()).is_ok());
+        assert!(GuestTestTermination::into_result(Ok::<(), lyquid::LyquidError>(())).is_ok());
 
         let error = lyquid::LyquidError::LyquidRuntime("failure".to_owned());
         let result = GuestTestTermination::into_result(Err(error));

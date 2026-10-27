@@ -9,7 +9,7 @@ use super::tests::enter_request;
 use crate::flow::*;
 use crate::*;
 
-fn search_fixture(_: &SearchContext, round: u64) -> Result<ProductCatalog, String> {
+fn search_fixture(_: &SearchContext, round: u64) -> Result<ProductCatalog, lyquid_flow::FlowError> {
     Ok(ProductCatalog {
         search_summary: "Gaming TVs from a scripted search".into(),
         retrieved_sources: vec!["https://maker.example/tvs".into()],
@@ -39,13 +39,14 @@ impl lyquid_flow::Step for ChildRound {
     fn model_template(&self, scope: &lyquid_flow::Scope) -> lyquid_flow::TemplateSpec {
         let round = scope
             .state()
-            .get::<ShoppingSearchState>(SHOPPING_SEARCH_STATE_FIELD)
+            .get(SHOPPING_SEARCH_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<ShoppingSearchState>(value.clone()).ok())
             .unwrap()
             .aggregation_round;
         let mut updates = lyquid_flow::StateUpdates::default();
         updates.set(
             DECISION_STATE_FIELD.to_owned(),
-            Some(Box::new(refinement_loop_flow::DecisionState::default())),
+            Some(serde_json::json!(refinement_loop_flow::DecisionState::default())),
         );
         lyquid_flow::TemplateSpec::Skip(lyquid_flow::TurnProposal::Advance {
             next: Some(if round == 1 { RESTART_CHOICE } else { FINISH_CHOICE }.into()),
@@ -77,7 +78,7 @@ impl lyquid_flow::Step for Feedback {
         received.set(
             StateNamespace::Input,
             RESTART_FEEDBACK_FIELD.to_owned(),
-            Some(Box::new("  Include glass options  ".to_owned())),
+            Some(serde_json::json!("  Include glass options  ")),
         );
         restart_feedback_step().finalize(&received, proposal)
     }
@@ -110,7 +111,8 @@ fn restart_feedback() {
     assert!(
         scope
             .state()
-            .get::<ShoppingSearchState>(SHOPPING_SEARCH_STATE_FIELD)
+            .get(SHOPPING_SEARCH_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<ShoppingSearchState>(value.clone()).ok())
             .unwrap()
             .restart_feedback
             .is_empty()
@@ -126,23 +128,36 @@ fn restart_feedback() {
     );
     let search = scope
         .state()
-        .get::<ShoppingSearchState>(SHOPPING_SEARCH_STATE_FIELD)
+        .get(SHOPPING_SEARCH_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<ShoppingSearchState>(value.clone()).ok())
         .unwrap();
     assert_eq!(search.aggregation_round, 2);
     assert_eq!(search.restart_feedback, ["Include glass options"]);
-    assert_eq!(scope.state().get::<String>(RESTART_FEEDBACK_FIELD).unwrap(), "");
+    assert_eq!(
+        scope
+            .state()
+            .get(RESTART_FEEDBACK_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .unwrap(),
+        ""
+    );
     let request = scope
         .state()
-        .get::<refinement_loop_flow::DecisionRequest>(DECISION_REQUEST_STATE_FIELD)
+        .get(DECISION_REQUEST_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<refinement_loop_flow::DecisionRequest>(value.clone()).ok())
         .unwrap();
     assert!(request.user_request.contains("Include glass options"));
     assert_eq!(
-        scope.state().get::<String>(REFINEMENT_INPUT_FIELD),
-        Some(&request.user_request)
+        scope
+            .state()
+            .get(REFINEMENT_INPUT_FIELD)
+            .and_then(serde_json::Value::as_str),
+        Some(request.user_request.as_str())
     );
     let decision = scope
         .state()
-        .get::<refinement_loop_flow::DecisionState>(DECISION_STATE_FIELD)
+        .get(DECISION_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<refinement_loop_flow::DecisionState>(value.clone()).ok())
         .unwrap();
     assert_eq!(decision.ranking.candidate_ids.len(), 20);
     assert!(decision.goal.hard_constraints.is_empty());
@@ -215,7 +230,8 @@ fn usage_after_retry_and_restore() {
     let checkpoint = scope.checkpoint();
     let request = scope
         .state()
-        .get::<refinement_loop_flow::DecisionRequest>(DECISION_REQUEST_STATE_FIELD)
+        .get(DECISION_REQUEST_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<refinement_loop_flow::DecisionRequest>(value.clone()).ok())
         .unwrap()
         .clone();
     for attempt in 1..=3 {
@@ -231,8 +247,9 @@ fn usage_after_retry_and_restore() {
         assert_eq!(
             scope
                 .state()
-                .get::<refinement_loop_flow::DecisionRequest>(DECISION_REQUEST_STATE_FIELD),
-            Some(&request)
+                .get(DECISION_REQUEST_STATE_FIELD)
+                .and_then(|value| serde_json::from_value::<refinement_loop_flow::DecisionRequest>(value.clone()).ok()),
+            Some(request.clone())
         );
         assert!(scope.input_handle().input_spec().is_none());
 
@@ -289,7 +306,8 @@ fn initial_search_candidates() {
     scope.advance().unwrap();
     let request = scope
         .state()
-        .get::<DecisionRequest>(DECISION_REQUEST_STATE_FIELD)
+        .get(DECISION_REQUEST_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<DecisionRequest>(value.clone()).ok())
         .unwrap();
     assert_eq!(request.candidates.len(), 20);
     assert!(
@@ -324,7 +342,8 @@ fn failed_search_preserves_state() {
         assert_eq!(
             scope
                 .state()
-                .get::<ShoppingSearchState>(SHOPPING_SEARCH_STATE_FIELD)
+                .get(SHOPPING_SEARCH_STATE_FIELD)
+                .and_then(|value| serde_json::from_value::<ShoppingSearchState>(value.clone()).ok())
                 .unwrap()
                 .aggregation_round,
             0
@@ -366,7 +385,8 @@ fn empty_search_collects_new_search_feedback_before_entering_refinement() {
     assert_eq!(
         scope
             .state()
-            .get::<DecisionRequest>(DECISION_REQUEST_STATE_FIELD)
+            .get(DECISION_REQUEST_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<DecisionRequest>(value.clone()).ok())
             .unwrap()
             .candidates
             .len(),
@@ -382,7 +402,7 @@ fn stop_cancels_nested_input() {
         .exit("done")
         .flow(
             "loop",
-            config.flow(),
+            config.flow_from_input(),
             lyquid_flow::ExitTransitions::new()
                 .transition(RESTART_CHOICE, "done")
                 .unwrap()
@@ -401,16 +421,20 @@ fn stop_cancels_nested_input() {
         None,
     );
     let handle = scope.input_handle();
-    assert!(handle.state_snapshot().is_none());
+    let (spec, snapshot) = scope.run_until_input().unwrap().unwrap();
+    assert!(spec.field_schema(REFINEMENT_INPUT_FIELD).is_some());
+    assert!(handle.input_spec().is_some());
+    let before = scope.state().to_json();
     // Dropping an observer must not stop an execution owned elsewhere.
     drop(handle.clone());
     assert!(handle.request_stop());
     assert!(!scope.input_handle().request_stop());
     assert!(scope.advance().unwrap_err().to_string().contains("stopped"));
     assert!(handle.input_spec().is_none());
-    assert!(handle.state_snapshot().is_none());
+    assert!(Arc::ptr_eq(&handle.state_snapshot().unwrap(), &snapshot));
+    assert_eq!(scope.state().to_json(), before);
     assert!(matches!(
-        handle.submit_input(&serde_json::json!({refinement_loop_flow::CHOICE_STATE_FIELD: FINISH_CHOICE}).to_string()),
+        handle.submit_input(&serde_json::json!({REFINEMENT_INPUT_FIELD: "more options"}).to_string()),
         Err(lyquid_flow::FlowError::NoPendingInput)
     ));
     assert!(scope.trace().entries.is_empty());
@@ -428,14 +452,16 @@ fn aggregation_message() {
     scope.advance().unwrap();
     let request = scope
         .state()
-        .get::<DecisionRequest>(refinement_loop_flow::DECISION_REQUEST_STATE_FIELD)
+        .get(refinement_loop_flow::DECISION_REQUEST_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<DecisionRequest>(value.clone()).ok())
         .unwrap();
     assert!(request.user_request.contains("Required shopping relevance:"));
     assert_eq!(
         scope
             .state()
-            .get::<String>(refinement_loop_flow::REFINEMENT_INPUT_FIELD),
-        Some(&request.user_request)
+            .get(refinement_loop_flow::REFINEMENT_INPUT_FIELD)
+            .and_then(serde_json::Value::as_str),
+        Some(request.user_request.as_str())
     );
     assert_eq!(scope.current_step().0, REFINE_CANDIDATES_STEP);
 }

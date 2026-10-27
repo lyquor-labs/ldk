@@ -1,6 +1,5 @@
 use std::fmt;
 
-use lyquid_flow::Value;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -106,29 +105,3 @@ pub struct DecisionState {
     pub ranking: CandidateRanking,
     pub question: RefinementQuestion,
 }
-
-macro_rules! impl_json_value {
-    ($type:ty) => {
-        impl Value for $type {
-            fn encode(&self) -> String {
-                serde_json::to_string(self).expect(concat!(stringify!($type), " serialization cannot fail"))
-            }
-
-            fn decode(&self, model_output: &str) -> Result<Box<dyn Value>, String> {
-                serde_json::from_str::<Self>(model_output)
-                    .map(|value| Box::new(value) as Box<dyn Value>)
-                    .map_err(|error| error.to_string())
-            }
-
-            fn clone_box(&self) -> Box<dyn Value> {
-                Box::new(self.clone())
-            }
-        }
-    };
-}
-
-impl_json_value!(DecisionRequest);
-impl_json_value!(GoalFrame);
-impl_json_value!(CandidateRanking);
-impl_json_value!(RefinementQuestion);
-impl_json_value!(DecisionState);

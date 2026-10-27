@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use lyquid_flow::{
     Flow, FlowError, InputSpec, Scope, State, StateNamespace, StateUpdates, Step, TemplateSpec, TraceSummary,
-    TurnProposal,
+    TurnProposal, Type,
 };
 
 use crate::payment::{build_requirements, settle_payment, validate_config, verify_authorization};
@@ -44,23 +44,29 @@ pub fn flow(config: PaymentConfig) -> Result<Flow, String> {
 }
 
 /// Creates the State expected by a fresh payment Scope.
+/// Payment Steps construct native enum values before serializing replacements into this Dynamic field.
 pub fn initial_state(request: PaymentRequest) -> State {
     State::builder()
         .field(
             PAYMENT_STATE_FIELD,
             "Current Circle nanopayment state",
-            PaymentState::Initialized { request },
+            Type::Dynamic,
+            serde_json::json!(PaymentState::Initialized { request }),
         )
         .build()
         .expect("the static Circle nanopay State schema must be valid")
 }
 
 /// Returns the payment state committed by a Scope running this Flow.
-pub fn payment_state(scope: &Scope) -> &PaymentState {
-    scope
-        .state()
-        .get(PAYMENT_STATE_FIELD)
-        .expect("a Circle nanopay Scope must use circle_nanopay_flow::initial_state")
+pub fn payment_state(scope: &Scope) -> PaymentState {
+    serde_json::from_value(
+        scope
+            .state()
+            .get(PAYMENT_STATE_FIELD)
+            .expect("a Circle nanopay Scope must use circle_nanopay_flow::initial_state")
+            .clone(),
+    )
+    .expect("payment State must contain a PaymentState written by the payment Steps")
 }
 
 struct RequestPaymentStep {
@@ -86,12 +92,12 @@ impl Step for RequestPaymentStep {
     fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
         let PaymentState::Initialized { request } = scope
             .state()
-            .get::<PaymentState>(PAYMENT_STATE_FIELD)
+            .get(PAYMENT_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<PaymentState>(value.clone()).ok())
             .expect("the payment State must be initialized")
         else {
             unreachable!("the request Step requires a submitted payment request")
         };
-        let request = request.clone();
         let TurnProposal::Advance { next, updates } = proposal else {
             unreachable!("a deterministic request Step always proposes an Advance")
         };
@@ -99,7 +105,10 @@ impl Step for RequestPaymentStep {
             Ok(requirements) => {
                 updates.set(
                     PAYMENT_STATE_FIELD.to_owned(),
-                    Some(Box::new(PaymentState::AwaitingAuthorization { request, requirements })),
+                    Some(serde_json::json!(PaymentState::AwaitingAuthorization {
+                        request,
+                        requirements
+                    })),
                 );
                 TraceSummary::Summary("Accepted payment request".to_owned())
             }
@@ -107,7 +116,7 @@ impl Step for RequestPaymentStep {
                 *next = Some(FAILED_EXIT.into());
                 updates.set(
                     PAYMENT_STATE_FIELD.to_owned(),
-                    Some(Box::new(PaymentState::Failed {
+                    Some(serde_json::json!(PaymentState::Failed {
                         request,
                         reason: reason.clone(),
                     })),
@@ -130,17 +139,17 @@ impl Step for AuthorizePaymentStep {
     fn input(&self, scope: &Scope) -> Option<InputSpec> {
         let state = scope
             .state()
-            .get::<PaymentState>(PAYMENT_STATE_FIELD)
+            .get(PAYMENT_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<PaymentState>(value.clone()).ok())
             .expect("the payment State must be initialized");
         let PaymentState::AwaitingAuthorization { requirements, .. } = state else {
             unreachable!("the authorization Step requires an accepted payment request")
         };
         let mut builder = InputSpec::builder();
         let input = builder
-            .field(
+            .field::<Eip3009Authorization>(
                 AUTHORIZATION_INPUT,
-                serde_json::to_string(requirements).expect("payment requirements serialization cannot fail"),
-                Eip3009Authorization::default(),
+                serde_json::to_string(&requirements).expect("payment requirements serialization cannot fail"),
             )
             .json_input();
         let submit = builder.submit("Continue");
@@ -157,18 +166,17 @@ impl Step for AuthorizePaymentStep {
 
     fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
         let authorization = scope
-            .get::<Eip3009Authorization>(StateNamespace::Input, AUTHORIZATION_INPUT)
-            .expect("the authorization Step runs only after receiving its declared input")
-            .clone();
+            .get(StateNamespace::Input, AUTHORIZATION_INPUT)
+            .and_then(|value| serde_json::from_value::<Eip3009Authorization>(value.clone()).ok())
+            .expect("the authorization Step runs only after receiving its declared input");
         let PaymentState::AwaitingAuthorization { request, requirements } = scope
             .state()
-            .get::<PaymentState>(PAYMENT_STATE_FIELD)
+            .get(PAYMENT_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<PaymentState>(value.clone()).ok())
             .expect("the payment State must be initialized")
         else {
             unreachable!("the authorization Step requires an accepted payment request")
         };
-        let request = request.clone();
-        let requirements = requirements.clone();
         let TurnProposal::Advance { next, updates } = proposal else {
             unreachable!("a deterministic authorization Step always proposes an Advance")
         };
@@ -177,7 +185,7 @@ impl Step for AuthorizePaymentStep {
                 Ok(()) => {
                     updates.set(
                         PAYMENT_STATE_FIELD.to_owned(),
-                        Some(Box::new(PaymentState::Authorized {
+                        Some(serde_json::json!(PaymentState::Authorized {
                             request,
                             requirements,
                             authorization,
@@ -189,7 +197,7 @@ impl Step for AuthorizePaymentStep {
                     *next = Some(FAILED_EXIT.into());
                     updates.set(
                         PAYMENT_STATE_FIELD.to_owned(),
-                        Some(Box::new(PaymentState::Failed {
+                        Some(serde_json::json!(PaymentState::Failed {
                             request,
                             reason: reason.clone(),
                         })),
@@ -228,13 +236,12 @@ impl Step for SettlePaymentStep {
             authorization,
         } = scope
             .state()
-            .get::<PaymentState>(PAYMENT_STATE_FIELD)
+            .get(PAYMENT_STATE_FIELD)
+            .and_then(|value| serde_json::from_value::<PaymentState>(value.clone()).ok())
             .expect("the payment State must be initialized")
         else {
             unreachable!("the settlement Step requires a verified authorization")
         };
-        let request = request.clone();
-        let authorization = authorization.clone();
         let TurnProposal::Advance { next, updates } = proposal else {
             unreachable!("a deterministic settlement Step always proposes an Advance")
         };
@@ -243,7 +250,7 @@ impl Step for SettlePaymentStep {
                 let transaction = receipt.transaction.clone();
                 updates.set(
                     PAYMENT_STATE_FIELD.to_owned(),
-                    Some(Box::new(PaymentState::Succeeded(receipt))),
+                    Some(serde_json::json!(PaymentState::Succeeded(receipt))),
                 );
                 TraceSummary::Summary(format!("Settled payment in transaction {transaction}"))
             }
@@ -251,7 +258,7 @@ impl Step for SettlePaymentStep {
                 *next = Some(FAILED_EXIT.into());
                 updates.set(
                     PAYMENT_STATE_FIELD.to_owned(),
-                    Some(Box::new(PaymentState::Failed {
+                    Some(serde_json::json!(PaymentState::Failed {
                         request,
                         reason: reason.clone(),
                     })),

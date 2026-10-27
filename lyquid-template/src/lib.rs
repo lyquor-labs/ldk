@@ -59,8 +59,10 @@ mod tests {
     use super::*;
 
     #[lyquid_test::test]
-    fn allocates_a_guest_string() {
-        let greeting = String::from("hello");
-        assert_eq!(greeting.as_str(), "hello");
+    fn starts_with_empty_network_state() {
+        use lyquid::runtime::internal::StateAccessor;
+        let state = __lyquid::NetworkState::new().unwrap();
+        assert!(state.greeting.is_empty());
+        assert_eq!(*state.greet_count, 0);
     }
 }

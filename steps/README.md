@@ -1,8 +1,8 @@
 # Building Steps
 
-Use [StructuredStepBuilder](../lyquid-structured-step/README.md) to configure your own Steps from an optional `InputSpec`,
-an optional `ModelTemplate`, ordered actions, and data bindings. Compose those Steps into
-[Flows](../flows/README.md).
+Implement the native `Step` contract for input, model work, finalization and summaries. Use
+[StructuredSpec](../lyquid-structured-builder/README.md) to add declarative State updates and next-Step
+selection, then compose the Steps into [Flows](../flows/README.md).
 
 The LDK's focus is easy Step and Flow configuration, supported by reusable actions. A large catalog of prebuilt
 Steps and Flows is not a product goal. Domain examples can keep contracts specific to their applications.

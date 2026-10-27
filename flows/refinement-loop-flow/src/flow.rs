@@ -2,7 +2,7 @@ use lyquid_flow::{
     Flow, FlowError, InputSpec, Scope, State, StateBuilder, StateNamespace, StateUpdates, Step, TemplateSpec,
     TraceSummary, TurnProposal,
 };
-use lyquid_structured_step::{StructuredStepBuilder, ValueSource};
+use lyquid_structured_builder::{NextCase, NextStep, StructuredSpec, ValueSource};
 use refinement_step::{DECISION_STATE_FIELD, DecisionRequest, DecisionState, REFINEMENT_INPUT_FIELD};
 
 pub(crate) const INPUT_STEP: &str = "input";
@@ -48,19 +48,20 @@ impl RefinementLoopConfig {
     ///
     /// IDs and labels must be nonblank. IDs must be unique and cannot collide with the internal
     /// `input`, `refine`, or `choose` Step IDs. An empty list is equivalent to [`Self::default`].
-    pub fn new(exits: Vec<ExitChoice>) -> Result<Self, FlowError> {
+    pub fn new(exits: Vec<ExitChoice>) -> Result<Self, lyquid_flow::BuildError> {
         for (index, exit) in exits.iter().enumerate() {
             if exit.id.trim().is_empty() || exit.label.trim().is_empty() {
-                return Err(FlowError::Execution("exit IDs and labels must not be empty".to_owned()));
+                return Err(lyquid_flow::BuildError("exit IDs and labels must not be empty".into()));
             }
             if [INPUT_STEP, REFINE_STEP, CHOICE_STEP].contains(&exit.id.as_str()) {
-                return Err(FlowError::Execution(format!(
-                    "exit ID {:?} is reserved by the loop",
-                    exit.id
-                )));
+                return Err(lyquid_flow::BuildError(
+                    format!("exit ID {:?} is reserved by the loop", exit.id).into(),
+                ));
             }
             if exits[..index].iter().any(|other| other.id == exit.id) {
-                return Err(FlowError::Execution(format!("duplicate exit ID {:?}", exit.id)));
+                return Err(lyquid_flow::BuildError(
+                    format!("duplicate exit ID {:?}", exit.id).into(),
+                ));
             }
         }
         Ok(Self {
@@ -84,7 +85,9 @@ impl RefinementLoopConfig {
     }
 
     /// Adds refinement State and, only for a loop with exits, a committed choice field.
-    pub fn add_state_fields(&self, builder: StateBuilder, request: DecisionRequest) -> Result<StateBuilder, String> {
+    pub fn add_state_fields(
+        &self, builder: StateBuilder, request: DecisionRequest,
+    ) -> Result<StateBuilder, lyquid_flow::BuildError> {
         let builder = refinement_step::add_state_fields(builder, request)?;
         Ok(if self.exits.is_empty() {
             builder
@@ -92,12 +95,13 @@ impl RefinementLoopConfig {
             builder.field(
                 CHOICE_STATE_FIELD,
                 "User-selected loop action; never model-owned",
-                String::new(),
+                lyquid_flow::Type::String,
+                serde_json::json!(""),
             )
         })
     }
 
-    pub fn initial_state(&self, request: DecisionRequest) -> Result<State, String> {
+    pub fn initial_state(&self, request: DecisionRequest) -> Result<State, lyquid_flow::BuildError> {
         self.add_state_fields(State::builder(), request)?.build()
     }
 
@@ -159,37 +163,62 @@ impl RefinementLoopConfig {
 }
 
 pub(crate) fn input_step(nonblank: bool) -> impl Step {
-    StructuredStepBuilder::new()
-        .description("Collect a text message")
-        .with_input_factory(move |scope| {
-            let mut input = InputSpec::builder();
-            let field = input.field(REFINEMENT_INPUT_FIELD, refinement_prompt(scope), String::new());
-            let field = if nonblank { field.non_blank() } else { field }.text_input();
-            let submit = input.submit("Send");
-            let layout = input.ui().column(vec![field, submit]);
-            input.finish(layout).expect("valid refinement text input")
+    StructuredSpec::builder()
+        .state_updates(vec![(
+            REFINEMENT_INPUT_FIELD.into(),
+            ValueSource::reference(StateNamespace::Input, REFINEMENT_INPUT_FIELD),
+        )])
+        .next(NextStep {
+            steps: vec![NextCase {
+                next: Some(REFINE_STEP.into()),
+                description: "Continue to refinement".into(),
+            }],
         })
-        .update_from(
-            REFINEMENT_INPUT_FIELD,
-            ValueSource::Input {
-                name: REFINEMENT_INPUT_FIELD.into(),
-            },
-        )
-        .next(REFINE_STEP)
-        .summary("Received a text message")
         .build()
+        .with(RefinementTextInputStep { nonblank })
         .expect("valid refinement input wiring")
+}
+
+struct RefinementTextInputStep {
+    nonblank: bool,
+}
+
+impl Step for RefinementTextInputStep {
+    fn description(&self, _: bool) -> String {
+        "Collect a text message".into()
+    }
+
+    fn input(&self, scope: &Scope) -> Option<InputSpec> {
+        let mut input = InputSpec::builder();
+        let field = input.field::<String>(REFINEMENT_INPUT_FIELD, refinement_prompt(scope));
+        let field = if self.nonblank { field.non_blank() } else { field }.text_input();
+        let submit = input.submit("Send");
+        let layout = input.ui().column(vec![field, submit]);
+        Some(input.finish(layout).expect("valid refinement text input"))
+    }
+
+    fn model_template(&self, _: &Scope) -> TemplateSpec {
+        TemplateSpec::Skip(TurnProposal::Advance {
+            next: None,
+            updates: StateUpdates::default(),
+        })
+    }
+
+    fn finalize(&self, _: &Scope, _: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+        Ok(TraceSummary::Summary("Received a text message".into()))
+    }
 }
 
 fn refinement_prompt(scope: &Scope) -> String {
     let decision = scope
         .state()
-        .get::<DecisionState>(DECISION_STATE_FIELD)
+        .get(DECISION_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
         .expect("the refinement Flow requires its decision State");
     if decision.question.prompt.trim().is_empty() {
         "What would you like to change?".to_owned()
     } else {
-        decision.question.prompt.clone()
+        decision.question.prompt
     }
 }
 
@@ -219,11 +248,11 @@ impl Step for RefinementInputStep {
         let choices = self.choices(scope);
         let mut builder = InputSpec::builder();
         builder
-            .field(CHOICE_STATE_FIELD, "Action", String::new())
+            .field::<String>(CHOICE_STATE_FIELD, "Action")
             .choices(choices.iter().map(|choice| (choice.id.clone(), choice.label.clone())));
         let mut content = vec![builder.ui().text(refinement_prompt(scope))];
         let feedback = builder
-            .field(REFINEMENT_INPUT_FIELD, "Feedback", String::new())
+            .field::<String>(REFINEMENT_INPUT_FIELD, "Feedback")
             .required_when(CHOICE_STATE_FIELD, [CONTINUE_CHOICE]);
         let feedback = if self.config.nonblank {
             feedback.non_blank_when(CHOICE_STATE_FIELD, [CONTINUE_CHOICE])
@@ -254,20 +283,22 @@ impl Step for RefinementInputStep {
             ));
         };
         let choice = scope
-            .get::<String>(StateNamespace::Input, CHOICE_STATE_FIELD)
+            .get(StateNamespace::Input, CHOICE_STATE_FIELD)
+            .and_then(serde_json::Value::as_str)
             .and_then(|id| self.choices(scope).into_iter().find(|choice| choice.id == *id))
             .ok_or_else(|| FlowError::Execution("invalid refinement action".into()))?;
         let mut accepted = StateUpdates::default();
         if choice.id == CONTINUE_CHOICE {
             let feedback = scope
-                .get::<String>(StateNamespace::Input, REFINEMENT_INPUT_FIELD)
+                .get(StateNamespace::Input, REFINEMENT_INPUT_FIELD)
+                .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| FlowError::Execution("missing refinement feedback".into()))?;
             if self.config.nonblank && feedback.trim().is_empty() {
                 return Err(FlowError::Execution("refinement feedback must not be blank".into()));
             }
-            accepted.set(REFINEMENT_INPUT_FIELD.into(), Some(Box::new(feedback.clone())));
+            accepted.set(REFINEMENT_INPUT_FIELD.into(), Some(serde_json::json!(feedback)));
         }
-        accepted.set(CHOICE_STATE_FIELD.into(), Some(Box::new(choice.id.clone())));
+        accepted.set(CHOICE_STATE_FIELD.into(), Some(serde_json::json!(choice.id)));
         *next = Some(if choice.id == CONTINUE_CHOICE {
             REFINE_STEP.into()
         } else {

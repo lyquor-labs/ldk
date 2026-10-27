@@ -2,10 +2,10 @@
 
 use lyquid_flow::InputSpec;
 
-/// Build the native form with String decoders for Rust authoring.
-pub fn input_spec() -> Result<InputSpec, String> {
+/// Build the form with a String schema for its message.
+pub fn input_spec() -> Result<InputSpec, lyquid_flow::Diagnostics> {
     let mut input = InputSpec::builder();
-    let field = input.field("message", "Your message", String::new()).text_input();
+    let field = input.field::<String>("message", "Your message").text_input();
     let submit = input.submit("Send");
     let layout = input.ui().column(vec![field, submit]);
     input.finish(layout)

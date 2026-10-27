@@ -27,27 +27,35 @@ pub(super) struct ShoppingResult {
 fn shopping_result(scope: &Scope) -> ShoppingResult {
     let state = scope.state();
     let catalog = state
-        .get::<ProductCatalog>(CATALOG_STATE_FIELD)
+        .get(CATALOG_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<ProductCatalog>(value.clone()).ok())
         .expect("shopping catalog");
     let decision = state
-        .get::<DecisionState>(DECISION_STATE_FIELD)
+        .get(DECISION_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<DecisionState>(value.clone()).ok())
         .expect("shopping decision");
     let search = state
-        .get::<ShoppingSearchState>(SHOPPING_SEARCH_STATE_FIELD)
+        .get(SHOPPING_SEARCH_STATE_FIELD)
+        .and_then(|value| serde_json::from_value::<ShoppingSearchState>(value.clone()).ok())
         .expect("shopping search");
     ShoppingResult {
         request: state
-            .get::<String>(SHOPPING_REQUEST_STATE_FIELD)
+            .get(SHOPPING_REQUEST_STATE_FIELD)
+            .and_then(serde_json::Value::as_str)
             .expect("shopping request")
-            .clone(),
-        hint: decision.question.prompt.clone(),
-        hard_constraints: decision.goal.hard_constraints.clone(),
-        soft_preferences: decision.goal.soft_preferences.clone(),
+            .to_owned(),
+        hint: decision.question.prompt,
+        hard_constraints: decision.goal.hard_constraints,
+        soft_preferences: decision.goal.soft_preferences,
         aggregation_round: search.aggregation_round,
-        restart_feedback: search.restart_feedback.clone(),
-        feedback: state.get::<String>(REFINEMENT_INPUT_FIELD).cloned().unwrap_or_default(),
-        search_summary: catalog.search_summary.clone(),
-        retrieved_sources: catalog.retrieved_sources.clone(),
+        restart_feedback: search.restart_feedback,
+        feedback: state
+            .get(REFINEMENT_INPUT_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_default(),
+        search_summary: catalog.search_summary,
+        retrieved_sources: catalog.retrieved_sources,
         candidates: decision
             .ranking
             .candidate_ids
@@ -86,7 +94,7 @@ pub(super) fn shopping_view(scope: &Scope) -> Result<ViewSpec, FlowError> {
     content.push(ui.row(products));
     content.push(ui.text(&result.hint));
     ui.data("shopping", &result);
-    ViewSpec::finish(&ui, ui.column(content)).map_err(FlowError::Execution)
+    ViewSpec::finish(&ui, ui.column(content)).map_err(FlowError::from)
 }
 
 /// Save recommendation pages; intermediate text prompts do not become history nodes.
