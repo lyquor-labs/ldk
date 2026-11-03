@@ -4,7 +4,7 @@ use lyquid_flow::{
     ExitTransitions, Flow, FlowError, InputSpec, Scope, State, StateNamespace, StateUpdates, Step, TemplateSpec,
     TraceMode, TraceSummary, TurnProposal,
 };
-use lyquid_structured_builder::{NextCase, NextStep, StructuredSpec, ValueSource};
+use lyquid_structured_builder::{NextStep, StructuredSpec, ValueSpec};
 use refinement_loop_flow::{CandidateRanking, DecisionRequest, DecisionState, ExitChoice, RefinementLoopConfig};
 
 use crate::{ProductCatalog, SearchContext, ShoppingSearchState};
@@ -88,14 +88,13 @@ fn restart_feedback_step() -> impl Step {
     StructuredSpec::builder()
         .state_updates(vec![(
             RESTART_FEEDBACK_FIELD.into(),
-            ValueSource::reference(StateNamespace::Input, RESTART_FEEDBACK_FIELD),
+            ValueSpec::reference(StateNamespace::Input, RESTART_FEEDBACK_FIELD),
         )])
-        .next(NextStep {
-            steps: vec![NextCase {
-                next: Some(AGGREGATE_CANDIDATES_STEP.into()),
-                description: "Retrieve new candidates".into(),
-            }],
-        })
+        .next(vec![NextStep {
+            next: Some(AGGREGATE_CANDIDATES_STEP.into()),
+            description: "Retrieve new candidates".into(),
+            inputs: vec![],
+        }])
         .build()
         .with(TextInputStep(text_input(
             RESTART_FEEDBACK_FIELD,
@@ -120,14 +119,13 @@ fn build_flow(aggregation: impl Step, refinement: Flow, feedback: impl Step) -> 
             StructuredSpec::builder()
                 .state_updates(vec![(
                     SHOPPING_REQUEST_STATE_FIELD.into(),
-                    ValueSource::reference(StateNamespace::Input, SHOPPING_REQUEST_STATE_FIELD),
+                    ValueSpec::reference(StateNamespace::Input, SHOPPING_REQUEST_STATE_FIELD),
                 )])
-                .next(NextStep {
-                    steps: vec![NextCase {
-                        next: Some(AGGREGATE_CANDIDATES_STEP.into()),
-                        description: "Retrieve shopping candidates".into(),
-                    }],
-                })
+                .next(vec![NextStep {
+                    next: Some(AGGREGATE_CANDIDATES_STEP.into()),
+                    description: "Retrieve shopping candidates".into(),
+                    inputs: vec![],
+                }])
                 .build()
                 .with(TextInputStep(text_input(
                     SHOPPING_REQUEST_STATE_FIELD,

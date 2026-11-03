@@ -11,7 +11,7 @@ use lyquid_flow::{
     FlowError, InputSpec, Scope, StateNamespace, StateUpdates, Step, TemplateSpec,
     TraceSummary, TurnProposal,
 };
-use lyquid_structured_builder::{StructuredSpec, ValueSource};
+use lyquid_structured_builder::{StructuredSpec, ValueSpec};
 
 struct ChoiceInput(InputSpec);
 
@@ -50,7 +50,7 @@ let input: InputSpec = serde_json::from_str(include_str!("input.json"))?;
 let step = StructuredSpec::builder()
     .state_updates(vec![(
         "choice".into(),
-        ValueSource::reference(StateNamespace::Input, "choice"),
+        ValueSpec::reference(StateNamespace::Input, "choice"),
     )])
     .build()
     .with(ChoiceInput(input))?;

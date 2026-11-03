@@ -2,7 +2,7 @@ use lyquid_flow::{
     Flow, FlowError, InputSpec, Scope, State, StateBuilder, StateNamespace, StateUpdates, Step, TemplateSpec,
     TraceSummary, TurnProposal,
 };
-use lyquid_structured_builder::{NextCase, NextStep, StructuredSpec, ValueSource};
+use lyquid_structured_builder::{NextStep, StructuredSpec, ValueSpec};
 use refinement_step::{DECISION_STATE_FIELD, DecisionRequest, DecisionState, REFINEMENT_INPUT_FIELD};
 
 pub(crate) const INPUT_STEP: &str = "input";
@@ -166,14 +166,13 @@ pub(crate) fn input_step(nonblank: bool) -> impl Step {
     StructuredSpec::builder()
         .state_updates(vec![(
             REFINEMENT_INPUT_FIELD.into(),
-            ValueSource::reference(StateNamespace::Input, REFINEMENT_INPUT_FIELD),
+            ValueSpec::reference(StateNamespace::Input, REFINEMENT_INPUT_FIELD),
         )])
-        .next(NextStep {
-            steps: vec![NextCase {
-                next: Some(REFINE_STEP.into()),
-                description: "Continue to refinement".into(),
-            }],
-        })
+        .next(vec![NextStep {
+            next: Some(REFINE_STEP.into()),
+            description: "Continue to refinement".into(),
+            inputs: vec![],
+        }])
         .build()
         .with(RefinementTextInputStep { nonblank })
         .expect("valid refinement input wiring")

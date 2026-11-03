@@ -43,6 +43,36 @@ before sending a model request. The goal and every criterion render once with th
 `state`, `input`, `trace`, and `step`. The hook must be pure, and errors reject the turn before the model
 or finalization runs. Structured wrappers delegate this hook to the original Step.
 
+## Mounting child Flows
+
+`Flow` implements `Step` and can be mounted with `FlowBuilder::flow`.
+To supply another Step for the mount, construct it from a clone of the child Flow.
+`FlowBuilder::flow_with` configures the mount's exit transitions and Trace mode, then registers
+the Flow and Step under the same local ID:
+
+```rust
+use lyquid_flow::{ExitTransitions, Flow, TraceMode};
+
+let parent = Flow::builder("parent")
+    .entry("child")
+    .exit("done")
+    .flow_with(
+        "child",
+        child,
+        ExitTransitions::new().transition("done", "done")?,
+        TraceMode::Expanded,
+        step,
+    )
+    .build()?;
+```
+
+The supplied Step's `input` and `model_template` run before the child starts, and its `finalize`
+runs after the child completes. Its `view` presents results unless the parent defines a Flow-level view.
+The Step's accepted input stays in the parent Scope for finalization and retries, and is cleared on commit.
+
+The child must declare the mapped `done` exit. The Step must preserve the Flow's entry proposal
+and delegate finalization to the Flow.
+
 ## Error boundaries
 
 Flow, structured Step, and initial State assembly return `BuildError(Diagnostics)`. Shared input/UI
@@ -55,6 +85,9 @@ Runtime operations return `FlowError`. Its `Execution(Diagnostics)` variant cove
 generation, internal validation, application callbacks, and transitions. `Model` retains provider
 errors. `InputInvalid`, `NoPendingInput`, and `InputClosed` retain input submission semantics.
 The caller of a shared validator chooses whether its diagnostics represent assembly or execution failure.
+
+A Flow registered through `.step(id, flow)` fails during execution without committing the turn;
+use `.flow(...)` to mount its child graph.
 
 `check_json_schema` returns a `Diagnostic`; `validate_json_schema` returns an `InputError` with a
 value path and message. During execution, internal schema failures become execution diagnostics.

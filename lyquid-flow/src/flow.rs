@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
@@ -101,6 +100,8 @@ pub struct FlowBuilder {
     exits: HashSet<StepId>,
     /// Local Step implementations retained until their IDs and child wiring are validated.
     steps: Vec<(StepId, Arc<dyn Step>)>,
+    /// Child Flow graphs indexed by the same local IDs as their Step implementations.
+    flows: HashMap<StepId, Arc<Flow>>,
     /// Fixed manifests captured by explicit tool registrations.
     tool_manifests: HashMap<StepId, ToolManifest>,
 }
@@ -115,7 +116,7 @@ impl FlowBuilder {
     }
 
     /// Selects application results from the active Scope's committed State, including child Flows.
-    /// This overrides leaf Step views for this composition; it never receives pending input.
+    /// This overrides Step views for this composition; it never receives pending input.
     pub fn view(mut self, view: fn(&Scope) -> Result<crate::ViewSpec, FlowError>) -> Self {
         self.view = Some(view);
         self
@@ -141,7 +142,8 @@ impl FlowBuilder {
 
     /// Registers one leaf Step implementation under its local stable ID.
     ///
-    /// Register child Flows with [`FlowBuilder::flow`] so their mount configuration is retained.
+    /// Use [`Self::flow`] or [`Self::flow_with`] to mount a child Flow.
+    /// Passing a Flow here returns an execution error without committing the turn.
     pub fn step<S>(mut self, id: impl Into<StepId>, step: S) -> Self
     where
         S: Step + 'static,
@@ -167,11 +169,38 @@ impl FlowBuilder {
         mut self, id: impl Into<StepId>, flow: impl Into<Arc<Flow>>, exit_transitions: ExitTransitions,
         trace_mode: TraceMode,
     ) -> Self {
+        let id = id.into();
+        let flow = self.mount_flow(id.clone(), flow, exit_transitions, trace_mode);
+        self.steps.push((id, flow));
+        self
+    }
+
+    /// Mounts a child Flow with the Step used by the parent.
+    ///
+    /// The mount owns its exit transitions and Trace mode. Construct the Step from the same
+    /// child graph; its Flow finalizer reads this configuration from the running child Scope.
+    /// The Step must preserve the Flow's entry proposal and delegate finalization to it.
+    /// Its input and model template are evaluated before the child starts;
+    /// its finalizer runs after the child completes.
+    /// Accepted input remains available to the finalizer and its retries until the parent commits.
+    pub fn flow_with<S: Step + 'static>(
+        mut self, id: impl Into<StepId>, flow: impl Into<Arc<Flow>>, exit_transitions: ExitTransitions,
+        trace_mode: TraceMode, step: S,
+    ) -> Self {
+        let id = id.into();
+        self.mount_flow(id.clone(), flow, exit_transitions, trace_mode);
+        self.step(id, step)
+    }
+
+    fn mount_flow(
+        &mut self, id: StepId, flow: impl Into<Arc<Flow>>, exit_transitions: ExitTransitions, trace_mode: TraceMode,
+    ) -> Arc<Flow> {
         let mut flow = flow.into().as_ref().clone();
         flow.exit_transitions = exit_transitions;
         flow.trace_mode = trace_mode;
-        self.steps.push((id.into(), Arc::new(flow)));
-        self
+        let flow = Arc::new(flow);
+        self.flows.insert(id, Arc::clone(&flow));
+        flow
     }
 
     /// Validates and freezes this reusable Flow graph.
@@ -192,7 +221,7 @@ impl FlowBuilder {
         }
         validate_entry(entry, &steps)?;
         validate_exit_boundaries(&self.exits, &steps)?;
-        validate_child_exit_transitions(&steps)?;
+        validate_child_exit_transitions(&self.flows)?;
 
         let flow = Flow {
             view: self.view,
@@ -202,6 +231,7 @@ impl FlowBuilder {
             entry: entry.clone(),
             exits: self.exits,
             steps,
+            flows: self.flows,
             tool_manifests: self.tool_manifests,
             exit_transitions: ExitTransitions::new(),
             trace_mode: TraceMode::Expanded,
@@ -211,12 +241,14 @@ impl FlowBuilder {
     }
 }
 
-/// A reusable workflow graph that also implements [`Step`] when mounted with [`FlowBuilder::flow`].
+/// A reusable workflow graph that also implements [`Step`] when mounted with [`FlowBuilder::flow`]
+/// or [`FlowBuilder::flow_with`].
 ///
-/// Mounting shallow-clones the graph and attaches that parent's exit mapping and Trace mode to the
-/// clone, leaving the original Flow reusable. A parent executes the configured clone as one Step by
-/// forking a child [`crate::Scope`]. The child inherits an immutable snapshot of its parent Scope
-/// while keeping local State versions and Trace entries until it exits. The parent then
+/// Mounting shallow-clones the graph and configures that mount's exit mapping and Trace mode.
+/// [`FlowBuilder::flow_with`] registers a caller-supplied Step for that mount.
+/// A parent executes the child graph by forking a child [`crate::Scope`].
+/// The child inherits an immutable snapshot of its parent Scope while keeping local State versions
+/// and Trace entries until it exits. The parent then
 /// applies the child's accumulated State updates and follows the configured exit transition.
 #[derive(Clone)]
 pub struct Flow {
@@ -235,6 +267,8 @@ pub struct Flow {
     exits: HashSet<StepId>,
     /// Validated local Step implementations indexed by stable ID.
     steps: HashMap<StepId, Arc<dyn Step>>,
+    /// Child graphs indexed by the same local IDs as their Step implementations.
+    flows: HashMap<StepId, Arc<Self>>,
     /// Manifests exposed by Steps registered through [`FlowBuilder::tool_step`].
     tool_manifests: HashMap<StepId, ToolManifest>,
     /// Parent-local targets configured when this Flow is mounted as a Step.
@@ -254,6 +288,7 @@ impl Flow {
             entries: Vec::new(),
             exits: new_hashset(),
             steps: Vec::new(),
+            flows: new_hashmap(),
             tool_manifests: new_hashmap(),
         }
     }
@@ -287,9 +322,7 @@ impl Flow {
     }
 
     pub(super) fn child_flow(&self, id: &StepId) -> Option<Arc<Self>> {
-        let step = Arc::clone(self.steps.get(id)?);
-        let step: Arc<dyn Any + Send + Sync> = step;
-        step.downcast().ok()
+        self.flows.get(id).map(Arc::clone)
     }
 
     pub(super) fn exits(&self) -> &HashSet<StepId> {
@@ -297,11 +330,7 @@ impl Flow {
     }
 
     fn validate_exit_transition_targets(&self) -> Result<(), BuildError> {
-        for (child, flow) in self.steps.iter().filter_map(|(id, step)| {
-            (step.as_ref() as &dyn Any)
-                .downcast_ref::<Self>()
-                .map(|flow| (id, flow))
-        }) {
+        for (child, flow) in &self.flows {
             for (exit, next) in &flow.exit_transitions.transitions {
                 if !self.steps.contains_key(next) && !self.exits.contains(next) {
                     return Err(Diagnostic::new(
@@ -321,6 +350,12 @@ impl Step for Flow {
         None
     }
 
+    fn view(&self, scope: &Scope) -> Result<crate::ViewSpec, FlowError> {
+        scope
+            .running_child()
+            .map_or_else(|| Ok(crate::ViewSpec::default()), Scope::view)
+    }
+
     fn description(&self, _concise: bool) -> String {
         if self.description.is_empty() {
             "Run child Flow".to_owned()
@@ -337,21 +372,22 @@ impl Step for Flow {
     }
 
     fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+        let child = scope
+            .running_child()
+            .ok_or_else(|| FlowError::from("child Flow must be mounted with FlowBuilder::flow"))?;
         let TurnProposal::Advance { next, updates } = proposal else {
             panic!("a child Flow completes by advancing through one of its declared exit transitions");
         };
         let exit = next
             .as_ref()
             .expect("a child Flow completes through one of its declared exit transitions");
-        let target = self
+        let mounted = child.flow();
+        let target = mounted
             .exit_transitions
             .target(exit)
             .expect("all mounted Flow exits have validated parent transitions")
             .clone();
-        let child = scope
-            .running_child()
-            .expect("a child Flow is finalized only after its child Scope completes");
-        let summary = match &self.trace_mode {
+        let summary = match &mounted.trace_mode {
             TraceMode::Expanded => TraceSummary::SubFlow(child.trace().clone()),
             TraceMode::Collapsed(summary) => TraceSummary::Summary(summary.clone()),
         };
@@ -376,12 +412,8 @@ fn validate_exit_boundaries(exits: &HashSet<StepId>, steps: &HashMap<StepId, Arc
     Ok(())
 }
 
-fn validate_child_exit_transitions(steps: &HashMap<StepId, Arc<dyn Step>>) -> Result<(), BuildError> {
-    for (id, flow) in steps.iter().filter_map(|(id, step)| {
-        (step.as_ref() as &dyn Any)
-            .downcast_ref::<Flow>()
-            .map(|flow| (id, flow))
-    }) {
+fn validate_child_exit_transitions(flows: &HashMap<StepId, Arc<Flow>>) -> Result<(), BuildError> {
+    for (id, flow) in flows {
         validate_exit_transitions(id, flow, &flow.exit_transitions)?;
     }
     Ok(())
@@ -405,7 +437,10 @@ fn validate_exit_transitions(id: &StepId, flow: &Flow, exit_transitions: &ExitTr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AutoCheckpointConfig, State, Type, ViewSpec};
+    use lyquid::prelude::Mutex;
     use lyquid_test::test;
+    use serde_json::json;
 
     struct TestStep;
 
@@ -436,6 +471,145 @@ mod tests {
             builder = builder.exit(*exit);
         }
         builder.build().expect("test child Flow should be valid")
+    }
+
+    struct ObservedStep<S> {
+        inner: S,
+        name: &'static str,
+        calls: Arc<Mutex<Vec<String>>>,
+        exit: Option<StepId>,
+        fail_once: Mutex<bool>,
+    }
+
+    impl<S: Step> Step for ObservedStep<S> {
+        fn description(&self, concise: bool) -> String {
+            self.inner.description(concise)
+        }
+
+        fn input(&self, scope: &Scope) -> Option<InputSpec> {
+            self.calls.lock().push(format!("{}.input", self.name));
+            self.inner.input(scope)
+        }
+
+        fn model_template(&self, scope: &Scope) -> TemplateSpec {
+            self.calls.lock().push(format!("{}.template", self.name));
+            self.inner.model_template(scope)
+        }
+
+        fn model_context(&self, _scope: &Scope) -> Result<serde_json::Value, FlowError> {
+            panic!("these Steps skip the model")
+        }
+
+        fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+            self.calls.lock().push(format!("{}.finalize", self.name));
+            let summary = self.inner.finalize(scope, proposal)?;
+            let TurnProposal::Advance { next, updates } = proposal else {
+                panic!("these Steps always advance")
+            };
+            if let Some(exit) = &self.exit {
+                *next = Some(exit.clone());
+            }
+            updates.set("result".into(), Some(json!(self.name)));
+            if std::mem::take(&mut *self.fail_once.lock()) {
+                return Err("finalization failed".into());
+            }
+            Ok(summary)
+        }
+
+        fn view(&self, scope: &Scope) -> Result<ViewSpec, FlowError> {
+            let inner = self.inner.view(scope)?;
+            let ui = ViewSpec::builder();
+            ui.data(
+                "result",
+                json!({
+                    "step": self.name,
+                    "state": scope.state().get("result"),
+                    "trace": scope.trace().entries.last().and_then(|entry| entry.state.get("result")),
+                    "inner": inner.ui().data(),
+                }),
+            );
+            Ok(ViewSpec::finish(&ui, ui.text("Result"))?)
+        }
+    }
+
+    #[test]
+    fn mounted_step_hooks_and_finalizer_retry() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let child = Flow::builder("child")
+            .entry("inside")
+            .exit("done")
+            .step(
+                "inside",
+                ObservedStep {
+                    inner: TestStep,
+                    name: "child",
+                    calls: Arc::clone(&calls),
+                    exit: Some("done".into()),
+                    fail_once: Mutex::new(false),
+                },
+            )
+            .build()
+            .unwrap();
+        let step = ObservedStep {
+            inner: child.clone(),
+            name: "parent",
+            calls: Arc::clone(&calls),
+            exit: None,
+            fail_once: Mutex::new(true),
+        };
+        let parent = Flow::builder("parent")
+            .entry("child")
+            .exit("finished")
+            .flow_with(
+                "child",
+                child,
+                ExitTransitions::new().transition("done", "finished").unwrap(),
+                TraceMode::Collapsed("mounted child".into()),
+                step,
+            )
+            .build()
+            .unwrap();
+        let state = State::builder()
+            .field("result", "Result", Type::String, json!(""))
+            .build()
+            .unwrap();
+        let mut scope = Scope::new(Arc::new(parent), state, AutoCheckpointConfig::Disabled, None);
+
+        assert!(scope.advance().is_err());
+        assert_eq!(
+            *calls.lock(),
+            [
+                "parent.input",
+                "parent.template",
+                "child.input",
+                "child.template",
+                "child.finalize",
+                "parent.finalize",
+            ]
+        );
+        assert_eq!(scope.state().get("result"), Some(&json!("")));
+        assert!(scope.trace().entries.is_empty());
+        assert!(!scope.is_finished());
+        let waiting = scope.view().unwrap();
+        assert_eq!(waiting.ui().data()["result"]["step"], "parent");
+        assert_eq!(waiting.ui().data()["result"]["state"], "");
+        assert_eq!(waiting.ui().data()["result"]["inner"]["result"]["state"], "child");
+
+        scope.advance().unwrap();
+        assert!(scope.is_finished());
+        assert_eq!(calls.lock().len(), 7);
+        assert_eq!(calls.lock().last().unwrap(), "parent.finalize");
+        assert_eq!(scope.state().get("result"), Some(&json!("parent")));
+        assert_eq!(scope.trace().entries.len(), 1);
+        assert!(matches!(
+            &scope.trace().entries[0].summary,
+            TraceSummary::Summary(summary) if summary == "mounted child"
+        ));
+        let completed = scope.view().unwrap();
+        assert_eq!(completed.ui().data()["result"]["step"], "parent");
+        assert_eq!(completed.ui().data()["result"]["state"], "parent");
+        assert_eq!(completed.ui().data()["result"]["trace"], "parent");
+        assert_eq!(completed.ui().data()["result"]["inner"]["result"]["state"], "child");
     }
 
     #[test]
@@ -491,6 +665,28 @@ mod tests {
             "finished"
         );
         assert!(matches!(mounted.trace_mode, TraceMode::Expanded));
+    }
+
+    #[test]
+    fn unmounted_flow_step_returns_execution_error() {
+        let parent = Flow::builder("parent")
+            .entry("child")
+            .step("child", child_with_exits("child", &["done"]))
+            .build()
+            .unwrap();
+        let state = State::builder()
+            .field("count", "Unchanged count", Type::U64, json!(1))
+            .build()
+            .unwrap();
+        let mut scope = Scope::new(Arc::new(parent), state, AutoCheckpointConfig::Disabled, None);
+
+        let error = scope.advance().unwrap_err();
+
+        assert_eq!(error.to_string(), "child Flow must be mounted with FlowBuilder::flow");
+        assert_eq!(scope.state().get("count"), Some(&json!(1)));
+        assert!(scope.trace().entries.is_empty());
+        assert_eq!(scope.current_step().0, "child");
+        assert!(!scope.is_finished());
     }
 
     #[test]

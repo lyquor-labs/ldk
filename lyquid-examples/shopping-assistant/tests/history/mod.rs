@@ -118,14 +118,13 @@ fn fixture() -> (Scope, Arc<AtomicUsize>, Arc<AtomicUsize>) {
             StructuredSpec::builder()
                 .state_updates(vec![(
                     REFINEMENT_INPUT_FIELD.into(),
-                    ValueSource::reference(StateNamespace::Input, REFINEMENT_INPUT_FIELD),
+                    ValueSpec::reference(StateNamespace::Input, REFINEMENT_INPUT_FIELD),
                 )])
-                .next(NextStep {
-                    steps: vec![NextCase {
-                        next: Some("refine".into()),
-                        description: "Continue to refinement".into(),
-                    }],
-                })
+                .next(vec![NextStep {
+                    next: Some("refine".into()),
+                    description: "Continue to refinement".into(),
+                    inputs: vec![],
+                }])
                 .build()
                 .with(TextInputStep(text_input(REFINEMENT_INPUT_FIELD, "Feedback")))
                 .unwrap(),

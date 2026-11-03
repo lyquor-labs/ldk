@@ -198,9 +198,35 @@ fn options_validate_nested_values() {
 }
 
 #[test]
-fn serializes_type_declarations() {
-    assert_eq!(
-        serde_json::to_value(Type::Mapping(Box::new(Type::Dynamic))).unwrap(),
-        json!({"kind": "mapping", "value": {"kind": "dynamic"}})
-    );
+fn serializes_and_deserializes_type_declarations() {
+    for (declaration, json) in [
+        (Type::Dynamic, json!({"kind": "dynamic"})),
+        (Type::Boolean, json!({"kind": "boolean"})),
+        (Type::U32, json!({"kind": "u32"})),
+        (Type::U64, json!({"kind": "u64"})),
+        (Type::I64, json!({"kind": "i64"})),
+        (Type::F64, json!({"kind": "f64"})),
+        (Type::String, json!({"kind": "string"})),
+        (
+            Type::Option(Box::new(Type::List(Box::new(Type::Mapping(Box::new(Type::Dynamic)))))),
+            json!({"kind": "option", "value": {"kind": "list", "value": {"kind": "mapping", "value": {"kind": "dynamic"}}}}),
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(&declaration).unwrap(), json);
+        assert_eq!(serde_json::from_value::<Type>(json).unwrap(), declaration);
+    }
+}
+
+#[test]
+fn rejects_malformed_type_declarations() {
+    for json in [
+        json!({}),
+        json!({"kind": "unknown"}),
+        json!({"kind": "list"}),
+        json!({"kind": "list", "value": null}),
+        json!({"kind": "string", "extra": true}),
+        json!({"kind": "mapping", "value": {"kind": "string", "extra": true}}),
+    ] {
+        assert!(serde_json::from_value::<Type>(json.clone()).is_err(), "{json}");
+    }
 }

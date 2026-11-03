@@ -65,10 +65,8 @@ rejected by these integer declarations. `F64` retains Serde JSON's finite numeri
 
 JSON objects use Serde JSON's default sorted-key storage.
 
-Serializing a `Type` produces its `kind`/`value` declaration for consumers such as model prompts.
-Declarations are constructed in Rust; deserialization and JSON Schema generation for declarations
-are deferred until a consumer needs them. Exporting the declared data type as a JSON Schema for
-its values is also deferred.
+`Type` supports Serde serialization and deserialization using its `kind`/`value` declaration.
+`{"kind":"list","value":{"kind":"string"}}` represents `List(String)`.
 
 `types/json_schema.rs` supplies native Rust schema generation, schema checking and JSON Schema
 validation. Input contracts use these utilities for patterns, ranges and recursive schemas.

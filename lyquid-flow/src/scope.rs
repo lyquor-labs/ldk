@@ -501,7 +501,7 @@ impl Scope {
         if let Some(child) = self.running_child() &&
             (self.trace.entries.is_empty() || child.has_committed_result())
         {
-            return child.view();
+            return self.current_step_cloned()?.view(self);
         }
         if let Some(view) = &self.completed_child_view {
             return view.clone().map_err(FlowError::from);
@@ -614,8 +614,12 @@ impl Scope {
             self.begin_step(wait_for_input)
         };
         if result.is_err() {
-            // Roll back Step-scoped State changes from the failed execution attempt.
-            self.updates = previous_updates;
+            // A running child still needs the mount's accepted input, even if this attempt first received it.
+            if self.running_child().is_some() {
+                self.updates.staging = previous_updates.staging;
+            } else {
+                self.updates = previous_updates;
+            }
         }
         result
     }
@@ -666,9 +670,8 @@ impl Scope {
 
     /// Forks and starts a child Scope with inherited State and shared runtime configuration.
     fn start_child(
-        &mut self, child_flow: Arc<Flow>, wait_for_input: bool,
+        &mut self, child_flow: Arc<Flow>, updates: StateUpdates, wait_for_input: bool,
     ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
-        let updates = std::mem::take(&mut self.updates);
         let child = self.fork_child(child_flow, updates);
         self.phase = RunPhase::RunningChild(Box::new(child));
         self.advance_child(wait_for_input)
@@ -687,7 +690,7 @@ impl Scope {
                 child.is_finished()
             };
             if finished {
-                self.updates = StateUpdates::default();
+                self.updates.staging.clear();
                 self.join_child()?;
                 return Ok(None);
             }
@@ -789,15 +792,17 @@ impl Scope {
                     "a child Flow Step must advance to its entry Step before it can run".into(),
                 ));
             };
-            updates.merge(std::mem::take(&mut self.updates));
+            updates.merge(StateUpdates {
+                staging: std::mem::take(&mut self.updates.staging),
+                ..StateUpdates::default()
+            });
             self.state().validate_updates(&updates)?;
             if next.as_ref() != Some(child_flow.entry()) {
                 return Err(FlowError::Execution(
                     format!("child Flow Step must start at its entry Step {}", child_flow.entry()).into(),
                 ));
             }
-            self.updates = updates;
-            return self.start_child(child_flow, wait_for_input);
+            return self.start_child(child_flow, updates, wait_for_input);
         }
 
         self.model_response = response;
@@ -812,7 +817,10 @@ impl Scope {
     fn commit_proposal(&mut self, proposal: TurnProposal, summary: TraceSummary) -> Result<(), FlowError> {
         match proposal {
             TurnProposal::Advance { next, mut updates } => {
-                updates.merge(std::mem::take(&mut self.updates));
+                updates.merge(StateUpdates {
+                    staging: std::mem::take(&mut self.updates.staging),
+                    ..StateUpdates::default()
+                });
                 self.state().validate_updates(&updates)?;
                 let next = self.resolve_next(&next)?;
                 self.updates = updates;
@@ -948,6 +956,10 @@ impl Scope {
         }
     }
 
+    pub(super) fn flow(&self) -> &Flow {
+        &self.flow
+    }
+
     fn running_child_mut(&mut self) -> Option<&mut Self> {
         match &mut self.phase {
             RunPhase::RunningChild(child) => Some(child.as_mut()),
@@ -1048,22 +1060,22 @@ impl Scope {
             summary,
         });
 
-        // Capture the child's own final State/Trace before replacing RunningChild. TraceMode may
-        // collapse its trace, so reconstructing a child presentation from the parent is not valid.
-        let completed_child_view = if self.flow.view.is_none() {
-            self.running_child().map(|child| {
-                child
-                    .view()
-                    .map_err(|error| crate::Diagnostic::with_source("child view", error))
-            })
+        self.state = next_state;
+        self.trace = Arc::new(next_trace);
+        self.accumulated_updates.merge(updates);
+        self.pending_input_spec = None;
+
+        // Present the committed parent through the mounted Step while its child is still available
+        // for delegation. Keep presentation errors without rejecting the committed transition.
+        self.completed_child_view = if self.flow.view.is_none() && self.running_child().is_some() {
+            Some(
+                self.current_step_cloned()
+                    .and_then(|step| step.view(self))
+                    .map_err(|error| crate::Diagnostic::with_source("child view", error)),
+            )
         } else {
             None
         };
-        self.state = next_state;
-        self.trace = Arc::new(next_trace);
-        self.completed_child_view = completed_child_view;
-        self.accumulated_updates.merge(updates);
-        self.pending_input_spec = None;
         match next {
             ResolvedTarget::Step(step) => {
                 self.current_step = step;
@@ -1226,6 +1238,146 @@ mod input_tests {
             AutoCheckpointConfig::Disabled,
             None,
         )
+    }
+
+    #[test]
+    fn mounted_flow_retains_input_until_parent_commit() {
+        struct Child {
+            input: bool,
+            executions: Arc<Mutex<usize>>,
+        }
+        impl Step for Child {
+            fn description(&self, _: bool) -> String {
+                "Child".into()
+            }
+            fn input(&self, scope: &Scope) -> Option<InputSpec> {
+                assert!(scope.get(StateNamespace::Input, "feedback").is_none());
+                self.input.then(text_spec)
+            }
+            fn model_template(&self, scope: &Scope) -> TemplateSpec {
+                *self.executions.lock() += 1;
+                assert_eq!(
+                    scope
+                        .get(StateNamespace::Input, "feedback")
+                        .and_then(serde_json::Value::as_str),
+                    self.input.then_some("child feedback"),
+                );
+                TemplateSpec::Skip(TurnProposal::Advance {
+                    next: Some("done".into()),
+                    updates: StateUpdates::default(),
+                })
+            }
+            fn finalize(&self, _: &Scope, _: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+                Ok(TraceSummary::Summary("Child completed".into()))
+            }
+        }
+        struct FeedbackFlow {
+            inner: Flow,
+            attempts: Mutex<usize>,
+        }
+        impl Step for FeedbackFlow {
+            fn description(&self, concise: bool) -> String {
+                Step::description(&self.inner, concise)
+            }
+            fn input(&self, _: &Scope) -> Option<InputSpec> {
+                Some(text_spec())
+            }
+            fn model_template(&self, scope: &Scope) -> TemplateSpec {
+                self.inner.model_template(scope)
+            }
+            fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+                let summary = self.inner.finalize(scope, proposal)?;
+                let feedback = scope
+                    .get(StateNamespace::Input, "feedback")
+                    .cloned()
+                    .expect("parent input retained");
+                let TurnProposal::Advance { next, updates } = proposal else {
+                    unreachable!()
+                };
+                updates.set("feedback".into(), Some(feedback));
+                let mut attempts = self.attempts.lock();
+                *attempts += 1;
+                if *attempts == 1 {
+                    return Err("finalizer rejected".into());
+                }
+                if *attempts == 2 {
+                    *next = Some("missing".into());
+                }
+                Ok(summary)
+            }
+        }
+
+        for child_input in [false, true] {
+            let executions = Arc::new(Mutex::new(0));
+            let child = Flow::builder("child")
+                .entry("inside")
+                .step(
+                    "inside",
+                    Child {
+                        input: child_input,
+                        executions: Arc::clone(&executions),
+                    },
+                )
+                .exit("done")
+                .build()
+                .unwrap();
+            let step = FeedbackFlow {
+                inner: child.clone(),
+                attempts: Mutex::new(0),
+            };
+            let flow = Flow::builder("parent")
+                .entry("child")
+                .exit("finished")
+                .flow_with(
+                    "child",
+                    child,
+                    crate::ExitTransitions::new().transition("done", "finished").unwrap(),
+                    crate::TraceMode::Expanded,
+                    step,
+                )
+                .build()
+                .unwrap();
+            let state = State::builder()
+                .field("feedback", "Feedback", crate::Type::String, serde_json::json!(""))
+                .build()
+                .unwrap();
+            let mut scope = Scope::new(Arc::new(flow), state, AutoCheckpointConfig::Disabled, None);
+            assert!(scope.run_until_input().unwrap().is_some());
+            scope
+                .input_handle()
+                .submit_input(r#"{"feedback":"parent feedback"}"#)
+                .unwrap();
+            if child_input {
+                assert!(scope.run_until_input().unwrap().is_some());
+                scope
+                    .input_handle()
+                    .submit_input(r#"{"feedback":"child feedback"}"#)
+                    .unwrap();
+            }
+            for expected in ["finalizer rejected", "unknown destination"] {
+                let error = scope.run_until_input().err().expect(expected);
+                assert!(
+                    error.to_string().contains(expected),
+                    "child input {child_input}: {error}"
+                );
+                assert_eq!(
+                    scope.get(StateNamespace::Input, "feedback"),
+                    Some(&serde_json::json!("parent feedback"))
+                );
+                assert_eq!(scope.state().get("feedback"), Some(&serde_json::json!("")));
+                assert!(scope.trace().entries.is_empty());
+                assert!(!scope.is_finished());
+                assert_eq!(*executions.lock(), 1);
+            }
+            assert!(scope.run_until_input().unwrap().is_none());
+            assert_eq!(
+                scope.state().get("feedback"),
+                Some(&serde_json::json!("parent feedback"))
+            );
+            assert!(scope.get(StateNamespace::Input, "feedback").is_none());
+            assert_eq!(scope.trace().entries.len(), 1);
+            assert_eq!(*executions.lock(), 1);
+        }
     }
 
     #[test]

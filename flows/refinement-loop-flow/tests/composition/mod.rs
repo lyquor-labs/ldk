@@ -7,7 +7,7 @@ use lyquid_flow::{
     AutoCheckpointConfig, ExitTransitions, Flow, FlowError, InputSpec, Scope, State, StateNamespace, StateUpdates,
     Step, TemplateSpec, TraceMode, TraceSummary, TurnProposal,
 };
-use lyquid_structured_builder::{NextCase, NextStep, StructuredSpec, ValueSource};
+use lyquid_structured_builder::{NextStep, StructuredSpec, ValueSpec};
 use lyquid_test::test;
 
 // Replace only input transport and model calls. Actual library finalizers, commits and child joins run unchanged.
@@ -560,14 +560,13 @@ fn parent_routes_custom_exits_and_collects_restart_feedback_outside_the_child() 
                     StructuredSpec::builder()
                         .state_updates(vec![(
                             APP_FEEDBACK.into(),
-                            ValueSource::reference(StateNamespace::Input, APP_FEEDBACK),
+                            ValueSpec::reference(StateNamespace::Input, APP_FEEDBACK),
                         )])
-                        .next(NextStep {
-                            steps: vec![NextCase {
-                                next: Some("retrieve_candidates".into()),
-                                description: "Retrieve new candidates".into(),
-                            }],
-                        })
+                        .next(vec![NextStep {
+                            next: Some("retrieve_candidates".into()),
+                            description: "Retrieve new candidates".into(),
+                            inputs: vec![],
+                        }])
                         .build()
                         .with(FeedbackInput)
                         .unwrap(),

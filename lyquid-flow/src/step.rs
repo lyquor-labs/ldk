@@ -70,9 +70,6 @@ pub enum TemplateSpec {
 }
 
 /// One workflow graph vertex.
-///
-/// The [`Any`] bound lets the runner identify a mounted [`crate::Flow`] without adding a separate
-/// registration trait or requiring Step implementations to provide downcasting methods.
 pub trait Step: Any + Send + Sync {
     /// Explains this Step's purpose; `concise` requests a shorter form for model transition context.
     fn description(&self, concise: bool) -> String;

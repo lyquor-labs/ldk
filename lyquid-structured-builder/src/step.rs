@@ -3,7 +3,7 @@ use std::sync::Arc;
 use lyquid_flow::{FlowError, InputSpec, Scope, Step, TemplateSpec, TraceSummary, TurnProposal, ViewSpec};
 use serde_json::Value as JsonValue;
 
-use crate::{NextStep, StructuredSpec, ValueSource};
+use crate::{StructuredSpec, ValueSpec};
 
 /// Adds structured model criteria and final State updates to an existing Step.
 #[derive(Clone)]
@@ -14,8 +14,7 @@ pub struct StructuredStep {
 
 impl StructuredStep {
     fn needs_model(&self) -> bool {
-        self.spec.next.as_ref().is_some_and(NextStep::needs_model) ||
-            self.spec.state_updates.iter().any(|(_, value)| value.is_model())
+        self.spec.next.len() > 1 || self.spec.state_updates.iter().any(|(_, value)| value.is_model())
     }
 
     fn finalize_proposal(
@@ -50,14 +49,15 @@ impl StructuredStep {
                     .into(),
             );
         }
-        if let Some(destinations) = &self.spec.next {
-            for destination in destinations.destinations() {
-                scope.validate_next(&destination)?;
+        let destinations = &self.spec.next;
+        if !destinations.is_empty() {
+            for destination in destinations {
+                scope.validate_next(&destination.next)?;
             }
-            *next = if destinations.steps.len() == 1 {
-                destinations.steps[0].next.clone()
+            *next = if destinations.len() == 1 {
+                destinations[0].next.clone()
             } else if let Some(selected) = selected &&
-                destinations.steps.iter().any(|case| case.next == selected)
+                destinations.iter().any(|case| case.next == selected)
             {
                 selected
             } else {
@@ -102,9 +102,10 @@ impl Step for StructuredStep {
             TemplateSpec::Template(template) => template,
             direct => return direct,
         };
-        if let Some(next) = &self.spec.next {
-            template.next_step_criteria = next
-                .steps
+        if !self.spec.next.is_empty() {
+            template.next_step_criteria = self
+                .spec
+                .next
                 .iter()
                 .map(|case| (case.next.clone(), case.description.clone()))
                 .collect();
@@ -123,7 +124,7 @@ impl Step for StructuredStep {
                     .state_updates
                     .iter()
                     .filter_map(|(field, source)| match source {
-                        ValueSource::Model { description } => Some((field.clone(), description.clone())),
+                        ValueSpec::Model { description } => Some((field.clone(), description.clone())),
                         _ => None,
                     }),
             );
@@ -149,8 +150,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use lyquid_flow::{
-        AutoCheckpointConfig, Flow, FlowError, InputSpec, ModelTemplate, Scope, ScopeId, State, StateNamespace,
-        StateUpdates, Step, TemplateSpec, TraceSummary, TurnProposal, ViewSpec,
+        AutoCheckpointConfig, ExitTransitions, Flow, FlowError, InputSpec, ModelTemplate, Scope, ScopeId, State,
+        StateNamespace, StateUpdates, Step, TemplateSpec, TraceMode, TraceSummary, TurnProposal, Type, ViewSpec,
     };
     use lyquid_llm::{
         Backend, JsonApiResponse, LlmError, LlmResult, ModelConfig, ModelRequest, ModelResponse, PreparedJsonApiRequest,
@@ -158,7 +159,7 @@ mod tests {
     use lyquid_test::test;
     use serde_json::{Value as JsonValue, json};
 
-    use crate::{NextCase, NextStep, StructuredSpec, ValueSource};
+    use crate::{Input, NextStep, Output, StructuredSpec, ValueSpec};
 
     struct CaptureRequest(Arc<Mutex<Vec<ModelRequest>>>);
 
@@ -302,16 +303,15 @@ mod tests {
         builder.finish(root).unwrap()
     }
 
-    fn routes(targets: &[Option<&str>]) -> NextStep {
-        NextStep {
-            steps: targets
-                .iter()
-                .map(|target| NextCase {
-                    next: target.map(Into::into),
-                    description: "Continue".into(),
-                })
-                .collect(),
-        }
+    fn routes(targets: &[Option<&str>]) -> Vec<NextStep> {
+        targets
+            .iter()
+            .map(|target| NextStep {
+                next: target.map(Into::into),
+                description: "Continue".into(),
+                inputs: vec![],
+            })
+            .collect()
     }
 
     fn new_scope(step: impl Step, model: Option<ModelConfig>) -> Scope {
@@ -376,96 +376,231 @@ mod tests {
             (
                 "duplicate_update",
                 vec![
-                    ("count".into(), ValueSource::constant(1)),
-                    ("count".into(), ValueSource::constant(2)),
+                    ("count".into(), ValueSpec::constant(1)),
+                    ("count".into(), ValueSpec::constant(2)),
                 ],
-                None,
+                vec![],
                 "duplicate State update",
             ),
             (
                 "blank_reference",
-                vec![("count".into(), ValueSource::reference(StateNamespace::Default, " \t"))],
-                None,
+                vec![("count".into(), ValueSpec::reference(StateNamespace::Default, " \t"))],
+                vec![],
                 "State reference: must be nonblank",
             ),
             (
                 "blank_model",
-                vec![("count".into(), ValueSource::model(""))],
-                None,
+                vec![("count".into(), ValueSpec::model(""))],
+                vec![],
                 "model description: must be nonblank",
             ),
             (
                 "invalid_template",
-                vec![("count".into(), ValueSource::model("{{"))],
-                None,
-                "invalid count template",
-            ),
-            (
-                "empty_destinations",
+                vec![("count".into(), ValueSpec::model("{{"))],
                 vec![],
-                Some(routes(&[])),
-                "at least one next Step is required",
+                "invalid count template",
             ),
             (
                 "duplicate_destination",
                 vec![],
-                Some(routes(&[None, None])),
+                routes(&[None, None]),
                 "duplicate next Step",
             ),
         ] {
-            let error = StructuredSpec { state_updates, next }
-                .with(TestStep::default())
-                .err()
-                .expect(case);
+            let error = StructuredSpec {
+                state_updates,
+                next,
+                ..Default::default()
+            }
+            .with(TestStep::default())
+            .err()
+            .expect(case);
             assert!(error.to_string().contains(expected), "{case}: {error}");
             if case == "invalid_template" {
                 assert!(error.0.diagnostics[0].source.as_ref().unwrap().is::<tera::Error>());
             }
         }
-        let flow = Flow::builder("child")
-            .entry("end")
-            .step(
-                "end",
-                TestStep {
-                    mode: Mode::End,
-                    ..Default::default()
-                },
-            )
-            .build()
-            .unwrap();
-        let error = StructuredSpec::default().with(flow).err().expect("flow_wrapper");
-        assert!(
-            error.to_string().contains("cannot wrap a Flow"),
-            "flow_wrapper: {error}"
-        );
+        for definition in [
+            json!({"inputs": [{"name": " ", "description": "", "required": true, "ty": {"kind": "string"}}]}),
+            json!({"output": {"description": "Count", "ty": {"kind": "u64"}, "value": {"source": "constant", "value": "bad"}}}),
+            json!({"next": [{"next": "after", "description": "Continue", "inputs": [["count", {"source": "model", "description": "{{"}]]}]}),
+        ] {
+            let spec: StructuredSpec = serde_json::from_value(definition).unwrap();
+            assert!(spec.validate_inputs(None).is_err());
+            assert!(spec.validate_output(None).is_err());
+            assert!(spec.with(TestStep::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn supplied_inputs_validate_presence_and_type() {
+        for (case, required, ty, missing_error, null_error) in [
+            (
+                "required_string",
+                true,
+                Type::String,
+                Some("missing required input"),
+                Some("expected string"),
+            ),
+            ("optional_string", false, Type::String, None, Some("expected string")),
+            (
+                "required_nullable_string",
+                true,
+                Type::Option(Box::new(Type::String)),
+                Some("missing required input"),
+                None,
+            ),
+            (
+                "optional_nullable_string",
+                false,
+                Type::Option(Box::new(Type::String)),
+                None,
+                None,
+            ),
+        ] {
+            let spec = StructuredSpec {
+                inputs: vec![Input {
+                    name: "value".into(),
+                    description: "Text value".into(),
+                    required,
+                    ty,
+                }],
+                ..Default::default()
+            };
+            spec.clone().with(TestStep::default()).expect(case);
+            for (inputs, expected_error) in [
+                (None, missing_error),
+                (Some(json!({})), missing_error),
+                (Some(json!({"value": null})), null_error),
+                (Some(json!({"value": "text"})), None),
+                (Some(json!({"value": 42})), Some("expected string")),
+            ] {
+                let result = spec.validate_inputs(inputs.as_ref());
+                match expected_error {
+                    None => result.expect(case),
+                    Some(message) => {
+                        let error = result.expect_err(case);
+                        assert_eq!(error.diagnostics[0].context, "input \"value\"", "{case}: {inputs:?}");
+                        assert!(
+                            error.diagnostics[0].message.contains(message),
+                            "{case}: {inputs:?}: {error}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn supplied_inputs_require_an_object_with_declared_keys() {
+        let spec = StructuredSpec::default();
+        spec.clone().with(TestStep::default()).unwrap();
+        for (inputs, expected_error) in [
+            (None, None),
+            (Some(json!({})), None),
+            (Some(json!(null)), Some(("invocation inputs", "must be an object"))),
+            (Some(json!([])), Some(("invocation inputs", "must be an object"))),
+            (Some(json!(42)), Some(("invocation inputs", "must be an object"))),
+            (Some(json!("text")), Some(("invocation inputs", "must be an object"))),
+            (Some(json!(true)), Some(("invocation inputs", "must be an object"))),
+            (
+                Some(json!({"value": "text"})),
+                Some(("input \"value\"", "undeclared input parameter")),
+            ),
+        ] {
+            let result = spec.validate_inputs(inputs.as_ref());
+            match expected_error {
+                None => result.unwrap(),
+                Some((context, message)) => {
+                    let error = result.expect_err("invalid input object");
+                    assert_eq!(error.diagnostics[0].context, context, "{inputs:?}");
+                    assert_eq!(error.diagnostics[0].message, message, "{inputs:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn supplied_output_validates_presence_and_type() {
+        let values = [None, Some(json!(null)), Some(json!(7)), Some(json!("text"))];
+        for (case, ty, expected_errors) in [
+            (
+                "no_output",
+                None,
+                [
+                    None,
+                    Some("Step declares no output"),
+                    Some("Step declares no output"),
+                    Some("Step declares no output"),
+                ],
+            ),
+            (
+                "u64_output",
+                Some(Type::U64),
+                [
+                    Some("missing declared output"),
+                    Some("expected u64"),
+                    None,
+                    Some("expected u64"),
+                ],
+            ),
+            (
+                "nullable_u64_output",
+                Some(Type::Option(Box::new(Type::U64))),
+                [Some("missing declared output"), None, None, Some("expected u64")],
+            ),
+        ] {
+            let spec = StructuredSpec {
+                output: ty.map(|ty| Output {
+                    description: "Count".into(),
+                    ty,
+                    value: ValueSpec::constant(7),
+                }),
+                ..Default::default()
+            };
+            spec.clone().with(TestStep::default()).expect(case);
+            for (value, expected_error) in values.iter().zip(expected_errors) {
+                let result = spec.validate_output(value.as_ref());
+                match expected_error {
+                    None => result.expect(case),
+                    Some(message) => {
+                        let error = result.expect_err(case);
+                        assert_eq!(error.diagnostics[0].context, "output", "{case}: {value:?}");
+                        assert!(
+                            error.diagnostics[0].message.contains(message),
+                            "{case}: {value:?}: {error}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
     fn builder_and_json_preserve_spec() {
         let case = "all_sources_and_setter_order";
         let updates = vec![
-            ("shared".into(), ValueSource::constant(9)),
-            ("copy".into(), ValueSource::reference(StateNamespace::Default, "count")),
-            (
-                "copy_note".into(),
-                ValueSource::reference(StateNamespace::Input, "note"),
-            ),
-            ("cached".into(), ValueSource::reference(StateNamespace::Tool, "cache")),
-            ("count".into(), ValueSource::model("Derive the count")),
+            ("shared".into(), ValueSpec::constant(9)),
+            ("copy".into(), ValueSpec::reference(StateNamespace::Default, "count")),
+            ("copy_note".into(), ValueSpec::reference(StateNamespace::Input, "note")),
+            ("cached".into(), ValueSpec::reference(StateNamespace::Tool, "cache")),
+            ("count".into(), ValueSpec::model("Derive the count")),
         ];
+        let next = vec![NextStep {
+            next: None,
+            description: "Complete the Flow".into(),
+            inputs: vec![],
+        }];
         let spec = StructuredSpec::builder()
             .state_updates(updates.clone())
-            .next(NextStep::default())
+            .next(next.clone())
             .build();
-        let reversed = StructuredSpec::builder()
-            .next(NextStep::default())
-            .state_updates(updates)
-            .build();
+        let reversed = StructuredSpec::builder().next(next).state_updates(updates).build();
         let json = serde_json::to_value(&spec).expect(case);
-        assert_eq!(json.as_object().expect(case).len(), 2, "{case}");
+        assert_eq!(json.as_object().expect(case).len(), 4, "{case}");
         assert_eq!(
             json["next"],
-            json!({"steps": [{"next": null, "description": "Complete the Flow"}]}),
+            json!([{"next": null, "description": "Complete the Flow", "inputs": []}]),
             "{case}"
         );
         assert_eq!(
@@ -477,12 +612,15 @@ mod tests {
         let restored: StructuredSpec = serde_json::from_value(json.clone()).expect(case);
         assert_eq!(serde_json::to_value(&restored).expect(case), json, "{case}");
         restored.with(TestStep::default()).expect(case);
-        let empty: StructuredSpec = serde_json::from_str("{}").expect("empty_spec");
-        assert_eq!(
-            serde_json::to_value(empty).unwrap(),
-            serde_json::to_value(StructuredSpec::default()).unwrap(),
-            "empty_spec"
-        );
+        let empty = StructuredSpec::builder().next(vec![]).build();
+        let expected = serde_json::to_value(StructuredSpec::default()).unwrap();
+        assert_eq!(expected["next"], json!([]));
+        assert_eq!(serde_json::to_value(empty).unwrap(), expected);
+        for definition in [json!({}), json!({"next": []})] {
+            let spec: StructuredSpec = serde_json::from_value(definition).expect("empty_next");
+            assert_eq!(serde_json::to_value(&spec).unwrap(), expected, "empty_next");
+            spec.with(TestStep::default()).expect("empty_next");
+        }
         for field in ["description", "template", "input", "summary"] {
             assert!(
                 serde_json::from_value::<StructuredSpec>(json!({(field): null})).is_err(),
@@ -495,8 +633,8 @@ mod tests {
     fn structured_updates_preserve_nested_json_objects() {
         let value = json!({"z": u64::MAX, "nested": {"b": [null, true], "a": 1.0}});
         for source in [
-            ValueSource::constant(value.clone()),
-            ValueSource::reference(StateNamespace::Default, "source"),
+            ValueSpec::constant(value.clone()),
+            ValueSpec::reference(StateNamespace::Default, "source"),
         ] {
             let step = StructuredSpec {
                 state_updates: vec![("target".into(), source)],
@@ -529,13 +667,62 @@ mod tests {
     }
 
     #[test]
+    fn mounted_flow_applies_structured_rules_after_child_completion() {
+        let child = Flow::builder("child")
+            .entry("native")
+            .step("native", TestStep::default())
+            .exit("after")
+            .build()
+            .unwrap();
+        let spec = StructuredSpec {
+            state_updates: vec![("shared".into(), ValueSpec::constant(9))],
+            next: routes(&[Some("selected")]),
+            ..Default::default()
+        };
+        let parent = Flow::builder("parent")
+            .entry("child")
+            .exit("native_done")
+            .exit("selected")
+            .flow_with(
+                "child",
+                child.clone(),
+                ExitTransitions::new().transition("after", "native_done").unwrap(),
+                TraceMode::Expanded,
+                spec.with(child).unwrap(),
+            )
+            .build()
+            .unwrap();
+        let state = State::builder()
+            .field("count", "Business count", lyquid_flow::Type::U64, json!(2_u64))
+            .field("seed", "Native seed", lyquid_flow::Type::U64, json!(0_u64))
+            .field("shared", "Explicitly replaceable", lyquid_flow::Type::U64, json!(0_u64))
+            .field_in(
+                StateNamespace::Tool,
+                "cache",
+                "Native tool data",
+                lyquid_flow::Type::String,
+                json!(""),
+            )
+            .build()
+            .unwrap();
+        let mut scope = Scope::new(Arc::new(parent), state, AutoCheckpointConfig::Unbounded, None);
+
+        scope.advance().unwrap();
+
+        assert!(scope.is_finished());
+        assert_eq!(scope.current_step().0, "selected");
+        assert_eq!(scope.state().get("count"), Some(&json!(11)));
+        assert_eq!(scope.state().get("shared"), Some(&json!(9)));
+    }
+
+    #[test]
     fn configured_updates_override_native_values() {
         let configured = vec![
-            ("shared".into(), ValueSource::constant(9)),
-            ("copy".into(), ValueSource::reference(StateNamespace::Default, "count")),
+            ("shared".into(), ValueSpec::constant(9)),
+            ("copy".into(), ValueSpec::reference(StateNamespace::Default, "count")),
             (
                 "sibling".into(),
-                ValueSource::reference(StateNamespace::Default, "shared"),
+                ValueSpec::reference(StateNamespace::Default, "shared"),
             ),
         ];
         for (case, rules) in [
@@ -568,8 +755,8 @@ mod tests {
             let calls = Arc::new(Calls::default());
             let step = StructuredSpec {
                 state_updates: vec![
-                    ("count".into(), ValueSource::model("Choose the count")),
-                    ("shared".into(), ValueSource::constant(9)),
+                    ("count".into(), ValueSpec::model("Choose the count")),
+                    ("shared".into(), ValueSpec::constant(9)),
                 ],
                 ..Default::default()
             }
@@ -623,20 +810,17 @@ mod tests {
         for (case, rules, expected) in [
             (
                 "wrong_type",
-                vec![("count".into(), ValueSource::constant("wrong"))],
+                vec![("count".into(), ValueSpec::constant("wrong"))],
                 "invalid State update count",
             ),
             (
                 "missing_reference",
-                vec![(
-                    "count".into(),
-                    ValueSource::reference(StateNamespace::Default, "missing"),
-                )],
+                vec![("count".into(), ValueSpec::reference(StateNamespace::Default, "missing"))],
                 "missing State reference default.missing",
             ),
             (
                 "unknown_target",
-                vec![("missing".into(), ValueSource::constant(5))],
+                vec![("missing".into(), ValueSpec::constant(5))],
                 "unknown State update",
             ),
         ] {
@@ -666,7 +850,7 @@ mod tests {
             ("skip_model_value_with_backend", Some(capture_model(requests.clone()))),
         ] {
             let step = StructuredSpec {
-                state_updates: vec![("count".into(), ValueSource::model("Choose the count"))],
+                state_updates: vec![("count".into(), ValueSpec::model("Choose the count"))],
                 ..Default::default()
             }
             .with(TestStep::default())
@@ -684,47 +868,47 @@ mod tests {
     #[test]
     fn configured_next_overrides_native_route() {
         let fixed = routes(&[Some("selected")]);
-        let choices = NextStep {
-            steps: vec![
-                NextCase {
-                    next: Some("done".into()),
-                    description: "Ready".into(),
-                },
-                NextCase {
-                    next: None,
-                    description: "Complete".into(),
-                },
-            ],
-        };
+        let choices = vec![
+            NextStep {
+                next: Some("done".into()),
+                description: "Ready".into(),
+                inputs: vec![],
+            },
+            NextStep {
+                next: None,
+                description: "Complete".into(),
+                inputs: vec![],
+            },
+        ];
         for (case, mode, next, selected, expected) in [
-            ("skip_native", Mode::Direct, None, None, Ok(Some("after"))),
-            ("skip_fixed", Mode::Direct, Some(fixed), None, Ok(Some("selected"))),
-            ("skip_complete", Mode::Direct, Some(NextStep::default()), None, Ok(None)),
-            ("model_native", Mode::Model, None, Some("after"), Ok(Some("selected"))),
+            ("skip_empty", Mode::Direct, vec![], None, Ok(Some("after"))),
+            ("skip_fixed", Mode::Direct, fixed, None, Ok(Some("selected"))),
+            ("skip_complete", Mode::Direct, routes(&[None]), None, Ok(None)),
+            ("model_empty", Mode::Model, vec![], Some("after"), Ok(Some("selected"))),
             (
                 "model_choice",
                 Mode::Model,
-                Some(choices.clone()),
+                choices.clone(),
                 Some("done"),
                 Ok(Some("done")),
             ),
-            ("model_complete", Mode::Model, Some(choices.clone()), None, Ok(None)),
+            ("model_complete", Mode::Model, choices.clone(), None, Ok(None)),
             (
                 "undeclared_route",
                 Mode::Model,
-                Some(choices.clone()),
+                choices.clone(),
                 Some("after"),
                 Err(("", "model selected an undeclared next Step")),
             ),
             (
                 "unknown_route",
                 Mode::Direct,
-                Some(routes(&[Some("missing")])),
+                routes(&[Some("missing")]),
                 None,
                 Err(("next Step missing", "unknown destination")),
             ),
         ] {
-            let configured_next = next.is_some();
+            let configured_next = !next.is_empty();
             let step = StructuredSpec {
                 next,
                 ..Default::default()
@@ -785,7 +969,7 @@ mod tests {
         let case = "skip_multiple_destinations";
         let requests = Arc::new(Mutex::new(Vec::new()));
         let step = StructuredSpec {
-            next: Some(choices),
+            next: choices,
             ..Default::default()
         }
         .with(TestStep::default())
@@ -806,10 +990,7 @@ mod tests {
         let input = input_spec();
         let restored: InputSpec = serde_json::from_value(serde_json::to_value(&input).unwrap()).unwrap();
         let reference = StructuredSpec {
-            state_updates: vec![(
-                "copy_note".into(),
-                ValueSource::reference(StateNamespace::Input, "note"),
-            )],
+            state_updates: vec![("copy_note".into(), ValueSpec::reference(StateNamespace::Input, "note"))],
             ..Default::default()
         };
         for (case, spec, input, expected_copy) in [
@@ -897,8 +1078,9 @@ mod tests {
         let mut scope = new_scope(TestStep::default(), None);
         let checkpoint = scope.checkpoint();
         let step = StructuredSpec {
-            state_updates: vec![("undeclared".into(), ValueSource::model("Ignored after restore"))],
-            next: Some(routes(&[Some("undeclared")])),
+            state_updates: vec![("undeclared".into(), ValueSpec::model("Ignored after restore"))],
+            next: routes(&[Some("undeclared")]),
+            ..Default::default()
         }
         .with(TestStep {
             mode: Mode::Restore(checkpoint.clone()),
@@ -924,8 +1106,8 @@ mod tests {
         let step = StructuredSpec {
             // The first structured update succeeds, then the unknown field fails.
             state_updates: vec![
-                ("count".into(), ValueSource::constant(5)),
-                ("missing".into(), ValueSource::constant(5)),
+                ("count".into(), ValueSpec::constant(5)),
+                ("missing".into(), ValueSpec::constant(5)),
             ],
             ..Default::default()
         }
@@ -960,7 +1142,7 @@ mod tests {
     fn model_failure_retries_without_finalizing() {
         let calls = Arc::new(Calls::default());
         let step = StructuredSpec {
-            state_updates: vec![("count".into(), ValueSource::model("Choose the count"))],
+            state_updates: vec![("count".into(), ValueSpec::model("Choose the count"))],
             ..Default::default()
         }
         .with(TestStep {

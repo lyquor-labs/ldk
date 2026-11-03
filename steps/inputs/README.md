@@ -10,7 +10,7 @@ the equivalent UI and validation schema. A native `Step` owns the form and retur
 The Step also owns routing and summaries; the Flow owns State and destinations.
 
 Wrap the Step with [`StructuredSpec`](../../lyquid-structured-builder/README.md) to copy submitted fields
-into State using `ValueSource::reference(StateNamespace::Input, field)`.
+into State using `ValueSpec::reference(StateNamespace::Input, field)`.
 Choice-dependent routing belongs in the native `Step::finalize`.
 
 For a prompt derived from committed State, build the form in `Step::input` using its `Scope` argument.

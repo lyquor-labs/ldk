@@ -1,6 +1,6 @@
 #![doc = include_str!("README.md")]
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 pub(crate) mod json_schema;
@@ -13,8 +13,8 @@ pub use crate::error::Error;
 ///
 /// Mapping accepts arbitrary string keys with a common value type. Use Mapping(Dynamic)
 /// for heterogeneous objects; their consumers are responsible for field-level validation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Type {
     /// Defer further validation to the consumer. Use [`Type::infer`] to inspect a value's current shape.
     Dynamic,
