@@ -2,7 +2,7 @@ use lyquid_flow::{
     Flow, FlowError, InputSpec, Scope, State, StateBuilder, StateNamespace, StateUpdates, Step, TemplateSpec,
     TraceSummary, TurnProposal,
 };
-use lyquid_structured_builder::{NextStep, StructuredSpec, ValueSpec};
+use lyquid_structured_builder::{NextStep, StructuredSpec, ValueSpec, state_builder};
 use refinement_step::{DECISION_STATE_FIELD, DecisionRequest, DecisionState, REFINEMENT_INPUT_FIELD};
 
 pub(crate) const INPUT_STEP: &str = "input";
@@ -85,6 +85,7 @@ impl RefinementLoopConfig {
     }
 
     /// Adds refinement State and, only for a loop with exits, a committed choice field.
+    /// Start with [`state_builder`] to include the structured Steps' I/O bindings.
     pub fn add_state_fields(
         &self, builder: StateBuilder, request: DecisionRequest,
     ) -> Result<StateBuilder, lyquid_flow::BuildError> {
@@ -102,7 +103,7 @@ impl RefinementLoopConfig {
     }
 
     pub fn initial_state(&self, request: DecisionRequest) -> Result<State, lyquid_flow::BuildError> {
-        self.add_state_fields(State::builder(), request)?.build()
+        self.add_state_fields(state_builder([]), request)?.build()
     }
 
     /// Starts refinement with the goal supplied in the request.
@@ -168,8 +169,8 @@ pub(crate) fn input_step(nonblank: bool) -> impl Step {
             REFINEMENT_INPUT_FIELD.into(),
             ValueSpec::reference(StateNamespace::Input, REFINEMENT_INPUT_FIELD),
         )])
-        .next(vec![NextStep {
-            next: Some(REFINE_STEP.into()),
+        .next_steps(vec![NextStep {
+            step_id: Some(REFINE_STEP.into()),
             description: "Continue to refinement".into(),
             inputs: vec![],
         }])

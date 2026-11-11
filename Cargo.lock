@@ -120,7 +120,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bartender"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid",
  "serde",
@@ -140,7 +140,7 @@ checksum = "022dfe9eb35f19ebbcb51e0b40a5ab759f46ad60cadf7297e0bd085afb50e076"
 
 [[package]]
 name = "basicswap"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid",
 ]
@@ -229,7 +229,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "circle-nanopay-flow"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -457,7 +457,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "erc20"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid",
 ]
@@ -537,7 +537,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid",
 ]
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "ahash",
  "alloy-sol-types",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-flow"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid",
  "lyquid-llm",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-json-formatter"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid-flow",
  "lyquid-llm",
@@ -663,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-llm"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid",
  "serde",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-proc"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquor-primitives",
  "proc-macro2",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-structured-builder"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid-flow",
  "serde",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "lyquid-test"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid",
  "lyquid-proc",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "lyquor-primitives"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "price-feed"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid",
  "serde",
@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "refinement-loop-flow"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid-flow",
  "lyquid-structured-builder",
@@ -937,7 +937,7 @@ dependencies = [
 
 [[package]]
 name = "refinement-step"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid-flow",
  "schemars",
@@ -1138,7 +1138,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shopping-assistant"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "lyquid",
  "lyquid-flow",

@@ -4,7 +4,7 @@ use lyquid_flow::{
     ExitTransitions, Flow, FlowError, InputSpec, Scope, State, StateNamespace, StateUpdates, Step, TemplateSpec,
     TraceMode, TraceSummary, TurnProposal,
 };
-use lyquid_structured_builder::{NextStep, StructuredSpec, ValueSpec};
+use lyquid_structured_builder::{NextStep, StructuredSpec, ValueSpec, state_builder};
 use refinement_loop_flow::{CandidateRanking, DecisionRequest, DecisionState, ExitChoice, RefinementLoopConfig};
 
 use crate::{ProductCatalog, SearchContext, ShoppingSearchState};
@@ -90,8 +90,8 @@ fn restart_feedback_step() -> impl Step {
             RESTART_FEEDBACK_FIELD.into(),
             ValueSpec::reference(StateNamespace::Input, RESTART_FEEDBACK_FIELD),
         )])
-        .next(vec![NextStep {
-            next: Some(AGGREGATE_CANDIDATES_STEP.into()),
+        .next_steps(vec![NextStep {
+            step_id: Some(AGGREGATE_CANDIDATES_STEP.into()),
             description: "Retrieve new candidates".into(),
             inputs: vec![],
         }])
@@ -121,8 +121,8 @@ fn build_flow(aggregation: impl Step, refinement: Flow, feedback: impl Step) -> 
                     SHOPPING_REQUEST_STATE_FIELD.into(),
                     ValueSpec::reference(StateNamespace::Input, SHOPPING_REQUEST_STATE_FIELD),
                 )])
-                .next(vec![NextStep {
-                    next: Some(AGGREGATE_CANDIDATES_STEP.into()),
+                .next_steps(vec![NextStep {
+                    step_id: Some(AGGREGATE_CANDIDATES_STEP.into()),
                     description: "Retrieve shopping candidates".into(),
                     inputs: vec![],
                 }])
@@ -151,7 +151,7 @@ pub fn initial_state() -> Result<State, lyquid_flow::BuildError> {
     let decision_request = DecisionRequest::new("", Vec::new());
     refinement_config()
         .add_state_fields(
-            State::builder()
+            state_builder([])
                 .field(
                     SHOPPING_REQUEST_STATE_FIELD,
                     "Shopping goal collected by the first input Step",

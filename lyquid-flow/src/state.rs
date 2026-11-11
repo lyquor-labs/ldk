@@ -13,8 +13,6 @@ pub enum StateNamespace {
     Default,
     /// Input submitted by a user or another client.
     Input,
-    /// Persistent tool data, separate from ordinary workflow State.
-    Tool,
 }
 
 impl fmt::Display for StateNamespace {
@@ -22,7 +20,6 @@ impl fmt::Display for StateNamespace {
         formatter.write_str(match self {
             Self::Default => "default",
             Self::Input => "input",
-            Self::Tool => "tool",
         })
     }
 }
@@ -30,7 +27,7 @@ impl fmt::Display for StateNamespace {
 /// Framework-owned JSON State with immutable structural declarations.
 #[derive(Clone)]
 pub struct State {
-    pub(super) fields: HashMap<StateNamespace, HashMap<String, StateField>>,
+    pub(super) fields: HashMap<String, StateField>,
 }
 
 impl Default for State {
@@ -45,31 +42,17 @@ impl State {
     }
 
     pub fn get(&self, name: &str) -> Option<&Value> {
-        self.get_in(StateNamespace::Default, name)
-    }
-
-    pub fn get_in(&self, namespace: StateNamespace, name: &str) -> Option<&Value> {
-        self.fields.get(&namespace)?.get(name).map(|field| &field.value)
+        self.fields.get(name).map(|field| &field.value)
     }
 
     pub fn declared_type(&self, name: &str) -> Option<&Type> {
-        self.declared_type_in(StateNamespace::Default, name)
-    }
-
-    pub fn declared_type_in(&self, namespace: StateNamespace, name: &str) -> Option<&Type> {
-        self.fields.get(&namespace)?.get(name).map(|field| &field.declared_type)
+        self.fields.get(name).map(|field| &field.declared_type)
     }
 
     /// Projects committed values into a JSON object, without declarations or staged updates.
     pub fn to_json(&self) -> Value {
-        self.to_json_in(StateNamespace::Default)
-    }
-
-    pub fn to_json_in(&self, namespace: StateNamespace) -> Value {
         self.fields
-            .get(&namespace)
-            .into_iter()
-            .flatten()
+            .iter()
             .map(|(name, field)| (name.clone(), field.value.clone()))
             .collect::<serde_json::Map<_, _>>()
             .into()
@@ -77,29 +60,24 @@ impl State {
 
     /// Checks every finalized replacement before any part of the turn is committed.
     pub(super) fn validate_updates(&self, updates: &StateUpdates) -> Result<(), FlowError> {
-        for (namespace, fields) in &updates.staging {
-            for (name, value) in fields {
-                let context = format!("State field {namespace}.{name}");
-                let declaration = self
-                    .declared_type_in(*namespace, name)
-                    .ok_or_else(|| Diagnostic::new(&context, "unknown field"))?;
-                declaration
-                    .validate(value)
-                    .map_err(|error| Diagnostic::with_source(context, error))?;
-            }
+        for (name, value) in &updates.staging {
+            let context = format!("State field {name}");
+            let declaration = self
+                .declared_type(name)
+                .ok_or_else(|| Diagnostic::new(&context, "unknown field"))?;
+            declaration
+                .validate(value)
+                .map_err(|error| Diagnostic::with_source(context, error))?;
         }
         Ok(())
     }
 
     pub(super) fn apply_updates(&mut self, updates: &StateUpdates) {
-        for (namespace, fields) in &updates.staging {
-            for (name, value) in fields {
-                self.fields
-                    .get_mut(namespace)
-                    .and_then(|fields| fields.get_mut(name))
-                    .expect("StateUpdates fields are validated before commit")
-                    .value = value.clone();
-            }
+        for (name, value) in &updates.staging {
+            self.fields
+                .get_mut(name)
+                .expect("StateUpdates fields are validated before commit")
+                .value = value.clone();
         }
     }
 }
@@ -107,20 +85,12 @@ impl State {
 /// Declares each State field's allowed type and initial JSON value explicitly.
 #[derive(Default)]
 pub struct StateBuilder {
-    fields: Vec<(StateNamespace, String, StateField)>,
+    fields: Vec<(String, StateField)>,
 }
 
 impl StateBuilder {
-    pub fn field(self, name: impl Into<String>, description: impl Into<String>, ty: Type, value: Value) -> Self {
-        self.field_in(StateNamespace::Default, name, description, ty, value)
-    }
-
-    pub fn field_in(
-        mut self, namespace: StateNamespace, name: impl Into<String>, description: impl Into<String>, ty: Type,
-        value: Value,
-    ) -> Self {
+    pub fn field(mut self, name: impl Into<String>, description: impl Into<String>, ty: Type, value: Value) -> Self {
         self.fields.push((
-            namespace,
             name.into(),
             StateField {
                 description: description.into(),
@@ -131,27 +101,16 @@ impl StateBuilder {
         self
     }
 
-    /// Rejects invalid initial values, duplicate declarations and persistent Input fields.
+    /// Rejects invalid initial values and duplicate declarations.
     pub fn build(self) -> Result<State, BuildError> {
         let mut state = State::default();
-        for (namespace, name, field) in self.fields {
-            let context = format!("State field {namespace}.{name}");
-            if namespace == StateNamespace::Input {
-                return Err(
-                    Diagnostic::new(context, "Input fields are ephemeral and cannot be declared in State").into(),
-                );
-            }
+        for (name, field) in self.fields {
+            let context = format!("State field {name}");
             field
                 .declared_type
                 .validate(&field.value)
                 .map_err(|error| Diagnostic::with_source(&context, error))?;
-            if state
-                .fields
-                .entry(namespace)
-                .or_insert_with(new_hashmap)
-                .insert(name, field)
-                .is_some()
-            {
+            if state.fields.insert(name, field).is_some() {
                 return Err(Diagnostic::new(context, "duplicate field").into());
             }
         }
@@ -169,8 +128,8 @@ pub(super) struct StateField {
 /// Proposed JSON replacements and ephemeral input visible during a turn.
 #[derive(Clone)]
 pub struct StateUpdates {
-    pub(super) staging: HashMap<StateNamespace, HashMap<String, Value>>,
-    pub(super) ephemeral: HashMap<StateNamespace, HashMap<String, Value>>,
+    pub(super) staging: HashMap<String, Value>,
+    pub(super) ephemeral: HashMap<String, Value>,
 }
 
 impl Default for StateUpdates {
@@ -189,10 +148,10 @@ impl StateUpdates {
 
     pub fn get_in(&self, namespace: StateNamespace, name: &str) -> Option<&Value> {
         let values = match namespace {
-            StateNamespace::Default | StateNamespace::Tool => &self.staging,
+            StateNamespace::Default => &self.staging,
             StateNamespace::Input => &self.ephemeral,
         };
-        values.get(&namespace)?.get(name)
+        values.get(name)
     }
 
     /// Stages a replacement; None removes the proposal, not the committed field.
@@ -203,20 +162,18 @@ impl StateUpdates {
     /// Staged values are checked at the Flow commit boundary. Input values are never committed.
     pub fn set_in(&mut self, namespace: StateNamespace, name: String, value: Option<Value>) {
         let values = match namespace {
-            StateNamespace::Default | StateNamespace::Tool => &mut self.staging,
+            StateNamespace::Default => &mut self.staging,
             StateNamespace::Input => &mut self.ephemeral,
         };
         if let Some(value) = value {
-            values.entry(namespace).or_insert_with(new_hashmap).insert(name, value);
-        } else if let Some(fields) = values.get_mut(&namespace) {
-            fields.remove(&name);
+            values.insert(name, value);
+        } else {
+            values.remove(&name);
         }
     }
 
     pub(super) fn merge(&mut self, updates: Self) {
-        for (namespace, fields) in updates.staging {
-            self.staging.entry(namespace).or_insert_with(new_hashmap).extend(fields);
-        }
+        self.staging.extend(updates.staging);
     }
 }
 
@@ -226,80 +183,60 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use StateNamespace::{Input, Tool};
+    use StateNamespace::Input;
 
     #[test]
-    fn commits_same_named_fields_in_separate_namespaces() {
+    fn commits_state_without_persisting_input() {
         let mut state = State::builder()
-            .field("query", "Business value", crate::Type::U64, serde_json::json!(1_u64))
-            .field_in(
-                Tool,
-                "query",
-                "Tool parameter",
-                crate::Type::String,
-                serde_json::json!(""),
-            )
+            .field("query", "Business value", Type::U64, json!(1))
             .build()
             .unwrap();
         let mut updates = StateUpdates::default();
-        updates.set("query".into(), Some(serde_json::json!(2_u64)));
-        updates.set_in(Tool, "query".into(), Some(serde_json::json!("coffee")));
-        updates.set_in(Input, "query".into(), Some(serde_json::json!(true)));
-        assert_eq!(updates.get_in(Input, "query"), Some(&json!(true)));
-        assert_eq!(updates.get_in(Tool, "query"), Some(&json!("coffee")));
+        updates.set("query".into(), Some(json!(2)));
+        updates.set_in(Input, "query".into(), Some(json!("coffee")));
+        updates.set_in(Input, "input_only".into(), Some(json!(true)));
+        assert_eq!(updates.get("query"), Some(&json!(2)));
+        assert_eq!(updates.get_in(Input, "query"), Some(&json!("coffee")));
         state.validate_updates(&updates).unwrap();
         state.apply_updates(&updates);
-        assert_eq!(state.get("query").and_then(serde_json::Value::as_u64), Some(2));
-        assert_eq!(
-            state.get_in(Tool, "query").and_then(serde_json::Value::as_str).unwrap(),
-            "coffee"
-        );
-        assert!(
-            state
-                .get_in(Input, "query")
-                .and_then(serde_json::Value::as_bool)
-                .is_none()
-        );
         assert_eq!(state.to_json(), json!({"query": 2}));
-        assert_eq!(state.to_json_in(Tool), json!({"query": "coffee"}));
     }
 
     #[test]
-    fn merges_updates_without_cross_namespace_overwrites() {
+    fn merges_only_staged_updates_and_preserves_other_fields() {
         let mut updates = StateUpdates::default();
-        updates.set("query".into(), Some(serde_json::json!(7_u64)));
-        updates.set_in(Tool, "query".into(), Some(serde_json::json!("old")));
-        updates.set_in(Tool, "limit".into(), Some(serde_json::json!(3_u64)));
+        updates.set("query".into(), Some(json!("old")));
+        updates.set("limit".into(), Some(json!(3)));
+        updates.set_in(Input, "query".into(), Some(json!("accepted")));
         let mut later = StateUpdates::default();
-        later.set_in(Tool, "query".into(), Some(serde_json::json!("new")));
-        later.set_in(Input, "query".into(), Some(serde_json::json!(true)));
+        later.set("query".into(), Some(json!("new")));
+        later.set_in(Input, "query".into(), Some(json!("discarded")));
+        later.set_in(Input, "input_only".into(), Some(json!(true)));
         updates.merge(later);
-        assert_eq!(
-            updates
-                .get_in(Tool, "query")
-                .and_then(serde_json::Value::as_str)
-                .unwrap(),
-            "new"
-        );
-        assert_eq!(
-            updates.get_in(Tool, "limit").and_then(serde_json::Value::as_u64),
-            Some(3)
-        );
-        assert_eq!(updates.get("query").and_then(serde_json::Value::as_u64), Some(7));
-        assert!(
-            updates
-                .get_in(Input, "query")
-                .and_then(serde_json::Value::as_bool)
-                .is_none()
-        );
-        updates.set_in(Tool, "query".into(), None);
-        assert!(
-            updates
-                .get_in(Tool, "query")
-                .and_then(serde_json::Value::as_str)
-                .is_none()
-        );
-        assert_eq!(updates.get("query").and_then(serde_json::Value::as_u64), Some(7));
+        assert_eq!(updates.get("query"), Some(&json!("new")));
+        assert_eq!(updates.get("limit"), Some(&json!(3)));
+        assert_eq!(updates.get_in(Input, "query"), Some(&json!("accepted")));
+        assert!(updates.get_in(Input, "input_only").is_none());
+    }
+
+    #[test]
+    fn removing_a_proposal_preserves_committed_state_and_other_inputs() {
+        let mut state = State::builder()
+            .field("query", "Business value", Type::U64, json!(1))
+            .build()
+            .unwrap();
+        let mut updates = StateUpdates::default();
+        updates.set("query".into(), Some(json!(2)));
+        updates.set_in(Input, "query".into(), Some(json!("coffee")));
+        updates.set("query".into(), None);
+        assert!(updates.get("query").is_none());
+        assert_eq!(updates.get_in(Input, "query"), Some(&json!("coffee")));
+        state.validate_updates(&updates).unwrap();
+        state.apply_updates(&updates);
+        assert_eq!(state.get("query"), Some(&json!(1)));
+        updates.set_in(Input, "query".into(), None);
+        assert!(updates.get_in(Input, "query").is_none());
+        assert_eq!(state.get("query"), Some(&json!(1)));
     }
 
     #[test]
@@ -353,47 +290,32 @@ mod tests {
     #[test]
     fn rejects_invalid_state_updates() {
         let state = State::builder()
-            .field("query", "Business value", crate::Type::U64, serde_json::json!(0_u64))
-            .field_in(
-                Tool,
-                "query",
-                "Tool parameter",
-                crate::Type::String,
-                serde_json::json!(""),
-            )
+            .field("query", "Business value", Type::String, json!(""))
             .build()
             .unwrap();
         let mut updates = StateUpdates::default();
-        updates.set_in(Tool, "query".into(), Some(serde_json::json!(1_u64)));
+        updates.set("query".into(), Some(json!(1)));
         assert!(
             matches!(state.validate_updates(&updates), Err(FlowError::Execution(diagnostics))
-                if diagnostics.diagnostics[0].context == "State field tool.query" && diagnostics.diagnostics[0].message.contains("expected string"))
+                if diagnostics.diagnostics[0].context == "State field query" && diagnostics.diagnostics[0].message.contains("expected string"))
         );
-        updates.set_in(Tool, "query".into(), None);
-        updates.set_in(Tool, "unknown".into(), Some(serde_json::json!(1_u64)));
+        updates.set("query".into(), None);
+        updates.set("unknown".into(), Some(json!(1)));
         assert!(
             matches!(state.validate_updates(&updates), Err(FlowError::Execution(diagnostics))
-                if diagnostics.diagnostics[0].context == "State field tool.unknown" && diagnostics.diagnostics[0].message == "unknown field")
+                if diagnostics.diagnostics[0].context == "State field unknown" && diagnostics.diagnostics[0].message == "unknown field")
         );
+        assert_eq!(state.to_json(), json!({"query": ""}));
     }
 
     #[test]
-    fn rejects_invalid_field_declarations() {
+    fn rejects_duplicate_field_declarations() {
         let duplicate = State::builder()
-            .field_in(Tool, "query", "", crate::Type::U64, serde_json::json!(0_u64))
-            .field_in(Tool, "query", "", crate::Type::U64, serde_json::json!(1_u64))
+            .field("query", "", Type::U64, json!(0))
+            .field("query", "", Type::U64, json!(1))
             .build()
             .err()
             .unwrap();
-        assert_eq!(duplicate.to_string(), "State field tool.query: duplicate field");
-        let ephemeral = State::builder()
-            .field_in(Input, "query", "", crate::Type::U64, serde_json::json!(0_u64))
-            .build()
-            .err()
-            .unwrap();
-        assert_eq!(
-            ephemeral.to_string(),
-            "State field input.query: Input fields are ephemeral and cannot be declared in State"
-        );
+        assert_eq!(duplicate.to_string(), "State field query: duplicate field");
     }
 }

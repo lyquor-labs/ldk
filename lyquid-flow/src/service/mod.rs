@@ -2,10 +2,7 @@
 //!
 //! Round identity lives here; Scope owns execution, retained input contracts, and commits.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 use lyquid::{
     http,
@@ -19,11 +16,6 @@ use crate::{FlowError, InputError, InputHandle, Scope, ScopeId, StepId};
 mod export;
 #[path = "http.rs"] mod transport;
 pub use transport::{handle_http, json_response};
-
-/// Public routing identity, unrelated to Scope/checkpoint IDs.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(transparent)]
-pub struct FlowClientId(pub String);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,7 +41,7 @@ pub struct PendingInput {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-pub struct ResultView {
+pub struct StateView {
     pub spec: JsonValue,
     pub a2ui: Vec<JsonValue>,
 }
@@ -61,12 +53,12 @@ pub struct ReadResponse {
     pub status: Status,
     pub step: StepInfo,
     pub input: Option<PendingInput>,
-    pub view: ResultView,
+    pub view: StateView,
     pub error: Option<String>,
     pub history: History,
 }
 
-/// Application-selected checkpoints, published atomically with the current input and result.
+/// Application-selected checkpoints, published atomically with the current input and state view.
 #[derive(Clone, Default, Deserialize, Serialize)]
 pub struct History {
     pub active_revision_id: Option<ScopeId>,
@@ -125,10 +117,10 @@ struct Execution {
     restoring: bool,
 }
 
-/// One registered standalone execution. Clones refer to the same owned Scope and publication.
+/// One registered root Scope, addressed by its execution ID. Clones share its execution and publication.
 #[derive(Clone)]
 pub struct FlowClient {
-    id: FlowClientId,
+    id: ScopeId,
     execution: Arc<Mutex<Execution>>,
 }
 
@@ -137,7 +129,8 @@ impl FlowClient {
         clippy::arc_with_non_send_sync,
         reason = "Guest calls share atomic handles; Scope (including its observer) remains serialized and is not native-thread Send."
     )]
-    fn new(id: FlowClientId, scope: Scope) -> Result<Self, ClientError> {
+    fn new(scope: Scope) -> Result<Self, ClientError> {
+        let id = scope.execution_id().clone();
         // Registration publishes selected initial data without advancing the execution.
         let (step, view) = presentation(&id, &scope)?;
         Ok(Self {
@@ -208,14 +201,39 @@ impl FlowClient {
             };
             scope
         };
-        let outcome = scope.run_until_input();
+        // Keep this execution's Flow renderer even when a nested Flow commits. Progress snapshots
+        // do not issue input rounds or history checkpoints, and reads never run projection code.
+        let renderer = scope.flow().view;
+        let mut publication_error = None;
+        let outcome = scope.run_until_input_observed(&mut |committed| {
+            let spec = renderer.map_or_else(|| Ok(crate::ViewSpec::default()), |view| view(committed.active_scope()));
+            let progress = spec
+                .map_err(ClientError::internal)
+                .and_then(|spec| presentation_with_view(&self.id, committed, spec));
+            match progress {
+                Ok((step, view)) => {
+                    let mut execution = self.execution.lock();
+                    execution.published.step = step;
+                    execution.published.view = view;
+                    execution.published.revision += 1;
+                    Ok(())
+                }
+                Err(error) => {
+                    publication_error = Some(error);
+                    Err("state view publication failed".into())
+                }
+            }
+        });
         let error = outcome.err().map(|error| error.to_string());
-        if error.is_some() {
+        if error.is_some() && publication_error.is_none() {
             // Do not execute a later Step or resubmit the consumed answer while preparing a retry.
             let _ = scope.retry_input();
         }
         let mut execution = self.execution.lock();
-        let result = self.publish(&mut execution, &mut scope, error);
+        let result = match publication_error {
+            Some(error) => Err(error),
+            None => self.publish(&mut execution, &mut scope, error),
+        };
         execution.scope = Some(scope);
         if let Err(ClientError::Internal { message }) = &result {
             // The worker stopped. Keep the committed publication, but permit checkpoint recovery.
@@ -307,7 +325,8 @@ impl FlowClient {
             .ok_or(ClientError::NoPending)
     }
 
-    /// Restoring invalidates the displayed round immediately. Schedule `run` to publish a new one.
+    /// Restoring immediately replaces the state view and invalidates the displayed input round.
+    /// Schedule `run` to resume execution and publish the next input contract.
     pub fn restore(&self, checkpoint: &ScopeId) -> Result<(), ClientError> {
         let mut execution = self.execution.lock();
         if execution.published.status == Status::Processing {
@@ -318,6 +337,7 @@ impl FlowClient {
             return Err(ClientError::NotFound);
         }
         scope.restore(checkpoint).map_err(ClientError::internal)?;
+        let restored = presentation(&self.id, scope);
         execution.published.history.active_revision_id = execution
             .published
             .history
@@ -331,13 +351,32 @@ impl FlowClient {
         execution.published.error = None;
         execution.published.revision += 1;
         execution.publication_error = None;
-        Ok(())
+        match restored {
+            Ok((step, view)) => {
+                execution.published.step = step;
+                execution.published.view = view;
+                Ok(())
+            }
+            Err(error) => {
+                execution.published.status = Status::Failed;
+                if let ClientError::Internal { message } = &error {
+                    execution.publication_error = Some(message.clone());
+                }
+                Err(error)
+            }
+        }
     }
 }
 
-fn presentation(id: &FlowClientId, scope: &Scope) -> Result<(StepInfo, ResultView), ClientError> {
-    let (_, step_id, step) = scope.presentation_step().map_err(ClientError::internal)?;
+fn presentation(id: &ScopeId, scope: &Scope) -> Result<(StepInfo, StateView), ClientError> {
     let spec = scope.view().map_err(ClientError::internal)?;
+    presentation_with_view(id, scope, spec)
+}
+
+fn presentation_with_view(
+    id: &ScopeId, scope: &Scope, spec: crate::ViewSpec,
+) -> Result<(StepInfo, StateView), ClientError> {
+    let (_, step_id, step) = scope.presentation_step().map_err(ClientError::internal)?;
     let a2ui = spec
         .ui()
         .surface(&format!("{}:view", id.0), None)
@@ -347,7 +386,7 @@ fn presentation(id: &FlowClientId, scope: &Scope) -> Result<(StepInfo, ResultVie
             id: step_id,
             description: step.description(false),
         },
-        ResultView {
+        StateView {
             spec: serde_json::to_value(spec).map_err(ClientError::internal)?,
             a2ui,
         },
@@ -357,7 +396,7 @@ fn presentation(id: &FlowClientId, scope: &Scope) -> Result<(StepInfo, ResultVie
 /// Standalone registry. A future Session resolver can use the same HTTP adapter and FlowClient.
 #[derive(Clone)]
 pub struct FlowService {
-    clients: Arc<Mutex<HashMap<FlowClientId, FlowClient>>>,
+    clients: Arc<Mutex<HashMap<ScopeId, FlowClient>>>,
 }
 
 impl Default for FlowService {
@@ -378,38 +417,24 @@ impl FlowService {
     }
 
     /// Registers explicitly created business execution. The caller then schedules `FlowClient::run`.
-    pub fn register(&self, scope: Scope) -> Result<FlowClientId, ClientError> {
+    pub fn register(&self, scope: Scope) -> Result<ScopeId, ClientError> {
         Ok(self.insert(scope, false)?.id)
     }
 
     /// Replaces this service's executions atomically after successful business initialization.
-    pub fn replace(&self, scope: Scope) -> Result<FlowClientId, ClientError> {
+    pub fn replace(&self, scope: Scope) -> Result<ScopeId, ClientError> {
         Ok(self.insert(scope, true)?.id)
     }
 
     fn insert(&self, scope: Scope, replace: bool) -> Result<FlowClient, ClientError> {
-        use std::fmt::Write as _;
-        let bytes = lyquid::prelude::lyquor_api::random_bytes(16).map_err(ClientError::internal)?;
-        let mut id = String::new();
-        for byte in bytes {
-            write!(&mut id, "{byte:02x}").expect("writing to String");
-        }
-        // Entropy separates runtime incarnations; the counter prevents reuse within this runtime,
-        // including deterministic hosts whose entropy provider returns the same bytes in tests.
-        static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
-        let sequence = NEXT_CLIENT
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
-            .map_err(|_| ClientError::internal("Flow client IDs exhausted"))?;
-        write!(&mut id, "-{sequence:x}").expect("writing to String");
-        let id = FlowClientId(id);
-        let client = FlowClient::new(id.clone(), scope)?;
+        let client = FlowClient::new(scope)?;
         let mut clients = self.clients.lock();
         if replace {
             for (_, previous) in clients.drain() {
                 previous.execution.lock().input.request_stop();
             }
         }
-        clients.insert(id, client.clone());
+        clients.insert(client.id.clone(), client.clone());
         Ok(client)
     }
 
@@ -427,12 +452,12 @@ impl FlowService {
         first_error.map_or(Ok(()), Err)
     }
 
-    pub fn resolve(&self, id: &FlowClientId) -> Option<FlowClient> {
+    pub fn resolve(&self, id: &ScopeId) -> Option<FlowClient> {
         self.clients.lock().get(id).cloned()
     }
 
-    /// Retire an execution; replacement is a new registration and never reuses its client ID.
-    pub fn remove(&self, id: &FlowClientId) {
+    /// Retire an execution; a replacement Scope has its own execution ID.
+    pub fn remove(&self, id: &ScopeId) {
         let client = self.clients.lock().remove(id);
         if let Some(client) = client {
             client.execution.lock().input.request_stop();
@@ -440,7 +465,7 @@ impl FlowService {
     }
 
     pub fn handle_http(
-        &self, request: http::Request, schedule: impl FnOnce(FlowClientId) -> Result<(), FlowError>,
+        &self, request: http::Request, schedule: impl FnOnce(ScopeId) -> Result<(), FlowError>,
     ) -> http::Response {
         handle_http(request, |id| self.resolve(id), schedule)
     }
@@ -521,8 +546,9 @@ mod tests {
             assert_eq!(created.status, 202);
             let created: JsonValue = serde_json::from_slice(&created.body).unwrap();
             assert_eq!(created.as_object().unwrap().len(), 1);
-            let id: FlowClientId = serde_json::from_value(created["client_id"].clone()).unwrap();
+            let id: ScopeId = serde_json::from_value(created["scope_id"].clone()).unwrap();
             let client = service.resolve(&id).unwrap();
+            assert_eq!(client.execution.lock().scope.as_ref().unwrap().execution_id(), &id);
             assert_eq!(read(&client)["status"], "processing");
             assert!(read(&client)["history"]["revisions"].as_array().unwrap().is_empty());
             service.run_pending().unwrap();
@@ -547,12 +573,25 @@ mod tests {
             assert_eq!(scheduled.get(), 1);
             assert_eq!(read(&service.resolve(&id).unwrap()), before);
             reject.set(false);
-            assert_eq!(serve(creation("")).status, 202);
+            let old_request = token(&client);
+            let replacement = serve(creation(""));
+            assert_eq!(replacement.status, 202);
+            let replacement: JsonValue = serde_json::from_slice(&replacement.body).unwrap();
+            let replacement: ScopeId = serde_json::from_value(replacement["scope_id"].clone()).unwrap();
+            assert_ne!(replacement, id);
             assert!(service.resolve(&id).is_none());
             assert_eq!(serve(request(http::Method::Get, &id, "", "")).status, 404);
             assert!(matches!(
                 client.submit(&token(&client), r#"{"finish":false}"#),
                 Err(ClientError::NoPending)
+            ));
+            service.run_pending().unwrap();
+            assert!(matches!(
+                service
+                    .resolve(&replacement)
+                    .unwrap()
+                    .submit(&old_request, r#"{"finish":false}"#),
+                Err(ClientError::Stale)
             ));
         }
 
@@ -701,6 +740,7 @@ mod tests {
 
         fn mounted_flow(child: Flow, mode: crate::TraceMode) -> Flow {
             Flow::builder("parent")
+                .view(counter_view)
                 .entry("child")
                 .exit("done")
                 .flow(
@@ -714,44 +754,30 @@ mod tests {
         }
 
         #[test]
-        fn completed_child_view() {
+        fn flow_view_survives_child_completion_and_restore() {
             for mode in [
                 crate::TraceMode::Expanded,
                 crate::TraceMode::Collapsed("Child finished".into()),
             ] {
-                for custom in [false, true] {
-                    let mut child = counter_flow(Arc::new(AtomicUsize::new(0)), false, false);
-                    if custom {
-                        child.view = Some(|scope| {
-                            let ui = ViewSpec::builder();
-                            Ok(ViewSpec::finish(
-                                &ui,
-                                ui.text(format!(
-                                    "{}:{}",
-                                    scope.state().get("count").and_then(serde_json::Value::as_u64).unwrap(),
-                                    scope.trace().entries.len(),
-                                )),
-                            )?)
-                        });
-                    }
-                    let service = FlowService::new();
-                    let id = service.register(scope(mounted_flow(child, mode.clone()))).unwrap();
-                    let client = service.resolve(&id).unwrap();
-                    client.run().unwrap();
-                    answer(&client, false);
-                    let before_exit = client.checkpoint().unwrap();
-                    answer(&client, true);
-                    assert_eq!(read(&client)["status"], "completed");
-                    assert_eq!(count(&client), if custom { "2:2" } else { "2" });
-                    let completed = client.checkpoint().unwrap();
-                    client.restore(&before_exit).unwrap();
-                    client.run().unwrap();
-                    assert_eq!(count(&client), if custom { "1:1" } else { "1" });
-                    client.restore(&completed).unwrap();
-                    client.run().unwrap();
-                    assert_eq!(read(&client)["status"], "completed");
-                    assert_eq!(count(&client), if custom { "2:2" } else { "2" });
-                }
+                let mut child = counter_flow(Arc::new(AtomicUsize::new(0)), false, false);
+                child.view = Some(|_| Err("the child renderer must never replace its host's view".into()));
+                let service = FlowService::new();
+                let id = service.register(scope(mounted_flow(child, mode.clone()))).unwrap();
+                let client = service.resolve(&id).unwrap();
+                client.run().unwrap();
+                answer(&client, false);
+                let before_exit = client.checkpoint().unwrap();
+                answer(&client, true);
+                assert_eq!(read(&client)["status"], "completed");
+                assert_eq!(count(&client), "2");
+                let completed = client.checkpoint().unwrap();
+                client.restore(&before_exit).unwrap();
+                client.run().unwrap();
+                assert_eq!(count(&client), "1");
+                client.restore(&completed).unwrap();
+                client.run().unwrap();
+                assert_eq!(read(&client)["status"], "completed");
+                assert_eq!(count(&client), "2");
             }
         }
 
@@ -759,12 +785,12 @@ mod tests {
             Produce(Counter {
                 calls: Arc::new(AtomicUsize::new(0)),
                 fail: false,
-                broken_view: false,
             })
         }
 
         fn produce_then_child(child: Flow) -> Flow {
             Flow::builder("parent")
+                .view(counter_view)
                 .entry("produce")
                 .exit("done")
                 .step("produce", producing_step())
@@ -779,7 +805,7 @@ mod tests {
         }
 
         #[test]
-        fn child_failure_keeps_parent_view() {
+        fn child_failure_keeps_committed_state_view() {
             let child = Flow::builder("failure")
                 .entry("fail")
                 .exit("done")
@@ -801,7 +827,7 @@ mod tests {
         }
 
         #[test]
-        fn child_commit_replaces_parent_view() {
+        fn child_commit_updates_flow_state_view() {
             let child = Flow::builder("child")
                 .entry("produce")
                 .exit("done")
@@ -826,8 +852,9 @@ mod tests {
         }
 
         #[test]
-        fn parent_commit_replaces_child_view() {
+        fn flow_view_follows_child_join_and_parent_commits() {
             let flow = Flow::builder("parent")
+                .view(counter_view)
                 .entry("child")
                 .exit("done")
                 .flow(
@@ -841,7 +868,6 @@ mod tests {
                     Counter {
                         calls: Arc::new(AtomicUsize::new(0)),
                         fail: false,
-                        broken_view: false,
                     },
                 )
                 .build()
@@ -861,12 +887,12 @@ mod tests {
         }
 
         #[test]
-        fn child_view_error_keeps_commit() {
+        fn flow_view_error_preserves_child_commit() {
             let service = FlowService::new();
-            let child = counter_flow(Arc::new(AtomicUsize::new(0)), false, true);
-            let id = service
-                .register(scope(mounted_flow(child, crate::TraceMode::Expanded)))
-                .unwrap();
+            let child = counter_flow(Arc::new(AtomicUsize::new(0)), false, false);
+            let mut parent = mounted_flow(child, crate::TraceMode::Expanded);
+            parent.view = Some(broken_counter_view);
+            let id = service.register(scope(parent)).unwrap();
             let client = service.resolve(&id).unwrap();
             client.run().unwrap();
             client.submit(&token(&client), r#"{"finish":true}"#).unwrap();
@@ -874,16 +900,17 @@ mod tests {
             assert!(matches!(client.read(), Err(ClientError::Internal { .. })));
             let execution = client.execution.lock();
             let scope = execution.scope.as_ref().unwrap();
-            assert!(scope.is_finished());
-            assert_eq!(scope.state().get("count").and_then(serde_json::Value::as_u64), Some(1));
-            assert_eq!(scope.trace().entries.len(), 1);
+            let child = scope.running_child().unwrap();
+            assert!(child.is_finished());
+            assert_eq!(child.state().get("count"), Some(&json!(1)));
+            assert_eq!(child.trace().entries.len(), 1);
+            assert!(!scope.is_finished());
+            assert_eq!(scope.state().get("count"), Some(&json!(0)));
+            assert!(scope.trace().entries.is_empty());
             assert_eq!(execution.published.view.spec["ui"]["data"]["content"]["c0"], "0");
             let snapshot = scope.clone();
             for scope in [scope, &snapshot] {
-                let error = scope.view().err().unwrap();
-                assert!(matches!(error, FlowError::Execution(diagnostics)
-                    if matches!(diagnostics.diagnostics[0].source.as_ref().unwrap().downcast_ref::<FlowError>(),
-                        Some(FlowError::Execution(message)) if message.to_string().contains("count"))));
+                assert!(scope.view().err().unwrap().to_string().contains("count"));
             }
         }
     }
@@ -891,7 +918,6 @@ mod tests {
     struct Counter {
         calls: Arc<AtomicUsize>,
         fail: bool,
-        broken_view: bool,
     }
 
     impl Step for Counter {
@@ -905,14 +931,6 @@ mod tests {
             let submit = builder.submit("Submit");
             let root = builder.ui().column(vec![field, submit]);
             Some(builder.finish(root).unwrap())
-        }
-        fn view(&self, scope: &Scope) -> Result<ViewSpec, FlowError> {
-            let count = scope.state().get("count").and_then(serde_json::Value::as_u64).unwrap();
-            if self.broken_view && count > 0 {
-                return Err(FlowError::Execution("count: cannot render value".into()));
-            }
-            let builder = ViewSpec::builder();
-            Ok(ViewSpec::finish(&builder, builder.text(count.to_string()))?)
         }
         fn model_template(&self, _: &Scope) -> TemplateSpec {
             TemplateSpec::Skip(TurnProposal::Advance {
@@ -945,7 +963,7 @@ mod tests {
         }
     }
 
-    fn setup(fail: bool, broken_view: bool) -> (FlowService, FlowClientId, FlowClient, Arc<AtomicUsize>) {
+    fn setup(fail: bool, broken_view: bool) -> (FlowService, ScopeId, FlowClient, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let scope = scope(counter_flow(calls.clone(), fail, broken_view));
         let service = FlowService::new();
@@ -955,18 +973,25 @@ mod tests {
         (service, id, client, calls)
     }
 
+    fn counter_view(scope: &Scope) -> Result<ViewSpec, FlowError> {
+        let count = scope.state().get("count").and_then(serde_json::Value::as_u64).unwrap();
+        let builder = ViewSpec::builder();
+        Ok(ViewSpec::finish(&builder, builder.text(count.to_string()))?)
+    }
+
+    fn broken_counter_view(scope: &Scope) -> Result<ViewSpec, FlowError> {
+        if scope.state().get("count").and_then(serde_json::Value::as_u64).unwrap() > 0 {
+            return Err("count: cannot render value".into());
+        }
+        counter_view(scope)
+    }
+
     fn counter_flow(calls: Arc<AtomicUsize>, fail: bool, broken_view: bool) -> Flow {
         Flow::builder("counter")
+            .view(if broken_view { broken_counter_view } else { counter_view })
             .entry("counter")
             .exit("done")
-            .step(
-                "counter",
-                Counter {
-                    calls,
-                    fail,
-                    broken_view,
-                },
-            )
+            .step("counter", Counter { calls, fail })
             .build()
             .unwrap()
     }
@@ -1003,6 +1028,103 @@ mod tests {
             .submit(&token(client), &json!({"finish": finish}).to_string())
             .unwrap();
         client.run().unwrap();
+    }
+
+    std::thread_local! {
+        // The guest runner isolates each test. A thread-local handle lets a Step read the service
+        // while its worker is executing without making Scope's handles artificially Send/Sync.
+        static RUNNING_CLIENT: std::cell::RefCell<Option<FlowClient>> = const { std::cell::RefCell::new(None) };
+    }
+
+    struct AutomaticCount {
+        expected: u64,
+        next: Option<StepId>,
+    }
+
+    impl Step for AutomaticCount {
+        fn description(&self, _: bool) -> String {
+            "Advance an automatic counter".into()
+        }
+
+        fn input(&self, _: &Scope) -> Option<InputSpec> {
+            None
+        }
+
+        fn model_template(&self, _: &Scope) -> TemplateSpec {
+            TemplateSpec::Skip(TurnProposal::Advance {
+                next: self.next.clone(),
+                updates: StateUpdates::default(),
+            })
+        }
+
+        fn finalize(&self, scope: &Scope, proposal: &mut TurnProposal) -> Result<TraceSummary, FlowError> {
+            assert_eq!(scope.state().get("count"), Some(&json!(self.expected)));
+            RUNNING_CLIENT.with(|client| {
+                let client = client.borrow();
+                let client = client.as_ref().unwrap();
+                let published = read(client);
+                assert_eq!(count(client), self.expected.to_string());
+                assert_eq!(published["status"], "processing");
+                assert!(published["input"].is_null());
+                assert!(published["history"]["revisions"].as_array().unwrap().is_empty());
+            });
+            let TurnProposal::Advance { updates, .. } = proposal else {
+                unreachable!()
+            };
+            updates.set("count".into(), Some(json!(self.expected + 1)));
+            Ok(TraceSummary::Summary("incremented".into()))
+        }
+    }
+
+    #[test]
+    fn automatic_commits_are_visible_before_the_next_step() {
+        for nested in [false, true] {
+            let child = Flow::builder("automatic")
+                .view(|_| Err("a nested renderer must not be selected".into()))
+                .entry("first")
+                .exit("done")
+                .step(
+                    "first",
+                    AutomaticCount {
+                        expected: 0,
+                        next: Some("second".into()),
+                    },
+                )
+                .step(
+                    "second",
+                    AutomaticCount {
+                        expected: 1,
+                        next: Some("done".into()),
+                    },
+                )
+                .build()
+                .unwrap();
+            let mut flow = if nested {
+                Flow::builder("parent")
+                    .entry("child")
+                    .exit("done")
+                    .flow(
+                        "child",
+                        child,
+                        crate::ExitTransitions::new().transition("done", "done").unwrap(),
+                        crate::TraceMode::Expanded,
+                    )
+                    .build()
+                    .unwrap()
+            } else {
+                child
+            };
+            flow.view = Some(counter_view);
+            let scope = scope(flow);
+            let service = FlowService::new();
+            let id = service.register(scope).unwrap();
+            let client = service.resolve(&id).unwrap();
+            RUNNING_CLIENT.with(|running| running.replace(Some(client.clone())));
+            client.run().unwrap();
+            assert_eq!(count(&client), "2");
+            assert_eq!(read(&client)["status"], "completed");
+            RUNNING_CLIENT.with(|running| running.take());
+        }
     }
 
     #[test]
@@ -1066,6 +1188,9 @@ mod tests {
         let old = token(&client);
         answer(&client, false);
         client.restore(&checkpoint).unwrap();
+        assert_eq!(client.execution.lock().scope.as_ref().unwrap().execution_id(), &id);
+        assert_eq!(count(&client), "0");
+        assert_eq!(read(&client)["status"], "processing");
         assert!(matches!(
             client.submit(&old, r#"{"finish":false}"#),
             Err(ClientError::NoPending)
@@ -1085,6 +1210,7 @@ mod tests {
     fn child_and_snapshot_views() {
         let calls = Arc::new(AtomicUsize::new(0));
         let flow = Flow::builder("parent")
+            .view(counter_view)
             .entry("child")
             .exit("done")
             .flow(
@@ -1104,7 +1230,11 @@ mod tests {
         assert_eq!(doc(&saved)["ui"]["data"]["content"]["c0"], "0");
         assert_eq!(doc(&scope)["ui"]["data"]["content"]["c0"], "1");
         let service = FlowService::new();
+        let root_id = scope.execution_id().clone();
+        let child_id = scope.running_child().unwrap().execution_id().clone();
         let id = service.register(scope).unwrap();
+        assert_eq!(id, root_id);
+        assert_ne!(id, child_id);
         let client = service.resolve(&id).unwrap();
         client.run().unwrap();
         assert_eq!(read(&client)["step"]["id"], "counter");
@@ -1158,7 +1288,7 @@ mod tests {
         ));
     }
 
-    fn request(method: http::Method, id: &FlowClientId, operation: &str, body: &str) -> http::Request {
+    fn request(method: http::Method, id: &ScopeId, operation: &str, body: &str) -> http::Request {
         http::Request {
             method,
             url: format!("http://example.test/api/flows/{}{operation}", id.0),
@@ -1176,7 +1306,7 @@ mod tests {
         let response = handle_http(get(), |_| Some(client.clone()), |_| panic!("GET scheduled work"));
         assert_eq!(serde_json::from_slice::<JsonValue>(&response.body).unwrap(), before);
         let response = service.handle_http(
-            request(http::Method::Get, &FlowClientId("missing".into()), "", ""),
+            request(http::Method::Get, &ScopeId("missing".into()), "", ""),
             |_| panic!(),
         );
         assert_eq!(response.status, 404);
@@ -1266,9 +1396,6 @@ mod tests {
         fn input(&self, scope: &Scope) -> Option<InputSpec> {
             self.0.input(scope)
         }
-        fn view(&self, scope: &Scope) -> Result<ViewSpec, FlowError> {
-            self.0.view(scope)
-        }
         fn model_template(&self, scope: &Scope) -> TemplateSpec {
             self.0.model_template(scope)
         }
@@ -1284,13 +1411,13 @@ mod tests {
     #[test]
     fn later_failure_keeps_commit() {
         let flow = Flow::builder("later")
+            .view(counter_view)
             .entry("produce")
             .step(
                 "produce",
                 Produce(Counter {
                     calls: Arc::new(AtomicUsize::new(0)),
                     fail: false,
-                    broken_view: false,
                 }),
             )
             .step("fail", Fails)
@@ -1379,11 +1506,15 @@ mod tests {
         let service = FlowService::new();
         let ids = (0..2)
             .map(|_| {
-                service
-                    .register(scope(counter_flow(Arc::new(AtomicUsize::new(0)), false, false)))
-                    .unwrap()
+                let scope = scope(counter_flow(Arc::new(AtomicUsize::new(0)), false, false));
+                let expected = scope.execution_id().clone();
+                let id = service.register(scope).unwrap();
+                assert_eq!(id, expected);
+                id
             })
             .collect::<Vec<_>>();
+        // Guest tests return identical random bytes; both executions must still remain addressable.
+        assert_ne!(ids[0], ids[1]);
         service.run_pending().unwrap();
         for id in &ids {
             let client = service.resolve(id).unwrap();

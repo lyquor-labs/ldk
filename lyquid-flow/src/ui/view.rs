@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use super::{Builder, Node, UiDocument};
 
-/// Explicitly selected result content and navigation. Input controls and submit actions are not permitted.
+/// A Flow's persistent State view. Input controls and submit actions are not permitted.
 #[derive(Clone, Serialize)]
 pub struct ViewSpec {
     ui: UiDocument,
@@ -25,7 +25,7 @@ impl ViewSpec {
                 component["action"]["functionCall"]["call"] == "openUrl" &&
                 component["action"].get("event").is_none()))
         }) {
-            return Err(Diagnostic::new("view", "result views cannot contain input controls or actions").into());
+            return Err(Diagnostic::new("view", "state views cannot contain input controls or actions").into());
         }
         Ok(Self { ui })
     }
@@ -38,7 +38,7 @@ impl ViewSpec {
 impl Default for ViewSpec {
     fn default() -> Self {
         let builder = Self::builder();
-        Self::finish(&builder, builder.column(Vec::new())).expect("an empty result view is valid")
+        Self::finish(&builder, builder.column(Vec::new())).expect("an empty state view is valid")
     }
 }
 
@@ -64,7 +64,7 @@ mod tests {
     fn view_links() {
         let ui = ViewSpec::builder();
         let spec = ViewSpec::finish(&ui, ui.link("Product source", "https://example.com/product")).unwrap();
-        let messages = spec.ui().surface("result", None).unwrap();
+        let messages = spec.ui().surface("state", None).unwrap();
         assert_eq!(
             messages[1]["updateComponents"]["components"][1]["action"]["functionCall"]["call"],
             "openUrl"

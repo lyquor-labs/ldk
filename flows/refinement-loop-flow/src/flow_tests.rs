@@ -252,7 +252,7 @@ fn state_initialization_reuses_refinement_validation_and_preserves_parent_fields
         );
         let state = config
             .add_state_fields(
-                State::builder().field(
+                state_builder([]).field(
                     "parent",
                     "Parent-owned data",
                     lyquid_flow::Type::U64,

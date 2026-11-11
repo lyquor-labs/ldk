@@ -8,8 +8,7 @@ use crate::scope::{FlowError, Scope};
 use crate::state::StateUpdates;
 use crate::step::{Step, StepId, TemplateSpec};
 use crate::trace::TraceSummary;
-use crate::{BuildError, Diagnostic, TurnProposal};
-use crate::{InputSpec, ToolManifest, ToolStep};
+use crate::{BuildError, Diagnostic, InputSpec, TurnProposal};
 
 type ViewFn = fn(&Scope) -> Result<crate::ViewSpec, FlowError>;
 type HistoryFn = fn(&Scope, Option<&serde_json::Value>) -> Result<Option<serde_json::Value>, FlowError>;
@@ -85,7 +84,7 @@ pub enum TraceMode {
 
 /// Collects the Steps, sole entry, and exits for one reusable Flow.
 pub struct FlowBuilder {
-    /// Optional result projection from committed State; None uses the child/Step result view.
+    /// Optional persistent view of committed State; None presents an empty view.
     view: Option<ViewFn>,
     /// Optional selector for service history checkpoints and metadata at successful input boundaries.
     /// None omits public history checkpoints; execution Trace is unaffected.
@@ -102,8 +101,6 @@ pub struct FlowBuilder {
     steps: Vec<(StepId, Arc<dyn Step>)>,
     /// Child Flow graphs indexed by the same local IDs as their Step implementations.
     flows: HashMap<StepId, Arc<Flow>>,
-    /// Fixed manifests captured by explicit tool registrations.
-    tool_manifests: HashMap<StepId, ToolManifest>,
 }
 
 impl FlowBuilder {
@@ -115,8 +112,13 @@ impl FlowBuilder {
         self
     }
 
-    /// Selects application results from the active Scope's committed State, including child Flows.
-    /// This overrides Step views for this composition; it never receives pending input.
+    /// Sets the function that renders this Flow's state into a ViewSpec.
+    ///
+    /// The same view function is used throughout this Flow's execution.
+    /// During a child Flow, it receives the active child's Scope; after the child
+    /// joins, it receives this Flow's Scope.
+    /// It should read committed state through Scope::state without side effects.
+    /// If no view function is set, the view is empty.
     pub fn view(mut self, view: fn(&Scope) -> Result<crate::ViewSpec, FlowError>) -> Self {
         self.view = Some(view);
         self
@@ -150,16 +152,6 @@ impl FlowBuilder {
     {
         self.steps.push((id.into(), Arc::new(step)));
         self
-    }
-
-    /// Registers a ToolStep and captures its fixed manifest.
-    pub fn tool_step<S>(mut self, id: impl Into<StepId>, step: S) -> Self
-    where
-        S: ToolStep + 'static,
-    {
-        let id = id.into();
-        self.tool_manifests.insert(id.clone(), step.manifest());
-        self.step(id, step)
     }
 
     /// Registers a child Flow, connects its exits, and selects how its Trace is recorded.
@@ -232,7 +224,6 @@ impl FlowBuilder {
             exits: self.exits,
             steps,
             flows: self.flows,
-            tool_manifests: self.tool_manifests,
             exit_transitions: ExitTransitions::new(),
             trace_mode: TraceMode::Expanded,
         };
@@ -252,7 +243,7 @@ impl FlowBuilder {
 /// applies the child's accumulated State updates and follows the configured exit transition.
 #[derive(Clone)]
 pub struct Flow {
-    /// Optional result projection from committed State; None uses the child/Step result view.
+    /// Optional persistent view of committed State; None presents an empty view.
     pub(super) view: Option<ViewFn>,
     /// Optional selector for service history checkpoints and metadata at successful input boundaries.
     /// None omits public history checkpoints; execution Trace is unaffected.
@@ -269,8 +260,6 @@ pub struct Flow {
     steps: HashMap<StepId, Arc<dyn Step>>,
     /// Child graphs indexed by the same local IDs as their Step implementations.
     flows: HashMap<StepId, Arc<Self>>,
-    /// Manifests exposed by Steps registered through [`FlowBuilder::tool_step`].
-    tool_manifests: HashMap<StepId, ToolManifest>,
     /// Parent-local targets configured when this Flow is mounted as a Step.
     exit_transitions: ExitTransitions,
     /// Representation configured for this Flow's Trace when mounted as a Step.
@@ -289,7 +278,6 @@ impl Flow {
             exits: new_hashset(),
             steps: Vec::new(),
             flows: new_hashmap(),
-            tool_manifests: new_hashmap(),
         }
     }
 
@@ -307,10 +295,6 @@ impl Flow {
 
     pub(super) fn step(&self, id: &StepId) -> Option<&dyn Step> {
         self.steps.get(id).map(AsRef::as_ref)
-    }
-
-    pub(super) fn tool_manifest(&self, id: &StepId) -> Option<&ToolManifest> {
-        self.tool_manifests.get(id)
     }
 
     pub(super) fn step_ids(&self) -> impl Iterator<Item = &StepId> {
@@ -348,12 +332,6 @@ impl Flow {
 impl Step for Flow {
     fn input(&self, _scope: &Scope) -> Option<InputSpec> {
         None
-    }
-
-    fn view(&self, scope: &Scope) -> Result<crate::ViewSpec, FlowError> {
-        scope
-            .running_child()
-            .map_or_else(|| Ok(crate::ViewSpec::default()), Scope::view)
     }
 
     fn description(&self, _concise: bool) -> String {
@@ -515,27 +493,13 @@ mod tests {
             }
             Ok(summary)
         }
-
-        fn view(&self, scope: &Scope) -> Result<ViewSpec, FlowError> {
-            let inner = self.inner.view(scope)?;
-            let ui = ViewSpec::builder();
-            ui.data(
-                "result",
-                json!({
-                    "step": self.name,
-                    "state": scope.state().get("result"),
-                    "trace": scope.trace().entries.last().and_then(|entry| entry.state.get("result")),
-                    "inner": inner.ui().data(),
-                }),
-            );
-            Ok(ViewSpec::finish(&ui, ui.text("Result"))?)
-        }
     }
 
     #[test]
     fn mounted_step_hooks_and_finalizer_retry() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let child = Flow::builder("child")
+            .view(|_| panic!("a mounted child must not select the parent's State view"))
             .entry("inside")
             .exit("done")
             .step(
@@ -558,6 +522,11 @@ mod tests {
             fail_once: Mutex::new(true),
         };
         let parent = Flow::builder("parent")
+            .view(|scope| {
+                let ui = ViewSpec::builder();
+                ui.data("result", scope.state().get("result"));
+                Ok(ViewSpec::finish(&ui, ui.text("Parent State"))?)
+            })
             .entry("child")
             .exit("finished")
             .flow_with(
@@ -591,9 +560,9 @@ mod tests {
         assert!(scope.trace().entries.is_empty());
         assert!(!scope.is_finished());
         let waiting = scope.view().unwrap();
-        assert_eq!(waiting.ui().data()["result"]["step"], "parent");
-        assert_eq!(waiting.ui().data()["result"]["state"], "");
-        assert_eq!(waiting.ui().data()["result"]["inner"]["result"]["state"], "child");
+        assert_eq!(waiting.ui().data()["result"], "child");
+        let saved = scope.clone();
+        let checkpoint = scope.checkpoint();
 
         scope.advance().unwrap();
         assert!(scope.is_finished());
@@ -606,10 +575,30 @@ mod tests {
             TraceSummary::Summary(summary) if summary == "mounted child"
         ));
         let completed = scope.view().unwrap();
-        assert_eq!(completed.ui().data()["result"]["step"], "parent");
-        assert_eq!(completed.ui().data()["result"]["state"], "parent");
-        assert_eq!(completed.ui().data()["result"]["trace"], "parent");
-        assert_eq!(completed.ui().data()["result"]["inner"]["result"]["state"], "child");
+        assert_eq!(completed.ui().data()["result"], "parent");
+        assert_eq!(saved.view().unwrap().ui().data()["result"], "child");
+
+        scope.restore(&checkpoint).unwrap();
+        assert!(!scope.is_finished());
+        assert_eq!(scope.state().get("result"), Some(&json!("")));
+        assert_eq!(scope.view().unwrap().ui().data()["result"], "child");
+        scope.advance().unwrap();
+        assert!(scope.is_finished());
+        assert_eq!(scope.view().unwrap().ui().data()["result"], "parent");
+
+        let mut parent = scope.flow().clone();
+        parent.view = None;
+        let mut scope = Scope::new(
+            Arc::new(parent),
+            scope.state().clone(),
+            AutoCheckpointConfig::Disabled,
+            None,
+        );
+        let empty = serde_json::to_value(ViewSpec::default()).unwrap();
+        assert_eq!(serde_json::to_value(scope.view().unwrap()).unwrap(), empty);
+        scope.advance().unwrap();
+        assert!(scope.is_finished());
+        assert_eq!(serde_json::to_value(scope.view().unwrap()).unwrap(), empty);
     }
 
     #[test]

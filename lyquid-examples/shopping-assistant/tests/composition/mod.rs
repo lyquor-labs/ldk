@@ -275,7 +275,7 @@ fn usage_after_retry_and_restore() {
             })
         );
         for _ in 0..2 {
-            scope.view().unwrap();
+            super::view::shopping_view(&scope).unwrap();
             assert_eq!(tracker.snapshot().to_json(), observed);
         }
         if attempt == 2 {

@@ -1,7 +1,10 @@
 use std::collections::VecDeque;
 use std::fmt::{self, Write as _};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use lyquid::prelude::{HashMap, Mutex, new_hashmap, new_hashset};
 use lyquid_llm::{FinishReason, ModelConfig, ModelRequest, ModelResponse, Usage};
@@ -16,7 +19,7 @@ use crate::trace::{Trace, TraceEntry, TraceSummary};
 use crate::{InputSpec, TurnProposal};
 
 /// Opaque identity of one Scope execution or saved Scope checkpoint.
-#[derive(Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ScopeId(pub String);
 
 impl From<&str> for ScopeId {
@@ -41,6 +44,13 @@ fn new_execution_id() -> ScopeId {
     for byte in bytes {
         write!(&mut id, "{byte:02x}").expect("writing a Scope execution ID to String cannot fail");
     }
+    // Entropy separates runtime incarnations; the counter prevents reuse within this runtime,
+    // including guest tests whose host returns the same random bytes for every call.
+    static NEXT_EXECUTION: AtomicU64 = AtomicU64::new(1);
+    let sequence = NEXT_EXECUTION
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+        .expect("Scope execution IDs exhausted");
+    write!(&mut id, "-{sequence:x}").expect("writing a Scope execution ID to String cannot fail");
     ScopeId(id)
 }
 
@@ -296,9 +306,6 @@ pub struct Scope {
     state: Arc<State>,
     /// Ordered Trace entries committed locally by this Flow execution.
     trace: Arc<Trace>,
-    /// Selected result of the last completed child, retained after its execution is dropped.
-    /// A projection error is retained too; it must not undo a successful child commit.
-    completed_child_view: Option<Result<crate::ViewSpec, crate::Diagnostic>>,
     /// Uncommitted values owned by the active Step.
     updates: StateUpdates,
     /// Raw response visible only while the current Step's finalization runs.
@@ -354,7 +361,6 @@ impl Clone for Scope {
             parent: self.parent.clone(),
             state: Arc::clone(&self.state),
             trace: Arc::clone(&self.trace),
-            completed_child_view: self.completed_child_view.clone(),
             updates: self.updates.clone(),
             model_response: None,
             accumulated_updates: self.accumulated_updates.clone(),
@@ -391,7 +397,6 @@ impl Scope {
             parent: None,
             state: Arc::new(state),
             trace: Arc::new(Trace::default()),
-            completed_child_view: None,
             updates: StateUpdates::default(),
             model_response: None,
             accumulated_updates: StateUpdates::default(),
@@ -492,35 +497,19 @@ impl Scope {
         matches!(self.phase, RunPhase::Finished(_))
     }
 
-    /// Presents this stable Scope (or its active child) using its own committed data.
-    /// Calling this on a saved Scope uses that saved State and Trace, never another execution.
-    pub fn view(&self) -> Result<crate::ViewSpec, FlowError> {
-        if let Some(view) = self.flow.view {
-            return view(self.presentation_step()?.0);
-        }
-        if let Some(child) = self.running_child() &&
-            (self.trace.entries.is_empty() || child.has_committed_result())
-        {
-            return self.current_step_cloned()?.view(self);
-        }
-        if let Some(view) = &self.completed_child_view {
-            return view.clone().map_err(FlowError::from);
-        }
-        // Results belong to their producing Step. A subsequent failing Step must not replace
-        // the last committed result with its own (possibly empty) presentation.
-        let id = self
-            .trace
-            .entries
-            .last()
-            .map_or(&self.current_step, |entry| &entry.step);
+    /// Renders this Flow's persistent view from the active Scope's committed State.
+    ///
+    /// Nested execution supplies its active Scope without selecting a different view. Calling
+    /// this on a saved Scope uses that saved execution tree. Renderers read [`Scope::state`],
+    /// which excludes pending updates.
+    pub(crate) fn view(&self) -> Result<crate::ViewSpec, FlowError> {
         self.flow
-            .step(id)
-            .ok_or_else(|| FlowError::Execution(format!("unknown presentation Step {id}").into()))?
-            .view(self)
+            .view
+            .map_or_else(|| Ok(crate::ViewSpec::default()), |view| view(self.active_scope()))
     }
 
-    fn has_committed_result(&self) -> bool {
-        !self.trace.entries.is_empty() || self.running_child().is_some_and(Self::has_committed_result)
+    pub(super) fn active_scope(&self) -> &Self {
+        self.running_child().map_or(self, Self::active_scope)
     }
 
     pub(crate) fn history_metadata(
@@ -572,7 +561,7 @@ impl Scope {
     /// backend retained by this Scope. This is a blocking adapter over the same runner used by
     /// [`Self::run_until_input`]; input requests are fulfilled through [`InputHandle`].
     pub fn advance(&mut self) -> Result<(), FlowError> {
-        self.advance_step(true).map(|_| ())
+        self.advance_step(true, &mut |_| Ok(())).map(|_| ())
     }
 
     /// Runs until the next input request (including inside a mounted Flow), or root completion.
@@ -589,8 +578,17 @@ impl Scope {
     /// a later Step fails; callers may restore their own checkpoint to retry a complete interaction.
     /// The input contract is retained through retries and checkpoints until its Step commits.
     pub fn run_until_input(&mut self) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
+        self.run_until_input_observed(&mut |_| Ok(()))
+    }
+
+    /// Publishes progress after each local commit or restore, including inside child Flows, before running
+    /// another Step. The observer belongs to this call; checkpoints never retain it. An observer
+    /// error stops execution without undoing the commit it observed.
+    pub(crate) fn run_until_input_observed(
+        &mut self, on_commit: &mut dyn FnMut(&Self) -> Result<(), FlowError>,
+    ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
         loop {
-            if let Some(request) = self.advance_step(false)? {
+            if let Some(request) = self.advance_step(false, on_commit)? {
                 return Ok(Some(request));
             }
             if self.is_finished() {
@@ -601,17 +599,20 @@ impl Scope {
 
     /// Advances one Flow-level Step, returning any input request before executing that Step.
     /// Waits for input only when called by the blocking adapter.
-    fn advance_step(&mut self, wait_for_input: bool) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
+    fn advance_step(
+        &mut self, wait_for_input: bool, on_commit: &mut dyn FnMut(&Self) -> Result<(), FlowError>,
+    ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
         if self.input_handle.shared.lock().stop_requested {
             return Err(FlowError::Execution("the Flow execution was stopped".into()));
         }
+        if self.is_finished() {
+            return Ok(None);
+        }
         let previous_updates = self.updates.clone();
         let result = if self.running_child().is_some() {
-            self.advance_child(wait_for_input)
-        } else if self.is_finished() {
-            Ok(None)
+            self.advance_child(wait_for_input, on_commit)
         } else {
-            self.begin_step(wait_for_input)
+            self.begin_step(wait_for_input, on_commit)
         };
         if result.is_err() {
             // A running child still needs the mount's accepted input, even if this attempt first received it.
@@ -621,11 +622,17 @@ impl Scope {
                 self.updates = previous_updates;
             }
         }
-        result
+        let request = result?;
+        if request.is_none() {
+            on_commit(self)?;
+        }
+        Ok(request)
     }
 
     /// Enters a fresh Step, returns missing input, or evaluates its model template.
-    fn begin_step(&mut self, wait_for_input: bool) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
+    fn begin_step(
+        &mut self, wait_for_input: bool, on_commit: &mut dyn FnMut(&Self) -> Result<(), FlowError>,
+    ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
         let step = self.current_step_cloned()?;
         if self.pending_input_spec.is_none() {
             self.pending_input_spec = step.input(self);
@@ -660,31 +667,34 @@ impl Scope {
                         "the pending input request closed before delivery".to_owned()
                     }
                 })?;
-            self.updates.ephemeral.remove(&StateNamespace::Input);
+            self.updates.ephemeral.clear();
             for (key, value) in decoded {
                 self.set(StateNamespace::Input, key, Some(value));
             }
         }
-        self.process_model_template(step, wait_for_input)
+        self.process_model_template(step, wait_for_input, on_commit)
     }
 
     /// Forks and starts a child Scope with inherited State and shared runtime configuration.
     fn start_child(
         &mut self, child_flow: Arc<Flow>, updates: StateUpdates, wait_for_input: bool,
+        on_commit: &mut dyn FnMut(&Self) -> Result<(), FlowError>,
     ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
         let child = self.fork_child(child_flow, updates);
         self.phase = RunPhase::RunningChild(Box::new(child));
-        self.advance_child(wait_for_input)
+        self.advance_child(wait_for_input, on_commit)
     }
 
     /// Runs the active child until input is needed or it exits and can join the parent.
-    fn advance_child(&mut self, wait_for_input: bool) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
+    fn advance_child(
+        &mut self, wait_for_input: bool, on_commit: &mut dyn FnMut(&Self) -> Result<(), FlowError>,
+    ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
         loop {
             let finished = {
                 let child = self
                     .running_child_mut()
                     .expect("advance_child is called only while a child is active");
-                if let Some(request) = child.advance_step(wait_for_input)? {
+                if let Some(request) = child.advance_step(wait_for_input, on_commit)? {
                     return Ok(Some(request));
                 }
                 child.is_finished()
@@ -757,13 +767,10 @@ impl Scope {
 
     /// Evaluates the current Step's model template with Step-scoped context.
     fn process_model_template(
-        &mut self, step: Arc<dyn Step>, wait_for_input: bool,
+        &mut self, step: Arc<dyn Step>, wait_for_input: bool, on_commit: &mut dyn FnMut(&Self) -> Result<(), FlowError>,
     ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
         let (proposal, response) = match step.model_template(self) {
             TemplateSpec::Template(template) => {
-                if self.flow.tool_manifest(self.current_step()).is_some() {
-                    return Err(format!("ToolStep {} must skip model execution", self.current_step()).into());
-                }
                 self.validate_model_template(&template)?;
                 let request = prompt::build_request(self.model()?, &template, &self.flow, self)?;
                 let response = self.call_model(request)?;
@@ -773,7 +780,7 @@ impl Scope {
             }
             TemplateSpec::Skip(proposal) => (proposal, None),
         };
-        self.run_finalize(step.as_ref(), proposal, response, wait_for_input)
+        self.run_finalize(step.as_ref(), proposal, response, wait_for_input, on_commit)
     }
 
     /// Checks a proposed local Step/exit or root completion before performing external work.
@@ -785,6 +792,7 @@ impl Scope {
     /// Finalizes an ordinary Step, or starts a child Flow that will be finalized when it exits.
     fn run_finalize(
         &mut self, step: &dyn Step, mut proposal: TurnProposal, response: Option<ModelResponse>, wait_for_input: bool,
+        on_commit: &mut dyn FnMut(&Self) -> Result<(), FlowError>,
     ) -> Result<Option<(InputSpec, Arc<State>)>, FlowError> {
         if let Some(child_flow) = self.flow.child_flow(self.current_step()) {
             let TurnProposal::Advance { next, mut updates } = proposal else {
@@ -802,7 +810,7 @@ impl Scope {
                     format!("child Flow Step must start at its entry Step {}", child_flow.entry()).into(),
                 ));
             }
-            return self.start_child(child_flow, updates, wait_for_input);
+            return self.start_child(child_flow, updates, wait_for_input, on_commit);
         }
 
         self.model_response = response;
@@ -990,7 +998,6 @@ impl Scope {
             parent: Some(parent),
             state: Arc::new(state),
             trace: Arc::new(Trace::default()),
-            completed_child_view: None,
             updates: StateUpdates::default(),
             model_response: None,
             accumulated_updates: updates,
@@ -1065,17 +1072,6 @@ impl Scope {
         self.accumulated_updates.merge(updates);
         self.pending_input_spec = None;
 
-        // Present the committed parent through the mounted Step while its child is still available
-        // for delegation. Keep presentation errors without rejecting the committed transition.
-        self.completed_child_view = if self.flow.view.is_none() && self.running_child().is_some() {
-            Some(
-                self.current_step_cloned()
-                    .and_then(|step| step.view(self))
-                    .map_err(|error| crate::Diagnostic::with_source("child view", error)),
-            )
-        } else {
-            None
-        };
         match next {
             ResolvedTarget::Step(step) => {
                 self.current_step = step;
@@ -1427,6 +1423,7 @@ mod input_tests {
         original.run_until_input().unwrap().unwrap();
         handle.submit_input(r#"{"feedback":"original"}"#).unwrap();
         let mut cloned = original.clone();
+        assert_ne!(original.execution_id(), cloned.execution_id());
         cloned.run_until_input().unwrap().unwrap();
         cloned.input_handle().submit_input(r#"{"feedback":"clone"}"#).unwrap();
         assert!(cloned.run_until_input().unwrap().is_none());
@@ -1535,7 +1532,8 @@ mod tests {
                         updates: updates.clone(),
                     },
                     None,
-                    false
+                    false,
+                    &mut |_| Ok(()),
                 )
                 .is_err()
         );
@@ -1557,6 +1555,7 @@ mod tests {
                         },
                         None,
                         false,
+                        &mut |_| Ok(()),
                     )
                     .is_err()
             );
@@ -1568,7 +1567,13 @@ mod tests {
         }
         updates.set("count".into(), Some(json!(1)));
         scope
-            .run_finalize(&TestStep, TurnProposal::Advance { next: None, updates }, None, false)
+            .run_finalize(
+                &TestStep,
+                TurnProposal::Advance { next: None, updates },
+                None,
+                false,
+                &mut |_| Ok(()),
+            )
             .unwrap();
         assert_eq!(scope.state().to_json(), json!({"count":1,"names":["accepted"]}));
         assert_eq!(scope.state().declared_type("names"), Some(&names));
@@ -1679,7 +1684,9 @@ mod tests {
             };
             let checkpoints = scope.checkpoint_ids().count();
             assert_eq!(
-                scope.run_finalize(&step, proposal, Some(response), false).is_err(),
+                scope
+                    .run_finalize(&step, proposal, Some(response), false, &mut |_| Ok(()))
+                    .is_err(),
                 fail
             );
             assert!(scope.model_response().is_none());

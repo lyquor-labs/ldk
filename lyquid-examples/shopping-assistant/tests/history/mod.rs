@@ -3,13 +3,13 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use lyquid_flow::{AutoCheckpointConfig, StateNamespace};
+use lyquid_flow::{AutoCheckpointConfig, ScopeId, StateNamespace};
 use lyquid_test::test;
 use refinement_loop_flow::{CHOICE_STATE_FIELD, DECISION_STATE_FIELD, REFINEMENT_INPUT_FIELD};
 
 use super::tests::enter_request;
 use super::*;
-use lyquid_flow::service::{ClientError, FlowClient, FlowClientId, FlowService, ReadResponse, Status};
+use lyquid_flow::service::{ClientError, FlowClient, FlowService, ReadResponse, Status};
 
 // Keep production aggregation, parent mounting, and text steps; script only the model and choice.
 struct Refine(Arc<AtomicUsize>);
@@ -120,8 +120,8 @@ fn fixture() -> (Scope, Arc<AtomicUsize>, Arc<AtomicUsize>) {
                     REFINEMENT_INPUT_FIELD.into(),
                     ValueSpec::reference(StateNamespace::Input, REFINEMENT_INPUT_FIELD),
                 )])
-                .next(vec![NextStep {
-                    next: Some("refine".into()),
+                .next_steps(vec![NextStep {
+                    step_id: Some("refine".into()),
                     description: "Continue to refinement".into(),
                     inputs: vec![],
                 }])
@@ -164,7 +164,7 @@ fn fixture() -> (Scope, Arc<AtomicUsize>, Arc<AtomicUsize>) {
 
 struct Search {
     clients: FlowService,
-    id: FlowClientId,
+    id: ScopeId,
     client: FlowClient,
 }
 

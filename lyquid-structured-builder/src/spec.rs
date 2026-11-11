@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use lyquid_flow::{BuildError, Diagnostic, Diagnostics, FlowError, Scope, StateNamespace, Step, StepId, Type};
+use lyquid_flow::{
+    BuildError, Diagnostic, Diagnostics, FlowError, Scope, StateNamespace, StateUpdates, Step, StepId, Type,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tera::Tera;
@@ -12,21 +14,23 @@ use crate::StructuredStep;
 /// Structured rules for an existing Step.
 ///
 /// Construct directly, with the derived builder, or from JSON. All forms are validated by `with`.
-/// Inputs, Output, and destination arguments are not yet applied during execution.
+/// Inputs are checked by consumers at use; constant and State-reference Output is checked when resolved.
+/// Model-derived I/O is not supported yet.
 #[derive(Clone, Default, Deserialize, Serialize, TypedBuilder)]
 #[builder(field_defaults(default))]
 #[serde(default, deny_unknown_fields)]
 pub struct StructuredSpec {
-    /// Input parameter declarations.
+    /// Input parameter declarations for explicit validation; handoff and entry do not enforce them.
     pub inputs: Vec<Input>,
     /// Optional output declaration.
     #[builder(setter(strip_option))]
     pub output: Option<Output>,
     /// Field updates applied after the native finalizer; model criteria require a native model template.
-    /// References and criteria read the current committed State, without pending updates.
+    /// References read native proposed State and post-Step I/O; model criteria read pre-Step State.
+    /// References do not observe sibling constant or State-reference updates in this list.
     pub state_updates: Vec<(String, ValueSpec)>,
     /// Replaces model next-Step choices and the final route when nonempty; empty preserves native routing.
-    pub next: Vec<NextStep>,
+    pub next_steps: Vec<NextStep>,
 }
 
 /// One parameter in the Inputs section.
@@ -56,7 +60,7 @@ pub struct Output {
 #[serde(deny_unknown_fields)]
 pub struct NextStep {
     /// A local Step/exit, or root completion when `None`.
-    pub next: Option<StepId>,
+    pub step_id: Option<StepId>,
     pub description: String,
     /// Named input value specifications for the destination Step.
     #[serde(default)]
@@ -70,7 +74,7 @@ pub enum ValueSpec {
     Constant {
         value: Value,
     },
-    /// Reads the current State (or submitted input), before this turn's updates are applied.
+    /// Reads proposed State over committed State, or submitted input.
     State {
         #[serde(with = "StateNamespaceSerde")]
         namespace: StateNamespace,
@@ -87,7 +91,6 @@ pub enum ValueSpec {
 enum StateNamespaceSerde {
     Default,
     Input,
-    Tool,
 }
 
 impl ValueSpec {
@@ -112,14 +115,14 @@ impl ValueSpec {
         matches!(self, Self::Model { .. })
     }
 
-    pub(crate) fn read(&self, scope: &Scope) -> Result<Option<Value>, FlowError> {
+    pub(crate) fn read(&self, scope: &Scope, updates: &StateUpdates) -> Result<Option<Value>, FlowError> {
         match self {
             Self::Constant { value } => Ok(Some(value.clone())),
             Self::Model { .. } => Ok(None),
             Self::State { namespace, field } => {
                 let value = match namespace {
                     StateNamespace::Input => scope.get(*namespace, field),
-                    _ => scope.state().get_in(*namespace, field),
+                    StateNamespace::Default => updates.get(field).or_else(|| scope.state().get(field)),
                 }
                 .ok_or_else(|| format!("missing State reference {namespace}.{field}"))?;
                 Ok(Some(value.clone()))
@@ -181,6 +184,13 @@ impl StructuredSpec {
         let mut fields = BTreeSet::new();
         for (field, value) in &self.state_updates {
             nonblank(field, "State update")?;
+            if matches!(field.as_str(), "__input" | "__output") {
+                return Err(Diagnostic::new(
+                    format!("State update {field:?}"),
+                    "use the Inputs, Output, and Next Step sections for I/O bindings",
+                )
+                .into());
+            }
             if !fields.insert(field) {
                 return Err(Diagnostic::new(format!("State update {field:?}"), "duplicate State update").into());
             }
@@ -190,23 +200,23 @@ impl StructuredSpec {
             }
         }
         let mut targets = BTreeSet::new();
-        for case in &self.next {
-            if let Some(next) = &case.next {
+        for case in &self.next_steps {
+            if let Some(next) = &case.step_id {
                 nonblank(&next.0, "next Step")?;
             }
-            if !targets.insert(case.next.as_ref()) {
-                return Err(Diagnostic::new("next", "duplicate next Step").into());
+            if !targets.insert(case.step_id.as_ref()) {
+                return Err(Diagnostic::new("next_steps", "duplicate next Step").into());
             }
             nonblank(&case.description, "next Step description")?;
-            templates.push(("next".into(), &case.description));
-            if case.next.is_none() && !case.inputs.is_empty() {
+            templates.push(("next_steps".into(), &case.description));
+            if case.step_id.is_none() && !case.inputs.is_empty() {
                 return Err(Diagnostic::new("next inputs", "root completion cannot receive arguments").into());
             }
             let mut arguments = BTreeSet::new();
             for (name, value) in &case.inputs {
                 let context = format!(
                     "next {} input {name:?}",
-                    case.next.as_ref().expect("arguments require a destination")
+                    case.step_id.as_ref().expect("arguments require a destination")
                 );
                 nonblank(name, "argument name").map_err(|error| Diagnostics::from(error).at(&context))?;
                 if !arguments.insert(name) {
@@ -228,8 +238,9 @@ impl StructuredSpec {
         Ok(())
     }
 
-    /// Validates the specification and checks supplied arguments against Inputs.
+    /// Explicitly validates the specification and checks supplied arguments against Inputs.
     /// An absent input object is treated as empty; undeclared parameters are rejected.
+    /// Handoff and Step entry do not call this automatically.
     pub fn validate_inputs(&self, value: Option<&Value>) -> Result<(), Diagnostics> {
         self.validate()?;
         let empty = Map::new();

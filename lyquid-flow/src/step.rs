@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::scope::{FlowError, Scope};
 use crate::trace::TraceSummary;
-use crate::{InputSpec, TurnProposal, ViewSpec};
+use crate::{InputSpec, TurnProposal};
 
 /// Stable identifier of a Step.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -76,12 +76,6 @@ pub trait Step: Any + Send + Sync {
 
     /// Describes the input required for this Step, or returns `None` for no input.
     fn input(&self, scope: &Scope) -> Option<InputSpec>;
-
-    /// Selects committed results to publish. The default exports no State or Trace values.
-    /// Return an error identifying a value that cannot be presented; publishing is all-or-nothing.
-    fn view(&self, _scope: &Scope) -> Result<ViewSpec, FlowError> {
-        Ok(ViewSpec::default())
-    }
 
     /// Selects a model template using the current Scope or provides the decision directly.
     fn model_template(&self, scope: &Scope) -> TemplateSpec;

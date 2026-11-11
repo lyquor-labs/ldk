@@ -97,7 +97,7 @@ The application displays each `InputSpec` and submits a JSON object keyed by its
 With exits, submit `CHOICE_STATE_FIELD` and `REFINEMENT_INPUT_FIELD` together to refine. Exit actions require only
 `CHOICE_STATE_FIELD`; they do not overwrite committed feedback. Button values are declared in the native A2UI
 submit event, validated by the same InputSpec, and do not create a second input round. The field prompt contains
-the current hint, while candidate presentation belongs in the application's ViewSpec.
+the current hint, while candidate presentation belongs in the application's Flow-level state ViewSpec.
 
 With no exits, `choice_options()` is empty and the choice State field is omitted. Otherwise, options are ordered as
 `refine`, then your exits. The method returns `ExitChoice` values containing only IDs and labels; routing stays

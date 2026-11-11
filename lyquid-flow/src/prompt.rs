@@ -6,7 +6,7 @@ use tera::{Context, Tera};
 
 use crate::flow::Flow;
 use crate::scope::Scope;
-use crate::state::{State, StateNamespace, StateUpdates};
+use crate::state::{State, StateUpdates};
 use crate::step::{ModelTemplate, StepId};
 use crate::trace::{Trace, TraceSummary};
 use crate::{FlowError, TurnProposal};
@@ -16,7 +16,7 @@ pub(super) fn build_request(
     model: &str, template: &ModelTemplate, flow: &Flow, scope: &Scope,
 ) -> Result<ModelRequest, FlowError> {
     let prompt = render_step_prompt(flow, scope, template)?;
-    let response_contract = response_contract(flow, scope, template);
+    let response_contract = response_contract(scope, template);
     let flow_description = match flow.description() {
         "" => "Execute the current Flow.",
         description => description,
@@ -84,8 +84,7 @@ pub(super) fn parse_response(state: &State, template: &ModelTemplate, output: &s
         }
         let field = state
             .fields
-            .get(&StateNamespace::Default)
-            .and_then(|fields| fields.get(name))
+            .get(name)
             .ok_or_else(|| format!("unknown State field {name}"))?;
         field
             .declared_type
@@ -173,7 +172,7 @@ fn render_step_prompt(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> R
 }
 
 /// Builds the model response contract from valid local transitions and State fields.
-fn response_contract(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> String {
+fn response_contract(scope: &Scope, template: &ModelTemplate) -> String {
     let state = scope.state();
     let update_fields = template
         .state_update_criteria
@@ -181,8 +180,7 @@ fn response_contract(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> St
         .map(|(name, _)| {
             let field = state
                 .fields
-                .get(&StateNamespace::Default)
-                .and_then(|fields| fields.get(name))
+                .get(name)
                 .expect("model template State fields are validated before building the request");
             (
                 name.clone(),
@@ -197,13 +195,7 @@ fn response_contract(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> St
     let next_options = template
         .next_step_criteria
         .iter()
-        .map(|(next, _)| {
-            let mut option = json!({ "value": next.as_ref().map(|next| &next.0) });
-            if let Some(manifest) = next.as_ref().and_then(|id| flow.tool_manifest(id)) {
-                option["tool"] = manifest.prompt_json();
-            }
-            option
-        })
+        .map(|(next, _)| json!({ "value": next.as_ref().map(|next| &next.0) }))
         .collect::<Vec<_>>();
     // TODO: Use provider-native structured output / JSON Schema to enforce the model response format.
     let mut response_contract = json!({
@@ -257,9 +249,7 @@ fn response_contract(flow: &Flow, scope: &Scope, template: &ModelTemplate) -> St
 fn input_json(updates: &StateUpdates) -> JsonValue {
     updates
         .ephemeral
-        .get(&StateNamespace::Input)
-        .into_iter()
-        .flatten()
+        .iter()
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect::<JsonMap<_, _>>()
         .into()

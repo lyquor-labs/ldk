@@ -2,7 +2,7 @@ use lyquid::http;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 
-use super::{ClientError, FlowClient, FlowClientId, FlowService, SubmitResponse};
+use super::{ClientError, FlowClient, FlowService, SubmitResponse};
 use crate::{Scope, ScopeId};
 
 #[derive(Deserialize)]
@@ -16,8 +16,8 @@ struct Submission<'a> {
 /// Shared request parsing/status mapping. A resolver returns only the active input-capable target.
 /// `schedule` must enqueue an instance task; it must not execute a model inline.
 pub fn handle_http(
-    request: http::Request, resolve: impl FnOnce(&FlowClientId) -> Option<FlowClient>,
-    schedule: impl FnOnce(FlowClientId) -> Result<(), crate::FlowError>,
+    request: http::Request, resolve: impl FnOnce(&ScopeId) -> Option<FlowClient>,
+    schedule: impl FnOnce(ScopeId) -> Result<(), crate::FlowError>,
 ) -> http::Response {
     let result = (|| {
         let path = request_path(&request.url);
@@ -26,7 +26,7 @@ pub fn handle_http(
         if id.is_empty() {
             return Err(ClientError::NotFound);
         }
-        let id = FlowClientId(id.to_owned());
+        let id = ScopeId(id.to_owned());
         let client = resolve(&id).ok_or(ClientError::NotFound)?;
         match (&request.method, operation) {
             (http::Method::Get, "") => Ok(json_response(200, &client.read()?)),
@@ -87,7 +87,7 @@ struct Restore {
 
 #[derive(Serialize)]
 struct Created {
-    client_id: FlowClientId,
+    scope_id: ScopeId,
 }
 
 impl FlowService {
@@ -96,7 +96,7 @@ impl FlowService {
     pub fn serve(
         &self, request: http::Request, replace_existing: bool,
         create: impl FnOnce() -> Result<Scope, crate::BuildError>,
-        schedule: impl FnOnce(FlowClientId) -> Result<(), crate::FlowError>,
+        schedule: impl FnOnce(ScopeId) -> Result<(), crate::FlowError>,
     ) -> http::Response {
         if request_path(&request.url) != "/api/flows" || request.method != http::Method::Post {
             return self.handle_http(request, schedule);
@@ -115,7 +115,7 @@ impl FlowService {
             if let Err(error) = schedule(id.clone()) {
                 return Err(client.scheduling_failed(error));
             }
-            Ok(json_response(202, &Created { client_id: id }))
+            Ok(json_response(202, &Created { scope_id: id }))
         })();
         result.unwrap_or_else(|error: ClientError| json_response(error.status(), &error))
     }

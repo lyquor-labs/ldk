@@ -13,6 +13,10 @@ Initialization and finalized updates are validated against that declaration befo
 For example, use `.field("count", "Current count", Type::U64, json!(0))`, then
 `state.get("count").and_then(serde_json::Value::as_u64)`; native structs use explicit Serde conversions.
 
+State has one persistent set of fields. In `Scope` and `StateUpdates`, `StateNamespace::Default`
+selects proposed State replacements, while `StateNamespace::Input` selects submitted interactive input.
+Input values remain ephemeral and are never committed to State.
+
 `InputSpec` can be built in Rust or deserialized from its JSON `{ ui, schema }` representation.
 JSON loading checks the UI structure and supported schema. Submissions are schema-validated
 and bound atomically as JSON values. Native field types supply Schemars declarations.
@@ -20,6 +24,10 @@ and bound atomically as JSON values. Native field types supply Schemars declarat
 For declarative State updates and next-Step selection around an existing Step, use the optional
 [lyquid-structured-builder](../lyquid-structured-builder/README.md) crate. Input forms, model goals,
 finalization and summaries remain in the original Step. The runtime does not depend on the builder.
+
+Tool operations use ordinary Steps or nested Flows. Register an action with `FlowBuilder::step`,
+or compose a child Flow with `flow` / `flow_with`. Each Step chooses whether to call a model through
+`TemplateSpec`; structured wrappers provide the shared input/output convention.
 
 External Step implementations use read-only `State::get` and `Scope::get` to access JSON values
 through JSON accessors or Serde conversion. `Scope::validate_next` preflights a
@@ -42,6 +50,20 @@ Steps receive an empty object by default. Scope resolves it after interactive in
 before sending a model request. The goal and every criterion render once with that data alongside
 `state`, `input`, `trace`, and `step`. The hook must be pure, and errors reject the turn before the model
 or finalization runs. Structured wrappers delegate this hook to the original Step.
+
+## State views
+
+Each Flow defines an optional state view with `FlowBuilder::view`. Its function reads committed State
+through `scope.state()` and returns a `ViewSpec`; without it, the view is empty.
+
+The view belongs to the Flow throughout its run. Steps define input UI through `InputSpec`;
+they do not have separate result views. State variables such as `view_mode` can control the layout.
+During a child Flow, the same view function reads the active child's Scope; after the child joins,
+it reads the parent Scope with its merged State.
+
+The service refreshes the view after each successful commit and checkpoint restore. Rendering errors
+stop execution and preserve committed State and the last published view. The shared Flow page places history
+on the left and current input above the persistent state panel on the right. Narrow screens retain an expandable state panel.
 
 ## Mounting child Flows
 
@@ -67,7 +89,7 @@ let parent = Flow::builder("parent")
 ```
 
 The supplied Step's `input` and `model_template` run before the child starts, and its `finalize`
-runs after the child completes. Its `view` presents results unless the parent defines a Flow-level view.
+runs after the child completes. The parent's state renderer remains responsible for presentation throughout.
 The Step's accepted input stays in the parent Scope for finalization and retries, and is cleared on commit.
 
 The child must declare the mapped `done` exit. The Step must preserve the Flow's entry proposal
@@ -110,3 +132,10 @@ State fields use explicit structural declarations and JSON payloads. Application
 native Rust constraints through Serde conversions and their own validation. A failed turn preserves
 committed State, cursor and Trace. A later view publication failure leaves completed commits and
 external action effects in place.
+
+## HTTP Scope identity
+
+`FlowService` registers each root Scope under its `execution_id()`. `POST /api/flows` returns that ID
+as `{ "scope_id": "..." }`; the read, input, and restore routes use `/api/flows/<scope_id>`.
+Checkpoint restoration preserves the registered root Scope's ID. Child Scope and checkpoint IDs
+do not replace it. Creating a new execution produces a new root Scope ID.

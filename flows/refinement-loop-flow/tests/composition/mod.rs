@@ -4,10 +4,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::flow::{CHOICE_STEP, INPUT_STEP, REFINE_STEP, input_step};
 use crate::*;
 use lyquid_flow::{
-    AutoCheckpointConfig, ExitTransitions, Flow, FlowError, InputSpec, Scope, State, StateNamespace, StateUpdates,
-    Step, TemplateSpec, TraceMode, TraceSummary, TurnProposal,
+    AutoCheckpointConfig, ExitTransitions, Flow, FlowError, InputSpec, Scope, StateNamespace, StateUpdates, Step,
+    TemplateSpec, TraceMode, TraceSummary, TurnProposal,
 };
-use lyquid_structured_builder::{NextStep, StructuredSpec, ValueSpec};
+use lyquid_structured_builder::{NextStep, StructuredSpec, ValueSpec, state_builder};
 use lyquid_test::test;
 
 // Replace only input transport and model calls. Actual library finalizers, commits and child joins run unchanged.
@@ -562,8 +562,8 @@ fn parent_routes_custom_exits_and_collects_restart_feedback_outside_the_child() 
                             APP_FEEDBACK.into(),
                             ValueSpec::reference(StateNamespace::Input, APP_FEEDBACK),
                         )])
-                        .next(vec![NextStep {
-                            next: Some("retrieve_candidates".into()),
+                        .next_steps(vec![NextStep {
+                            step_id: Some("retrieve_candidates".into()),
                             description: "Retrieve new candidates".into(),
                             inputs: vec![],
                         }])
@@ -578,7 +578,7 @@ fn parent_routes_custom_exits_and_collects_restart_feedback_outside_the_child() 
             .unwrap();
         let state = config
             .add_state_fields(
-                State::builder()
+                state_builder([])
                     .field(
                         "parent",
                         "Unrelated parent data",
